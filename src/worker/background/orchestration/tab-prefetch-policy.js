@@ -73,6 +73,15 @@ function countGlobalInflightPrefetches() {
   return state.inflightPrefetches.size
 }
 
+function countInflightPrefetchesForTab(tabId) {
+  if (!Number.isFinite(tabId)) return 0
+  let count = 0
+  for (const inflight of state.inflightPrefetches.values()) {
+    if (inflight?.tabId === tabId) count += 1
+  }
+  return count
+}
+
 ns.refreshActivePrefetchTab = refreshActivePrefetchTab
 ns.setActivePrefetchTab = setActivePrefetchTab
 ns.isTabEligibleForPrefetch = isTabEligibleForPrefetch
@@ -81,4 +90,5 @@ ns.applyAnchorJumpCooldown = applyAnchorJumpCooldown
 ns.cancelPendingPrefetchForTab = cancelPendingPrefetchForTab
 ns.releaseInflightForTab = releaseInflightForTab
 ns.countGlobalInflightPrefetches = countGlobalInflightPrefetches
+ns.countInflightPrefetchesForTab = countInflightPrefetchesForTab
 })()

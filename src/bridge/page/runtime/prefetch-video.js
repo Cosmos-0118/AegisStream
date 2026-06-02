@@ -14,8 +14,10 @@ const {
 
 const PREFETCH_CONCURRENCY = 3
 const MAX_PREFETCH_QUEUE_SIZE = 240
+const PREFETCH_QUEUE_MAX_AGE_MS = 15_000
 const activePrefetches = new Set()
 const queuedPrefetches = new Set()
+const prefetchQueuedAt = new Map()
 const prefetchQueue = []
 const prefetchQueueWaiters = []
 let prefetchWorkersStarted = false
@@ -36,6 +38,40 @@ function isPagePrefetchAllowed() {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+function getBufferTier() {
+  return typeof ns.bufferTier === "string" ? ns.bufferTier : null
+}
+
+function isMaintenancePrefetchMode() {
+  const tier = getBufferTier()
+  return tier === ns.TIER_MAINTENANCE || tier === ns.TIER_IDLE
+}
+
+function getBufferAdjustedConcurrency() {
+  const tier = getBufferTier()
+  const healthScore = Number(ns.bufferHealthScore)
+  if (!tier) return PREFETCH_CONCURRENCY
+
+  switch (tier) {
+    case ns.TIER_EMERGENCY:
+      return Math.min(5, PREFETCH_CONCURRENCY + 2)
+    case ns.TIER_AGGRESSIVE:
+      return Math.min(4, PREFETCH_CONCURRENCY + 1)
+    case ns.TIER_NORMAL:
+      return PREFETCH_CONCURRENCY
+    case ns.TIER_MAINTENANCE:
+    case ns.TIER_IDLE:
+      return 1
+    default:
+      if (Number.isFinite(healthScore) && healthScore < 40) {
+        return PREFETCH_CONCURRENCY
+      }
+      return 1
+  }
+}
+
+let activePrefetchWorkerCount = 0
 
 function isTransientStoreFailure(storeRes) {
   if (!storeRes || storeRes.ok) return false
@@ -173,6 +209,9 @@ function attachVideoHealthListeners(video) {
       reason: `${stall.reason}->${reason}`,
       atSeconds: Number.isFinite(video.currentTime) ? Number(video.currentTime.toFixed(2)) : null
     })
+    if (typeof ns.recordBufferStall === "function") {
+      ns.recordBufferStall(durationMs)
+    }
   }
 
   video.addEventListener("waiting", () => beginStall("waiting"))
@@ -224,20 +263,64 @@ function installVideoHealthMonitor() {
 
 installVideoHealthMonitor()
 
+function isPrefetchUrlStale(url) {
+  const queuedAt = prefetchQueuedAt.get(url)
+  if (!queuedAt) return false
+  return Date.now() - queuedAt > PREFETCH_QUEUE_MAX_AGE_MS
+}
+
+function dropStalePrefetchUrl(url) {
+  prefetchQueuedAt.delete(url)
+  queuedPrefetches.delete(url)
+  notifyRuntime("PREFETCH_RESULT", {
+    url,
+    success: false,
+    skipped: "stale-queue",
+    transient: true
+  })
+}
+
+function purgeStaleQueuedPrefetches() {
+  if (prefetchQueue.length === 0) return
+  const now = Date.now()
+  let write = 0
+  for (let read = 0; read < prefetchQueue.length; read += 1) {
+    const url = prefetchQueue[read]
+    const queuedAt = prefetchQueuedAt.get(url) || 0
+    if (queuedAt > 0 && now - queuedAt > PREFETCH_QUEUE_MAX_AGE_MS) {
+      dropStalePrefetchUrl(url)
+      continue
+    }
+    prefetchQueue[write] = url
+    write += 1
+  }
+  prefetchQueue.length = write
+}
+
 function trimPrefetchQueue() {
   while (prefetchQueue.length > MAX_PREFETCH_QUEUE_SIZE) {
     const dropped = prefetchQueue.pop()
     if (!dropped) continue
     queuedPrefetches.delete(dropped)
+    prefetchQueuedAt.delete(dropped)
   }
 }
 
 function dequeuePrefetchUrl() {
+  purgeStaleQueuedPrefetches()
   while (prefetchQueue.length > 0) {
     const url = prefetchQueue.shift()
     if (!url) continue
-    if (!queuedPrefetches.has(url)) continue
+    if (!queuedPrefetches.has(url)) {
+      prefetchQueuedAt.delete(url)
+      continue
+    }
+    if (isPrefetchUrlStale(url)) {
+      dropStalePrefetchUrl(url)
+      continue
+    }
     queuedPrefetches.delete(url)
+    prefetchQueuedAt.delete(url)
     if (activePrefetches.has(url)) continue
     return url
   }
@@ -343,11 +426,24 @@ async function processPrefetchUrl(url) {
 
 async function runPrefetchWorker() {
   while (true) {
+    const maxConcurrent = getBufferAdjustedConcurrency()
+    const maintenance = isMaintenancePrefetchMode()
+    if (maintenance && activePrefetchWorkerCount >= 1) {
+      await sleep(1200)
+      continue
+    }
+    if (activePrefetchWorkerCount >= maxConcurrent) {
+      await sleep(120)
+      continue
+    }
+
+    purgeStaleQueuedPrefetches()
     const url = dequeuePrefetchUrl()
     if (!url) {
       await waitForPrefetchWork()
       continue
     }
+    activePrefetchWorkerCount += 1
     activePrefetches.add(url)
     try {
       await processPrefetchUrl(url)
@@ -364,6 +460,7 @@ async function runPrefetchWorker() {
       })
     } finally {
       activePrefetches.delete(url)
+      activePrefetchWorkerCount = Math.max(0, activePrefetchWorkerCount - 1)
     }
   }
 }
@@ -423,9 +520,11 @@ async function prefetchSegmentsFromPage(urls) {
   if (!toQueue.length) return
 
   // Newest anchor updates are typically the most relevant under rapid seeks.
+  const now = Date.now()
   for (let i = toQueue.length - 1; i >= 0; i -= 1) {
     const url = toQueue[i]
     queuedPrefetches.add(url)
+    prefetchQueuedAt.set(url, now)
     prefetchQueue.unshift(url)
   }
   trimPrefetchQueue()

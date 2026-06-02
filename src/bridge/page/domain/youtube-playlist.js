@@ -22,6 +22,41 @@ function isYoutubeVideoPlaybackUrl(url) {
   return typeof url === "string" && /\bgooglevideo\.com\/videoplayback\b/i.test(url)
 }
 
+function isYoutubeInternalApiUrl(url) {
+  if (!url || typeof url !== "string") return false
+  try {
+    const parsed = new URL(url, location.href)
+    const host = parsed.hostname || ""
+    if (!(host === "youtube.com" || host.endsWith(".youtube.com"))) return false
+    return /\/youtubei\/v1\/(player|next|reel\/reel_watch_sequence)/i.test(parsed.pathname)
+  } catch {
+    return false
+  }
+}
+
+async function patchYoutubeInternalApiResponse(response) {
+  const flags = globalThis.AegisYouTubeFlags
+  if (!flags || !response?.ok) return response
+
+  try {
+    const text = await response.clone().text()
+    if (!text || text.length < 2) return response
+    const data = JSON.parse(text)
+    const updates = flags.patchConfig(data)
+    if (updates <= 0) return response
+
+    logBridge(`Patched YouTube player API experiment flags (${updates} updates)`, "INFO")
+    const headers = new Headers(response.headers)
+    return new Response(JSON.stringify(data), {
+      status: response.status,
+      statusText: response.statusText,
+      headers
+    })
+  } catch {
+    return response
+  }
+}
+
 /**
  * Stable playback identity for cache keys. Signed query params (expire, sig, …)
  * rotate often; the POST body hash already identifies the segment payload.
@@ -33,10 +68,8 @@ function getYoutubePlaybackIdentity(url) {
     const parts = []
     const id = u.searchParams.get("id")
     const itag = u.searchParams.get("itag")
-    const cpn = u.searchParams.get("cpn")
     if (id) parts.push(`id:${id}`)
     if (itag) parts.push(`itag:${itag}`)
-    if (cpn) parts.push(`cpn:${cpn}`)
     if (parts.length > 0) return parts.join(";")
   } catch {
     // fall through
@@ -48,8 +81,9 @@ function getYoutubePlaybackIdentity(url) {
 }
 
 function formatUmpCacheKey(url, bodyHash) {
-  const identity = getYoutubePlaybackIdentity(url) || "unknown"
-  return `ump|${identity}|${bodyHash}`
+  const identity = getYoutubePlaybackIdentity(url)
+  if (identity) return `ump|${identity}|${bodyHash}`
+  return `ump|${bodyHash}`
 }
 
 async function sha1Hex(bytes) {
@@ -187,8 +221,190 @@ function isAbortLikeError(error) {
     /Failed to fetch/i.test(message) ||
     /Load failed/i.test(message) ||
     /networkerror/i.test(message) ||
-    /stream.*(closed|lock)/i.test(message)
+    /stream.*(closed|lock)/i.test(message) ||
+    /errored readable stream/i.test(message) ||
+    /Cannot close/i.test(message)
   )
+}
+
+function wrapStreamForFirstByteMetric(stream, requestStartedAt) {
+  if (!stream || !Number.isFinite(requestStartedAt)) return stream
+  let reported = false
+  const reader = stream.getReader()
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read()
+      if (done) {
+        controller.close()
+        return
+      }
+      if (!reported && value && value.byteLength > 0) {
+        reported = true
+        reportRuntimeMetric("request_first_byte", {
+          source: "network",
+          transport: "fetch",
+          streamType: "ump",
+          latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+        })
+      }
+      controller.enqueue(value)
+    },
+    cancel(reason) {
+      reader.cancel(reason).catch(() => {})
+    }
+  })
+}
+
+async function storeUmpStreamCapture({
+  stream,
+  cacheLookupUrl,
+  contentType,
+  urlForLog,
+  requestStartedAt,
+  captureForCache
+}) {
+  if (!captureForCache) return
+
+  let captureReserved = false
+  if (ns.activeUmpCaptureCount >= MAX_ACTIVE_UMP_CAPTURES) {
+    const now = Date.now()
+    if (now - ns.lastUmpCaptureBackpressureLogAt >= 5000) {
+      ns.lastUmpCaptureBackpressureLogAt = now
+      logBridge(
+        `UMP cache capture throttled (active=${ns.activeUmpCaptureCount}, max=${MAX_ACTIVE_UMP_CAPTURES})`,
+        "DEBUG"
+      )
+    }
+    reportRuntimeMetric("youtube_ump_stream_outcome", {
+      outcome: "capture_skipped",
+      bytes: 0,
+      reason: "backpressure"
+    })
+    try {
+      await stream.cancel()
+    } catch {
+      // ignore
+    }
+    return
+  }
+
+  ns.activeUmpCaptureCount += 1
+  captureReserved = true
+
+  const reader = stream.getReader()
+  const chunks = []
+  let total = 0
+  let truncated = false
+  let aborted = false
+  let streamErrored = false
+  let streamErrorDetail = null
+  const maxBytes = MAX_UMP_CAPTURE_BYTES
+  const MIN_UMP_CACHE_BYTES = 1024
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.byteLength === 0) continue
+      if (truncated) continue
+      total += value.byteLength
+      if (total > maxBytes) {
+        truncated = true
+        chunks.length = 0
+        continue
+      }
+      chunks.push(value)
+    }
+  } catch (error) {
+    aborted = isAbortLikeError(error)
+    if (!aborted) {
+      streamErrored = true
+      streamErrorDetail = `${error?.name || "Error"}: ${error?.message || "unknown"}`
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // ignore
+    }
+    if (captureReserved) {
+      ns.activeUmpCaptureCount = Math.max(0, ns.activeUmpCaptureCount - 1)
+    }
+
+    if (aborted || streamErrored || truncated || total < MIN_UMP_CACHE_BYTES || chunks.length === 0) {
+      let outcome = "empty"
+      if (aborted) outcome = "aborted"
+      else if (streamErrored) outcome = "error"
+      else if (truncated) outcome = "truncated"
+      reportRuntimeMetric("youtube_ump_stream_outcome", {
+        outcome,
+        bytes: total,
+        detail: streamErrorDetail,
+        durationMs: Number.isFinite(requestStartedAt)
+          ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+          : null
+      })
+      return
+    }
+
+    const merged = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      merged.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+
+    void requestRuntime("STORE_CHUNK_REQUEST", {
+      url: cacheLookupUrl,
+      contentType,
+      bytes: merged.buffer,
+      status: 200,
+      method: "GET",
+      hasRange: false
+    })
+      .then((storeRes) => {
+        if (storeRes?.ok) {
+          rememberKnownUmpKey(cacheLookupUrl)
+          const hashOnly = cacheLookupUrl.includes("|")
+            ? `ump|${cacheLookupUrl.slice(cacheLookupUrl.lastIndexOf("|") + 1)}`
+            : cacheLookupUrl
+          rememberKnownUmpKey(hashOnly)
+        } else {
+          logBridge(
+            `UMP chunk store failed (${storeRes?.error || "unknown"}): ${String(urlForLog).slice(-80)}`,
+            "WARN"
+          )
+          reportRuntimeMetric("youtube_ump_stream_outcome", {
+            outcome: "store_failed",
+            bytes: total,
+            detail: storeRes?.error || null,
+            durationMs: Number.isFinite(requestStartedAt)
+              ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+              : null
+          })
+          return
+        }
+        reportRuntimeMetric("youtube_ump_stream_outcome", {
+          outcome: "completed",
+          bytes: total,
+          detail: null,
+          durationMs: Number.isFinite(requestStartedAt)
+            ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+            : null
+        })
+      })
+      .catch(() => {
+        logBridge(`UMP chunk store failed (runtime): ${String(urlForLog).slice(-80)}`, "WARN")
+        reportRuntimeMetric("youtube_ump_stream_outcome", {
+          outcome: "store_failed",
+          bytes: total,
+          detail: "runtime-error",
+          durationMs: Number.isFinite(requestStartedAt)
+            ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+            : null
+        })
+      })
+  }
 }
 
 async function readStreamToArrayBuffer(stream, maxBytes = 64 * 1024 * 1024) {
@@ -236,198 +452,25 @@ function createUmpProxyResponseAndCache({
     return networkResponse
   }
 
-  const reader = networkResponse.body.getReader()
-  const chunks = []
-  let total = 0
-  let truncated = false
-  let aborted = false
-  let streamErrored = false
-  let streamErrorDetail = null
-  let firstByteReported = false
-  const maxBytes = MAX_UMP_CAPTURE_BYTES
-  let captureReserved = false
-
-  if (captureForCache) {
-    if (ns.activeUmpCaptureCount >= MAX_ACTIVE_UMP_CAPTURES) {
-      captureForCache = false
-      const now = Date.now()
-      if (now - ns.lastUmpCaptureBackpressureLogAt >= 5000) {
-        ns.lastUmpCaptureBackpressureLogAt = now
-        logBridge(
-          `UMP cache capture throttled (active=${ns.activeUmpCaptureCount}, max=${MAX_ACTIVE_UMP_CAPTURES})`,
-          "DEBUG"
-        )
-      }
-      reportRuntimeMetric("youtube_ump_stream_outcome", {
-        outcome: "capture_skipped",
-        bytes: 0,
-        reason: "backpressure"
-      })
-    } else {
-      ns.activeUmpCaptureCount += 1
-      captureReserved = true
-    }
+  let playerBranch
+  let cacheBranch
+  try {
+    ;[playerBranch, cacheBranch] = networkResponse.body.tee()
+  } catch {
+    return networkResponse
   }
 
-  const proxyStream = new ReadableStream({
-    async start(controller) {
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (!value || value.byteLength === 0) continue
-
-          if (!firstByteReported && Number.isFinite(requestStartedAt)) {
-            firstByteReported = true
-            reportRuntimeMetric("request_first_byte", {
-              source: "network",
-              transport: "fetch",
-              streamType: "ump",
-              latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-            })
-          }
-
-          controller.enqueue(value)
-
-          if (!captureForCache) continue
-          if (truncated) continue
-          total += value.byteLength
-          if (total > maxBytes) {
-            truncated = true
-            chunks.length = 0
-            continue
-          }
-          chunks.push(value)
-        }
-        controller.close()
-      } catch (error) {
-        aborted = isAbortLikeError(error)
-        streamErrorDetail = `${error?.name || "Error"}: ${error?.message || "unknown"}`
-        if (aborted) {
-          try {
-            controller.close()
-          } catch {
-            // ignored
-          }
-        } else {
-          streamErrored = true
-          // In YouTube UMP mode, hard stream errors often come from expected
-          // transport recycling. Close softly so playback can immediately retry.
-          try {
-            controller.close()
-          } catch {
-            // ignored
-          }
-        }
-      } finally {
-        try {
-          reader.releaseLock()
-        } catch {
-          // ignored
-        }
-        if (captureReserved) {
-          ns.activeUmpCaptureCount = Math.max(0, ns.activeUmpCaptureCount - 1)
-        }
-
-        if (!captureForCache) {
-          reportRuntimeMetric("youtube_ump_stream_outcome", {
-            outcome: aborted ? "aborted" : streamErrored ? "error" : "passthrough",
-            bytes: total,
-            detail: streamErrorDetail,
-            durationMs: Number.isFinite(requestStartedAt)
-              ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-              : null
-          })
-          return
-        }
-        const MIN_UMP_CACHE_BYTES = 1024
-        if (
-          aborted ||
-          streamErrored ||
-          truncated ||
-          total < MIN_UMP_CACHE_BYTES ||
-          chunks.length === 0
-        ) {
-          let outcome = "empty"
-          if (aborted) outcome = "aborted"
-          else if (streamErrored) outcome = "error"
-          else if (truncated) outcome = "truncated"
-          reportRuntimeMetric("youtube_ump_stream_outcome", {
-            outcome,
-            bytes: total,
-            detail: streamErrorDetail,
-            durationMs: Number.isFinite(requestStartedAt)
-              ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-              : null
-          })
-          return
-        }
-
-        const merged = new Uint8Array(total)
-        let offset = 0
-        for (const chunk of chunks) {
-          merged.set(chunk, offset)
-          offset += chunk.byteLength
-        }
-
-        void requestRuntime("STORE_CHUNK_REQUEST", {
-          url: cacheLookupUrl,
-          contentType,
-          bytes: merged.buffer,
-          status: 200,
-          method: "GET",
-          hasRange: false
-        })
-          .then((storeRes) => {
-            if (storeRes?.ok) {
-              rememberKnownUmpKey(cacheLookupUrl)
-            } else {
-              logBridge(
-                `UMP chunk store failed (${storeRes?.error || "unknown"}): ${String(urlForLog).slice(-80)}`,
-                "WARN"
-              )
-              reportRuntimeMetric("youtube_ump_stream_outcome", {
-                outcome: "store_failed",
-                bytes: total,
-                detail: storeRes?.error || null,
-                durationMs: Number.isFinite(requestStartedAt)
-                  ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-                  : null
-              })
-              return
-            }
-            reportRuntimeMetric("youtube_ump_stream_outcome", {
-              outcome: "completed",
-              bytes: total,
-              detail: null,
-              durationMs: Number.isFinite(requestStartedAt)
-                ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-                : null
-            })
-          })
-          .catch(() => {
-            logBridge(`UMP chunk store failed (runtime): ${String(urlForLog).slice(-80)}`, "WARN")
-            reportRuntimeMetric("youtube_ump_stream_outcome", {
-              outcome: "store_failed",
-              bytes: total,
-              detail: "runtime-error",
-              durationMs: Number.isFinite(requestStartedAt)
-                ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-                : null
-            })
-          })
-      }
-    },
-    cancel(reason) {
-      try {
-        reader.cancel(reason)
-      } catch {
-        // ignored
-      }
-    }
+  void storeUmpStreamCapture({
+    stream: cacheBranch,
+    cacheLookupUrl,
+    contentType,
+    urlForLog,
+    requestStartedAt,
+    captureForCache
   })
 
-  return cloneResponseForPlayer(networkResponse, proxyStream)
+  const playerStream = wrapStreamForFirstByteMetric(playerBranch, requestStartedAt)
+  return cloneResponseForPlayer(networkResponse, playerStream)
 }
 
 function cacheNetworkStreamInBackground({
@@ -563,6 +606,8 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 
 ns.isYoutubeRangeUrl = isYoutubeRangeUrl
 ns.isYoutubeVideoPlaybackUrl = isYoutubeVideoPlaybackUrl
+ns.isYoutubeInternalApiUrl = isYoutubeInternalApiUrl
+ns.patchYoutubeInternalApiResponse = patchYoutubeInternalApiResponse
 ns.getYoutubePlaybackIdentity = getYoutubePlaybackIdentity
 ns.formatUmpCacheKey = formatUmpCacheKey
 ns.sha1Hex = sha1Hex

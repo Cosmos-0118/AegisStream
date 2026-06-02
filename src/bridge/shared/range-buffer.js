@@ -242,6 +242,11 @@
 
     // Triggered by page-bridge when a network response finishes
     triggerHeuristicPrefetch(originalUrl, headers, notifyRuntime, requestRuntime) {
+      const tier = self.AegisPageBridge?.bufferTier
+      if (tier === "idle") {
+        return
+      }
+
       const { start, end, type } = this.parseRange(originalUrl, headers)
       if (!Number.isFinite(start) || (end === null && type !== "sq")) return
 

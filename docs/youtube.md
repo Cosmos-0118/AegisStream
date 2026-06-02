@@ -147,6 +147,17 @@ UMP mode does not have a stable “next URL” — replay depends on the same PO
 
 **Cache key:** `ump|id:<video>;itag:<n>;cpn:<session>|bodyHash` (not the full signed `googlevideo` URL). A secondary alias `ump|<bodyHash>` is written so replays still resolve after URL signature rotation.
 
+### Anti-buffering roadmap (engineering priorities)
+
+| Idea | Verdict | Status |
+|------|---------|--------|
+| Predict UMP POST bodies | Kill — telemetry in body, high maintenance | Not built |
+| Buffer-aware prefetch (`video.buffered`) | Keep — modulates window/concurrency by runway | **Implemented** |
+| Kill UMP / force byte-range MSE | Holy grail — unlocks range prefetch | **Expanded** (`youtube-ump-flags.js`, `youtubei` API patch) |
+| Cross-tab session cache | Refine — UX on HLS replay | IndexedDB only (no UMP cross-session) |
+
+**Buffer policy (health score):** samples every **750ms**; combines runway (55%), net fill rate (35%), and recent stall penalty. Tiers: **emergency** (&lt;5s), **aggressive** (5–15s), **normal** (15–30s), **maintenance** (30–60s, 1 worker keeps cache warm), **idle** (60s+, 1 worker monitors). Never fully sleeps prefetch — maintenance mode avoids the “network died while sleeping” trap.
+
 ---
 
 ## 5. Extension fetch engine (service worker)

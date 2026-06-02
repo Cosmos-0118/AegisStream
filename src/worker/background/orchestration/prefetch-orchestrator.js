@@ -15,8 +15,14 @@ const {
   isTabEligibleForPrefetch,
   isTabInAnchorCooldown,
   applyAnchorJumpCooldown,
-  countGlobalInflightPrefetches
+  countGlobalInflightPrefetches,
+  resolveBufferAdjustedPrefetchWindow,
+  resolveBufferAdjustedGlobalCap,
+  getTabBufferTier
 } = ns
+
+const TIER_EMERGENCY = "emergency"
+const TIER_AGGRESSIVE = "aggressive"
 
 const chunkObservedDebounceAt = new Map()
 
@@ -207,10 +213,11 @@ function getAnchorJumpCount(tabId) {
 function resolveEffectivePrefetchWindow(tabId) {
   const baseWindow = Math.max(1, Number(state.settings.prefetchWindow) || 1)
   const jumps = getAnchorJumpCount(tabId)
+  let windowSize = baseWindow
   if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD) {
-    return Math.min(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
+    windowSize = Math.min(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
   }
-  return baseWindow
+  return resolveBufferAdjustedPrefetchWindow(tabId, windowSize)
 }
 
 function shouldSkipDuplicateSchedule(tabState, startIndex, now, force) {
@@ -264,6 +271,102 @@ function updatePrefetchOutcome(url, success, error = "unknown", options = {}) {
   return { attempts, retryAfter, transient }
 }
 
+function computeCapRetryDelayMs(attempt) {
+  const base = Math.max(50, Number(constants.PREFETCH_CAP_RETRY_BASE_MS) || 200)
+  const max = Math.max(base, Number(constants.PREFETCH_CAP_RETRY_MAX_MS) || 3200)
+  const exponent = Math.max(0, Number(attempt) - 1)
+  return Math.min(max, Math.round(base * 2 ** exponent))
+}
+
+function clearPrefetchCapRetry(tabState) {
+  if (!tabState) return
+  if (tabState.prefetchCapRetryTimer) {
+    clearTimeout(tabState.prefetchCapRetryTimer)
+    tabState.prefetchCapRetryTimer = null
+  }
+  tabState.prefetchCapRetryPending = null
+  tabState.prefetchCapRetryAttempts = 0
+  tabState.prefetchCapRetryDelayMs = 0
+}
+
+function isPrefetchWorkStale(tabState, pending) {
+  if (!pending) return true
+  const queuedAt = Number(pending.queuedAt || 0)
+  if (queuedAt > 0 && Date.now() - queuedAt > constants.PREFETCH_QUEUE_MAX_AGE_MS) {
+    return true
+  }
+  if (
+    tabState?.hasAnchor &&
+    typeof tabState.anchorIndex === "number" &&
+    typeof pending.startIndex === "number"
+  ) {
+    const drift = tabState.anchorIndex - pending.startIndex
+    const maxDrift = Math.max(state.settings.prefetchWindow * 2, 8)
+    if (drift > maxDrift) return true
+  }
+  return false
+}
+
+function dropStalePrefetchWork(tabId, tabState, pending, reason) {
+  clearPrefetchCapRetry(tabState)
+  const ageSec =
+    pending?.queuedAt > 0 ? Math.round((Date.now() - pending.queuedAt) / 1000) : null
+  addLog(
+    "INFO",
+    `Dropped stale prefetch work on tab ${tabId} (${reason}${ageSec !== null ? `, age=${ageSec}s` : ""})`
+  )
+}
+
+function schedulePrefetchCapRetry(tabId, tabState, segments, startIndex, source) {
+  if (!tabState) return
+
+  const existing = tabState.prefetchCapRetryPending
+  const queuedAt = existing?.queuedAt || Date.now()
+  const pendingSnapshot = {
+    segments,
+    startIndex,
+    source,
+    queuedAt
+  }
+
+  if (isPrefetchWorkStale(tabState, pendingSnapshot)) {
+    dropStalePrefetchWork(tabId, tabState, pendingSnapshot, "queue-age")
+    return
+  }
+
+  const attempts = Number(tabState.prefetchCapRetryAttempts || 0) + 1
+  if (attempts > constants.PREFETCH_CAP_RETRY_MAX_ATTEMPTS) {
+    clearPrefetchCapRetry(tabState)
+    addLog(
+      "WARN",
+      `Prefetch cap retry exhausted on tab ${tabId} after ${constants.PREFETCH_CAP_RETRY_MAX_ATTEMPTS} attempts`
+    )
+    return
+  }
+  const delayMs = computeCapRetryDelayMs(attempts)
+  tabState.prefetchCapRetryAttempts = attempts
+  tabState.prefetchCapRetryDelayMs = delayMs
+  tabState.prefetchCapRetryPending = pendingSnapshot
+  if (tabState.prefetchCapRetryTimer) {
+    clearTimeout(tabState.prefetchCapRetryTimer)
+  }
+  tabState.prefetchCapRetryTimer = setTimeout(() => {
+    tabState.prefetchCapRetryTimer = null
+    const pending = tabState.prefetchCapRetryPending
+    if (!pending) return
+    if (isPrefetchWorkStale(tabState, pending)) {
+      dropStalePrefetchWork(tabId, tabState, pending, "queue-age")
+      return
+    }
+    tabState.prefetchCapRetryPending = null
+    void schedulePrefetch(tabId, pending.segments, pending.startIndex, {
+      source: pending.source,
+      force: true,
+      capRetry: true
+    })
+  }, delayMs)
+}
+
 async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   if (!state.settings.enabled || !state.settings.prefetchEnabled) return
   if (!isTabEligibleForPrefetch(tabId)) return
@@ -282,6 +385,13 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   }
 
   const effectiveWindow = resolveEffectivePrefetchWindow(tabId)
+  if (effectiveWindow === 0) {
+    tabState.lastScheduledFromIndex = clampedStartIndex
+    tabState.lastScheduledAt = now
+    tabState.updatedAt = now
+    return
+  }
+
   if (effectiveWindow < state.settings.prefetchWindow && tabState.highChurnMode !== true) {
     tabState.highChurnMode = true
     addLog(
@@ -332,21 +442,37 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     if (!existing) uncached.push(url)
   }
 
-  const globalCap = Math.max(1, Number(constants.GLOBAL_MAX_INFLIGHT_PREFETCHES) || 6)
+  const globalCap = resolveBufferAdjustedGlobalCap(tabId)
   const globalInflight = countGlobalInflightPrefetches()
+  const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
+  const batchInflightCap =
+    tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE
+      ? constants.PREFETCH_BATCH_INFLIGHT_CAP + 2
+      : constants.PREFETCH_BATCH_INFLIGHT_CAP
+
   if (globalInflight >= globalCap) {
+    if (!options.capRetry) {
+      schedulePrefetchCapRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule")
+    }
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
     if (shouldLogSkip) {
+      const retryDelay = tabState.prefetchCapRetryDelayMs || computeCapRetryDelayMs(1)
       addLog(
         "INFO",
-        `Prefetch deferred on tab ${tabId}: global inflight=${globalInflight}/${globalCap}`
+        `Prefetch queued (cap ${globalInflight}/${globalCap}) — retry #${tabState.prefetchCapRetryAttempts || 1} on tab ${tabId} in ${retryDelay}ms`
       )
       tabState.lastSkipLogAt = now
     }
+    tabState.lastScheduledFromIndex = clampedStartIndex
+    tabState.lastScheduledAt = now
+    tabState.updatedAt = now
     return
   }
+
+  clearPrefetchCapRetry(tabState)
+
   const availableSlots = globalCap - globalInflight
-  const batch = uncached.slice(0, availableSlots)
+  const batch = uncached.slice(0, Math.min(availableSlots, batchInflightCap))
 
   if (!batch.length) {
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
@@ -391,6 +517,11 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     for (const url of batch) {
       updatePrefetchOutcome(url, false, "delegate-failed")
     }
+    return
+  }
+
+  if (uncached.length > batch.length) {
+    schedulePrefetchCapRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule")
   }
 }
 
@@ -403,10 +534,30 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
     clearTimeout(existing.timerId)
   }
 
+  const queuedAt = existing?.queuedAt || Date.now()
+  const clampedStartIndex = Math.max(0, Number(startIndex) || 0)
+  const tabState = state.playlistByTab.get(tabId)
+  const pendingSnapshot = {
+    segments,
+    startIndex: clampedStartIndex,
+    source,
+    queuedAt
+  }
+
+  if (isPrefetchWorkStale(tabState, pendingSnapshot)) {
+    dropStalePrefetchWork(tabId, tabState, pendingSnapshot, "debounce-queue")
+    return
+  }
+
   const timerId = setTimeout(() => {
     const pending = state.pendingPrefetchByTab.get(tabId)
     if (!pending) return
     state.pendingPrefetchByTab.delete(tabId)
+    const currentTabState = state.playlistByTab.get(tabId)
+    if (isPrefetchWorkStale(currentTabState, pending)) {
+      dropStalePrefetchWork(tabId, currentTabState, pending, "debounce-queue")
+      return
+    }
     void schedulePrefetch(
       tabId,
       pending.segments,
@@ -418,9 +569,9 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
   state.pendingPrefetchByTab.set(tabId, {
     timerId,
     source,
-    startIndex: Math.max(0, Number(startIndex) || 0),
+    startIndex: clampedStartIndex,
     segments,
-    queuedAt: Date.now()
+    queuedAt
   })
 }
 

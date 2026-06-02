@@ -11,6 +11,8 @@ const {
   reportRuntimeMetric,
   notifyChunkObserved,
   isYoutubeVideoPlaybackUrl,
+  isYoutubeInternalApiUrl,
+  patchYoutubeInternalApiResponse,
   buildYoutubeUmpState,
   buildYoutubeChunkState,
   buildYoutubeChunkStateFromContentRange,
@@ -38,6 +40,22 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk
     return { lookup, lookupBytes }
   }
 
+  if (youtubeChunk?.type === "ump" && youtubeChunk.bodyHash && !lookup?.hit) {
+    const hashKey = `ump|${youtubeChunk.bodyHash}`
+    if (hashKey !== cacheLookupUrl) {
+      const hashLookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
+        url: hashKey,
+        method: cacheLookupMethod,
+        hasRange: false
+      })
+      const hashBytes = resolveLookupBytes(hashLookup)
+      if (hashLookup?.ok && hashLookup.hit && hashBytes) {
+        logBridge(`UMP cache hit via body-hash key: ${youtubeChunk.bodyHash}`, "DEBUG")
+        return { lookup: hashLookup, lookupBytes: hashBytes }
+      }
+    }
+  }
+
   if (
     youtubeChunk?.type === "ump" &&
     knownUmpCacheKeys?.has?.(cacheLookupUrl)
@@ -60,6 +78,11 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk
 async function aegisFetch(input, init) {
   const { url, method, hasRange, requestHeaders } = getRequestDetails(input, init)
   const requestStartedAt = monotonicNow()
+
+  if (method === "POST" && isYoutubeInternalApiUrl(url)) {
+    const apiResponse = await originalFetch(input, init)
+    return patchYoutubeInternalApiResponse(apiResponse)
+  }
 
   let youtubeChunk = null
   const isYoutubePlayback = isYoutubeVideoPlaybackUrl(url)

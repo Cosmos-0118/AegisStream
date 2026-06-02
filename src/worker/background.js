@@ -7,6 +7,7 @@ importScripts(
   "./background/domain/activity-metrics.js",
   "./background/domain/telemetry.js",
   "./background/orchestration/tab-prefetch-policy.js",
+  "./background/orchestration/buffer-prefetch-policy.js",
   "./background/orchestration/prefetch-orchestrator.js",
   "./background/io/extension-fetch.js"
 )
@@ -58,7 +59,9 @@ const {
 const ISOLATED_BRIDGE_FILES = ["src/content/content-relay.js"]
 const MAIN_BRIDGE_FILES = [
   "src/bridge/shared/range-buffer.js",
+  "src/bridge/shared/youtube-ump-flags.js",
   "src/bridge/page/runtime/core.js",
+  "src/bridge/page/runtime/buffer-health-monitor.js",
   "src/bridge/page/runtime/extension-fetch-client.js",
   "src/bridge/page/runtime/prefetch-video.js",
   "src/bridge/page/runtime/message-bridge.js",
@@ -621,7 +624,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (
           skipped === "already-inflight" ||
           skipped === "tab-inactive" ||
-          skipped === "tab-hidden"
+          skipped === "tab-hidden" ||
+          skipped === "stale-queue"
         ) {
           updatePrefetchOutcome(message.url, true)
           sendResponse({ ok: true })

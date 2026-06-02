@@ -35,6 +35,7 @@
         "*://*.youtube.com/*"
       ],
       "js": [
+        "src/bridge/shared/youtube-ump-flags.js",
         "src/content/youtube/kill-ump.js"
       ],
       "run_at": "document_start",
@@ -46,7 +47,9 @@
       ],
       "js": [
         "src/bridge/shared/range-buffer.js",
+        "src/bridge/shared/youtube-ump-flags.js",
         "src/bridge/page/runtime/core.js",
+        "src/bridge/page/runtime/buffer-health-monitor.js",
         "src/bridge/page/runtime/extension-fetch-client.js",
         "src/bridge/page/runtime/prefetch-video.js",
         "src/bridge/page/runtime/message-bridge.js",
@@ -77,8 +80,10 @@
     {
       "resources": [
         "src/bridge/shared/range-buffer.js",
+        "src/bridge/shared/youtube-ump-flags.js",
         "src/bridge/page/main.js",
         "src/bridge/page/runtime/core.js",
+        "src/bridge/page/runtime/buffer-health-monitor.js",
         "src/bridge/page/runtime/extension-fetch-client.js",
         "src/bridge/page/runtime/prefetch-video.js",
         "src/bridge/page/runtime/message-bridge.js",

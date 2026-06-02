@@ -92,6 +92,22 @@ function rememberUmpLookupKey(key) {
 function handleRuntimeMetric(message, sender) {
   const metricType = message.metricType
   const tabId = sender?.tab?.id
+  if (metricType === "buffer_health") {
+    const runwaySec = Number(message.runwaySec)
+    if (!Number.isFinite(runwaySec) || runwaySec < 0) return
+    if (typeof ns.updateTabBufferHealth === "function" && Number.isFinite(tabId)) {
+      ns.updateTabBufferHealth(tabId, {
+        runwaySec,
+        runwayPct: Number(message.runwayPct),
+        healthScore: Number(message.healthScore),
+        tier: message.tier,
+        netFillRate: message.netFillRate,
+        paused: message.paused === true
+      })
+    }
+    return
+  }
+
   if (metricType === "youtube_ump_request") {
     bumpActivity("youtubeUmpRequests", 1)
     if (typeof message.bodyHash === "string" && message.bodyHash.length > 0) {
