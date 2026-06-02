@@ -1,0 +1,80 @@
+{
+  "manifest_version": 3,
+  "name": "AegisStream",
+  "version": "0.1.0",
+  "description": "Adaptive anti-buffering extension with proactive segment prefetching.",
+  "permissions": [
+    "storage",
+    "webRequest",
+    "tabs",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/worker/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://youtube.com/*",
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "src/content/youtube/kill-ump.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/bridge/shared/range-buffer.js",
+        "src/bridge/page/runtime/core.js",
+        "src/bridge/page/runtime/prefetch-video.js",
+        "src/bridge/page/runtime/message-bridge.js",
+        "src/bridge/page/domain/youtube-playlist.js",
+        "src/bridge/page/interceptors/fetch.js",
+        "src/bridge/page/interceptors/xhr.js",
+        "src/bridge/page/main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content/content-relay.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "action": {
+    "default_title": "AegisStream",
+    "default_popup": "src/popup/popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/bridge/shared/range-buffer.js",
+        "src/bridge/page/main.js",
+        "src/bridge/page/runtime/core.js",
+        "src/bridge/page/runtime/prefetch-video.js",
+        "src/bridge/page/runtime/message-bridge.js",
+        "src/bridge/page/domain/youtube-playlist.js",
+        "src/bridge/page/interceptors/fetch.js",
+        "src/bridge/page/interceptors/xhr.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

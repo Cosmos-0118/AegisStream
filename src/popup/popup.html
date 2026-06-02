@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AegisStream</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo-container">
+        <div class="logo-icon"></div>
+        <h1>AegisStream</h1>
+      </div>
+      <div class="status-indicator">
+        <span class="dot" id="global-status-dot"></span>
+        <span id="global-status-text">Connecting...</span>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-target="dashboard">Dashboard</button>
+      <button class="tab-btn" data-target="logs">System Logs</button>
+    </nav>
+
+    <main class="content">
+      <!-- DASHBOARD TAB -->
+      <section id="dashboard" class="tab-pane active">
+        <div class="card settings-card">
+          <h2>Controls</h2>
+          
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="enabled">Enable Extension</label>
+              <span>Master toggle for all features</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="enabled">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="prefetchEnabled">Proactive Prefetch</label>
+              <span>Preload upcoming chunks ahead of time</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="prefetchEnabled">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="serveFromCache">Serve From Cache</label>
+              <span>Intercept and serve cached responses</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="serveFromCache">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="prefetchWindow">Prefetch Window</label>
+              <span>Number of chunks to preload ahead</span>
+            </div>
+            <div class="input-group">
+              <input type="number" id="prefetchWindow" min="1" max="20" value="6">
+            </div>
+          </div>
+        </div>
+
+        <div class="card stats-card">
+          <div class="card-header">
+            <h2>Activity</h2>
+            <button id="clearCache" class="btn-secondary btn-sm">Clear Cache</button>
+          </div>
+          
+          <div class="stats-grid">
+            <div class="stat-box">
+              <span class="stat-value" id="stat-hits">0</span>
+              <span class="stat-label">Cache Hits</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-value" id="stat-misses">0</span>
+              <span class="stat-label">Miss + Warmup</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-value" id="stat-prefetched">0</span>
+              <span class="stat-label">Cached</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-value" id="stat-failures">0</span>
+              <span class="stat-label">Failures</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-value" id="stat-playlists">0</span>
+              <span class="stat-label">Playlists</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-value" id="stat-chunks">0</span>
+              <span class="stat-label">Chunks Seen</span>
+            </div>
+          </div>
+
+          <div class="health-grid">
+            <div class="health-box">
+              <span class="health-value" id="stat-lookups">0</span>
+              <span class="health-label">Lookups</span>
+            </div>
+            <div class="health-box">
+              <span class="health-value" id="stat-warmups">0</span>
+              <span class="health-label">Warmups</span>
+            </div>
+            <div class="health-box">
+              <span class="health-value" id="stat-ttfb">0 ms</span>
+              <span class="health-label">TTFB P95</span>
+            </div>
+            <div class="health-box">
+              <span class="health-value" id="stat-stalls">0 / 0.0s</span>
+              <span class="health-label">Stalls</span>
+            </div>
+          </div>
+          
+          <div class="progress-container">
+            <div class="progress-labels">
+              <span>Hit Rate</span>
+              <span id="stat-hitrate">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="stat-hitrate-bar" style="width: 0%;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOGS TAB -->
+      <section id="logs" class="tab-pane">
+        <div class="card logs-card">
+          <div class="card-header">
+            <h2>System Logs</h2>
+            <div class="log-actions">
+              <button id="clearLogs" class="btn-secondary btn-sm">Clear</button>
+              <button id="copyLogs" class="btn-primary btn-sm">Copy All</button>
+            </div>
+          </div>
+          <div class="logs-container" id="logsContainer">
+            <div class="log-entry info">
+              <span class="log-level">INFO</span>
+              <span class="log-msg">Waiting for activity...</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
