@@ -36,10 +36,47 @@ function notifyBridgeReady(reason = "startup") {
   }
 }
 
+function relayExtensionFetchStreamToPage(message) {
+  if (!message?.requestId) return
+  if (message.type === "AegisStream:ExtensionFetchChunk") {
+    window.postMessage(
+      {
+        __aegisstream: true,
+        type: "EXTENSION_FETCH_CHUNK",
+        requestId: message.requestId,
+        index: message.index,
+        chunkBase64: message.chunkBase64
+      },
+      "*"
+    )
+    return
+  }
+  if (message.type === "AegisStream:ExtensionFetchEnd") {
+    window.postMessage(
+      {
+        __aegisstream: true,
+        type: "EXTENSION_FETCH_END",
+        requestId: message.requestId,
+        ok: message.ok === true,
+        error: message.error || null
+      },
+      "*"
+    )
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "AegisStream:Ping") {
     sendResponse({ ok: true, ready: true, pageUrl: location.href })
     return true
+  }
+
+  if (
+    message?.type === "AegisStream:ExtensionFetchChunk" ||
+    message?.type === "AegisStream:ExtensionFetchEnd"
+  ) {
+    relayExtensionFetchStreamToPage(message)
+    return false
   }
 
   if (message?.type === "AegisStream:PrefetchSegments" && message.urls) {
@@ -195,15 +232,16 @@ window.addEventListener("message", (event) => {
     return
   }
 
-  if (data.type === "DAEMON_FETCH_REQUEST") {
+  if (data.type === "EXTENSION_FETCH_REQUEST") {
     try {
       const payload = {
-        type: "AegisStream:DaemonFetch",
+        type: "AegisStream:ExtensionFetch",
+        requestId: data.requestId,
         url: data.url,
         method: data.method,
         headers: data.headers
       }
-      
+
       if (data.bytes && typeof data.bytes.byteLength === "number") {
         const bytesBase64 = arrayBufferToBase64(data.bytes)
         if (bytesBase64) payload.bytesBase64 = bytesBase64
@@ -216,7 +254,7 @@ window.addEventListener("message", (event) => {
         window.postMessage(
           {
             __aegisstream: true,
-            type: "DAEMON_FETCH_RESPONSE",
+            type: "EXTENSION_FETCH_RESPONSE",
             requestId: data.requestId,
             response: runtimeError
               ? { ok: false, error: runtimeError.message || "runtime-error" }
@@ -229,7 +267,7 @@ window.addEventListener("message", (event) => {
       window.postMessage(
         {
           __aegisstream: true,
-          type: "DAEMON_FETCH_RESPONSE",
+          type: "EXTENSION_FETCH_RESPONSE",
           requestId: data.requestId,
           response: { ok: false, error: "send-failed" }
         },
@@ -275,7 +313,9 @@ window.addEventListener("message", (event) => {
         url: data.url,
         success: data.success,
         size: data.size,
-        error: data.error
+        error: data.error,
+        transient: data.transient === true,
+        skipped: data.skipped || null
       })
     } catch {
       // Extension context may be invalidated

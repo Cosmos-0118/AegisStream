@@ -34,7 +34,8 @@ function createState() {
       lastUmpHealthLogAt: 0
     },
     logs: [],
-    stats: constants.createInitialStats()
+    stats: constants.createInitialStats(),
+    activePrefetchTabId: null
   }
 }
 
@@ -90,6 +91,9 @@ function resetStats() {
   state.telemetry.umpHashes.clear()
   state.telemetry.logThrottleByKey.clear()
   state.telemetry.lastUmpHealthLogAt = 0
+  if (typeof ns.resetActivityMetrics === "function") {
+    ns.resetActivityMetrics()
+  }
 }
 
 async function loadSettings() {

@@ -1,18 +1,30 @@
 {
   "manifest_version": 3,
   "name": "AegisStream",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Adaptive anti-buffering extension with proactive segment prefetching.",
   "permissions": [
     "storage",
     "webRequest",
     "tabs",
     "scripting",
-    "nativeMessaging"
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "<all_urls>",
+    "*://*.googlevideo.com/*",
+    "*://*.youtube.com/*"
   ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "youtube_accelerator_rules",
+        "enabled": true,
+        "path": "src/worker/background/config/dnr-rules.json"
+      }
+    ]
+  },
   "background": {
     "service_worker": "src/worker/background.js"
   },
@@ -35,6 +47,7 @@
       "js": [
         "src/bridge/shared/range-buffer.js",
         "src/bridge/page/runtime/core.js",
+        "src/bridge/page/runtime/extension-fetch-client.js",
         "src/bridge/page/runtime/prefetch-video.js",
         "src/bridge/page/runtime/message-bridge.js",
         "src/bridge/page/domain/youtube-playlist.js",
@@ -66,6 +79,7 @@
         "src/bridge/shared/range-buffer.js",
         "src/bridge/page/main.js",
         "src/bridge/page/runtime/core.js",
+        "src/bridge/page/runtime/extension-fetch-client.js",
         "src/bridge/page/runtime/prefetch-video.js",
         "src/bridge/page/runtime/message-bridge.js",
         "src/bridge/page/domain/youtube-playlist.js",

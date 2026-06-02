@@ -22,6 +22,36 @@ function isYoutubeVideoPlaybackUrl(url) {
   return typeof url === "string" && /\bgooglevideo\.com\/videoplayback\b/i.test(url)
 }
 
+/**
+ * Stable playback identity for cache keys. Signed query params (expire, sig, …)
+ * rotate often; the POST body hash already identifies the segment payload.
+ */
+function getYoutubePlaybackIdentity(url) {
+  if (!isYoutubeVideoPlaybackUrl(url)) return null
+  try {
+    const u = new URL(url, location.href)
+    const parts = []
+    const id = u.searchParams.get("id")
+    const itag = u.searchParams.get("itag")
+    const cpn = u.searchParams.get("cpn")
+    if (id) parts.push(`id:${id}`)
+    if (itag) parts.push(`itag:${itag}`)
+    if (cpn) parts.push(`cpn:${cpn}`)
+    if (parts.length > 0) return parts.join(";")
+  } catch {
+    // fall through
+  }
+  if (window.AegisRangeBuffer) {
+    return window.AegisRangeBuffer.getStreamId(url)
+  }
+  return null
+}
+
+function formatUmpCacheKey(url, bodyHash) {
+  const identity = getYoutubePlaybackIdentity(url) || "unknown"
+  return `ump|${identity}|${bodyHash}`
+}
+
 async function sha1Hex(bytes) {
   if (!bytes || typeof bytes.byteLength !== "number") return null
   const digest = await crypto.subtle.digest("SHA-1", bytes)
@@ -81,13 +111,12 @@ async function buildYoutubeUmpState(url, input, init) {
   const digest = await sha1Hex(bodyBuffer)
   if (!digest) return null
 
-  const streamId = window.AegisRangeBuffer.getStreamId(url)
   const bodyHash = digest.slice(0, 16)
   return {
     type: "ump",
     bodyHash,
     bodyLength: bodyBuffer.byteLength,
-    cacheKey: `ump|${streamId}|${bodyHash}`
+    cacheKey: formatUmpCacheKey(url, bodyHash)
   }
 }
 
@@ -311,7 +340,14 @@ function createUmpProxyResponseAndCache({
           })
           return
         }
-        if (aborted || streamErrored || truncated || total <= 0 || chunks.length === 0) {
+        const MIN_UMP_CACHE_BYTES = 1024
+        if (
+          aborted ||
+          streamErrored ||
+          truncated ||
+          total < MIN_UMP_CACHE_BYTES ||
+          chunks.length === 0
+        ) {
           let outcome = "empty"
           if (aborted) outcome = "aborted"
           else if (streamErrored) outcome = "error"
@@ -527,6 +563,8 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 
 ns.isYoutubeRangeUrl = isYoutubeRangeUrl
 ns.isYoutubeVideoPlaybackUrl = isYoutubeVideoPlaybackUrl
+ns.getYoutubePlaybackIdentity = getYoutubePlaybackIdentity
+ns.formatUmpCacheKey = formatUmpCacheKey
 ns.sha1Hex = sha1Hex
 ns.bodyToArrayBuffer = bodyToArrayBuffer
 ns.buildYoutubeUmpState = buildYoutubeUmpState

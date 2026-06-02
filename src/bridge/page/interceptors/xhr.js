@@ -149,7 +149,7 @@ function AegisXHR() {
                 hasRange: false
               })
                 .then((storeRes) => {
-                  if (!storeRes?.ok) {
+                  if (!storeRes?.ok && document.visibilityState === "visible") {
                     logBridge(
                       `XHR chunk store failed (${storeRes?.error || "unknown"}): ${String(cacheLookupUrl).slice(-80)}`,
                       "WARN"

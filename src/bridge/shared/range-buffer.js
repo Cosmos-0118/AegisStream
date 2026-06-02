@@ -20,42 +20,53 @@
     return null
   }
 
-  async function fetchWithDaemonFallback(url, requestRuntime) {
-    const daemonRes = await requestRuntime("DAEMON_FETCH_REQUEST", {
-      url,
-      method: "GET",
-      headers: {}
-    })
-    if (!daemonRes?.ok) {
+  async function fetchWithExtensionFallback(url, requestRuntime) {
+    const bufferedFetch = self.AegisPageBridge?.requestExtensionFetchBuffered
+    const extensionRes = bufferedFetch
+      ? await bufferedFetch({ url, method: "GET", headers: {} })
+      : await requestRuntime("EXTENSION_FETCH_REQUEST", {
+          url,
+          method: "GET",
+          headers: {}
+        })
+    if (!extensionRes?.ok) {
       return {
         ok: false,
-        error: daemonRes?.error ? `daemon failed: ${daemonRes.error}` : "daemon failed",
+        error: extensionRes?.error
+          ? `extension fetch failed: ${extensionRes.error}`
+          : "extension fetch failed",
         transient: true
       }
     }
 
-    const statusCode = Number(daemonRes.statusCode || 0)
+    const statusCode = Number(extensionRes.statusCode || 0)
     if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
       return {
         ok: false,
-        error: `daemon HTTP ${statusCode || "unknown"}`,
+        error: `extension HTTP ${statusCode || "unknown"}`,
         transient: statusCode >= 500 || statusCode === 0
       }
     }
 
-    const bytesArray = Array.isArray(daemonRes.bytes) ? daemonRes.bytes : null
-    if (!bytesArray || bytesArray.length === 0) {
+    const bytes =
+      extensionRes.bytes && typeof extensionRes.bytes.byteLength === "number"
+        ? extensionRes.bytes
+        : Array.isArray(extensionRes.bytes)
+          ? Uint8Array.from(extensionRes.bytes).buffer
+          : null
+    if (!bytes || bytes.byteLength === 0) {
       return {
         ok: false,
-        error: "daemon empty response",
+        error: "extension empty response",
         transient: true
       }
     }
 
     return {
       ok: true,
-      bytes: Uint8Array.from(bytesArray).buffer,
-      contentType: getHeaderValue(daemonRes.headers, "content-type") || "application/octet-stream",
+      bytes,
+      contentType:
+        getHeaderValue(extensionRes.headers, "content-type") || "application/octet-stream",
       statusCode
     }
   }
@@ -159,6 +170,11 @@
     }
 
     getStreamId(url) {
+      const stableIdentity = self.AegisPageBridge?.getYoutubePlaybackIdentity?.(url)
+      if (stableIdentity) {
+        return `yt|${stableIdentity}`
+      }
+
       try {
         const u = new URL(url, location.href)
         u.searchParams.delete("range")
@@ -245,7 +261,7 @@
           }
           const cacheKey = this.formatCacheKey(streamId, nextRange.start, nextRange.end)
 
-          // Fetch proactively, with native-daemon fallback for CORS/signed URLs.
+          // Fetch proactively, with service-worker extension fetch for CORS/signed URLs.
           let bytes = null
           let contentType = "application/octet-stream"
           let requestStatus = 0
@@ -260,10 +276,10 @@
             bytes = await res.arrayBuffer()
             contentType = res.headers.get("content-type") || "application/octet-stream"
           } else {
-            const daemonFallback = await fetchWithDaemonFallback(nextUrl, requestRuntime)
-            if (!daemonFallback.ok) {
+            const extensionFallback = await fetchWithExtensionFallback(nextUrl, requestRuntime)
+            if (!extensionFallback.ok) {
               const transient =
-                daemonFallback.transient === true ||
+                extensionFallback.transient === true ||
                 requestStatus === 0 ||
                 requestStatus === 408 ||
                 requestStatus === 425 ||
@@ -274,14 +290,14 @@
                 success: false,
                 error:
                   requestStatus > 0
-                    ? `HTTP ${requestStatus}; ${daemonFallback.error}`
-                    : daemonFallback.error,
+                    ? `HTTP ${requestStatus}; ${extensionFallback.error}`
+                    : extensionFallback.error,
                 transient
               })
               return
             }
-            bytes = daemonFallback.bytes
-            contentType = daemonFallback.contentType
+            bytes = extensionFallback.bytes
+            contentType = extensionFallback.contentType
           }
 
           if (!bytes || bytes.byteLength === 0) return

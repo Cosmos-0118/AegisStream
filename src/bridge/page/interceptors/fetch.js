@@ -4,6 +4,7 @@ const {
   originalFetch,
   getRequestDetails,
   requestRuntime,
+  requestExtensionFetchStream,
   resolveLookupBytes,
   logBridge,
   monotonicNow,
@@ -20,8 +21,41 @@ const {
   isLikelyChunk,
   maybeCapturePlaylist,
   bodyToArrayBuffer,
-  rememberKnownUmpKey
+  rememberKnownUmpKey,
+  knownUmpCacheKeys
 } = ns
+
+const UMP_STORE_RACE_RETRY_MS = 120
+
+async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk) {
+  let lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
+    url: cacheLookupUrl,
+    method: cacheLookupMethod,
+    hasRange: false
+  })
+  let lookupBytes = resolveLookupBytes(lookup)
+  if (lookup?.ok && lookup.hit && lookupBytes) {
+    return { lookup, lookupBytes }
+  }
+
+  if (
+    youtubeChunk?.type === "ump" &&
+    knownUmpCacheKeys?.has?.(cacheLookupUrl)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, UMP_STORE_RACE_RETRY_MS))
+    lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
+      url: cacheLookupUrl,
+      method: cacheLookupMethod,
+      hasRange: false
+    })
+    lookupBytes = resolveLookupBytes(lookup)
+    if (lookup?.ok && lookup.hit && lookupBytes) {
+      logBridge(`UMP cache hit after store race retry: ${cacheLookupUrl.slice(-48)}`, "DEBUG")
+    }
+  }
+
+  return { lookup, lookupBytes }
+}
 
 async function aegisFetch(input, init) {
   const { url, method, hasRange, requestHeaders } = getRequestDetails(input, init)
@@ -95,12 +129,11 @@ async function aegisFetch(input, init) {
 
   // --- Chunk request: try cache-first ---
   try {
-    const lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
-      url: cacheLookupUrl,
-      method: cacheLookupMethod,
-      hasRange: false // We bypass strict hasRange check in SW for range buffer keys
-    })
-    const lookupBytes = resolveLookupBytes(lookup)
+    const { lookup, lookupBytes } = await lookupCachedChunk(
+      cacheLookupUrl,
+      cacheLookupMethod,
+      youtubeChunk
+    )
     if (lookup?.ok && lookup.hit && lookupBytes) {
       if (youtubeChunk?.type === "ump") {
         rememberKnownUmpKey(cacheLookupUrl)
@@ -153,29 +186,31 @@ async function aegisFetch(input, init) {
       }
     }
 
-    logBridge(`Delegating fetch to Native Daemon: ${url.slice(0, 80)}`, "DEBUG");
-    const daemonRes = await requestRuntime("DAEMON_FETCH_REQUEST", {
+    logBridge(`Extension fetch stream: ${url.slice(0, 80)}`, "DEBUG")
+    const { stream, meta } = requestExtensionFetchStream({
       url,
       method,
       headers: headersObj,
       bytes: bodyBytes
-    });
+    })
 
-    if (daemonRes && daemonRes.ok && daemonRes.statusCode) {
-      const respHeaders = new Headers(daemonRes.headers);
-      const uint8Bytes = daemonRes.bytes ? new Uint8Array(daemonRes.bytes) : null;
-      networkResponse = new Response(uint8Bytes, {
-        status: daemonRes.statusCode,
-        statusText: daemonRes.statusCode === 206 ? "Partial Content" : "OK",
-        headers: respHeaders
-      });
-    } else {
-      logBridge(`Native Daemon fetch failed (${daemonRes?.error || 'unknown'}), falling back`, "WARN");
-      networkResponse = await originalFetch(input, init);
+    try {
+      const extensionMeta = await meta
+      networkResponse = new Response(stream, {
+        status: extensionMeta.statusCode,
+        statusText: extensionMeta.statusCode === 206 ? "Partial Content" : "OK",
+        headers: new Headers(extensionMeta.headers)
+      })
+    } catch (streamErr) {
+      logBridge(
+        `Extension fetch failed (${streamErr?.message || "unknown"}), falling back`,
+        "WARN"
+      )
+      networkResponse = await originalFetch(input, init)
     }
   } catch (e) {
-    logBridge(`Native Daemon fetch error (${e.message}), falling back`, "WARN");
-    networkResponse = await originalFetch(input, init);
+    logBridge(`Extension fetch error (${e.message}), falling back`, "WARN")
+    networkResponse = await originalFetch(input, init)
   }
   if (youtubeChunk?.type !== "ump") {
     reportRuntimeMetric("request_first_byte", {

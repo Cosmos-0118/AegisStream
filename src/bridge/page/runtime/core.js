@@ -57,7 +57,7 @@ function requestRuntime(type, payload) {
         pending.delete(requestId)
         resolve({ ok: false, hit: false, timeout: true })
       }
-    }, type === "STORE_CHUNK_REQUEST" ? 12000 : 5000)
+    }, type === "STORE_CHUNK_REQUEST" ? 12000 : type === "EXTENSION_FETCH_REQUEST" ? 65000 : 5000)
   })
 }
 

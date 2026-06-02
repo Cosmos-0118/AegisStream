@@ -26,7 +26,9 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 ## Project layout
 
 - `manifest.json` - extension declaration and permissions.
-- `src/worker/background.js` - service-worker entrypoint wiring orchestration, caching, telemetry, and daemon IO.
+- `src/worker/background.js` - service-worker entrypoint wiring orchestration, caching, telemetry, and extension fetch IO.
+- `src/worker/background/io/extension-fetch.js` - parallel `fetch` racing in the service worker (replaces native daemon).
+- `src/worker/background/config/dnr-rules.json` - DNR header rules for `googlevideo.com` background fetches.
 - `src/worker/background/` - background modules grouped by `config`, `state`, `domain`, `io`, and `orchestration`.
 - `src/content/` - isolated-world relay logic and YouTube-specific main-world bootstrap scripts.
 - `src/bridge/` - page-world bridge modules split into `runtime`, `interceptors`, `domain`, and shared primitives.
@@ -41,6 +43,8 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 3. Click "Load unpacked".
 4. Select this folder (`AegisStream`).
 5. Open popup and enable prefetch/cache.
+
+No native host install is required — all media fetches run inside the extension service worker.
 
 ## Validate quickly
 

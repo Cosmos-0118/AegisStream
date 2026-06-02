@@ -7,6 +7,7 @@ const {
   stripHash,
   notifyRuntime,
   requestRuntime,
+  requestExtensionFetchBuffered,
   monotonicNow,
   reportRuntimeMetric
 } = ns
@@ -25,6 +26,36 @@ const MAX_ACTIVE_UMP_CAPTURES = 2
 ns.activeUmpCaptureCount = 0
 ns.lastUmpCaptureBackpressureLogAt = 0
 const CHUNK_OBSERVED_DEBOUNCE_MS = 2000
+const STORE_RETRY_ATTEMPTS = 2
+const STORE_RETRY_DELAY_MS = 60
+
+function isPagePrefetchAllowed() {
+  return typeof document === "undefined" || document.visibilityState === "visible"
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isTransientStoreFailure(storeRes) {
+  if (!storeRes || storeRes.ok) return false
+  const error = String(storeRes.error || "").toLowerCase()
+  if (!error) return true
+  return /runtime|timeout|serialize|message port|context invalidated|unknown/i.test(error)
+}
+
+async function storeChunkForPrefetch(payload) {
+  let lastRes = { ok: false, error: "store failed" }
+  for (let attempt = 0; attempt < STORE_RETRY_ATTEMPTS; attempt += 1) {
+    lastRes = await requestRuntime("STORE_CHUNK_REQUEST", payload)
+    if (lastRes?.ok) return lastRes
+    if (!isTransientStoreFailure(lastRes) || attempt >= STORE_RETRY_ATTEMPTS - 1) {
+      return lastRes
+    }
+    await sleep(STORE_RETRY_DELAY_MS * (attempt + 1))
+  }
+  return lastRes
+}
 
 function rememberKnownUmpKey(cacheKey) {
   if (!cacheKey || typeof cacheKey !== "string") return
@@ -67,43 +98,45 @@ function getHeaderValue(headers, targetName) {
   return null
 }
 
-async function fetchPrefetchBytesWithDaemon(url) {
-  const daemonRes = await requestRuntime("DAEMON_FETCH_REQUEST", {
+async function fetchPrefetchBytesWithExtension(url) {
+  const extensionRes = await requestExtensionFetchBuffered({
     url,
     method: "GET",
     headers: {}
   })
-  if (!daemonRes?.ok) {
+  if (!extensionRes?.ok) {
     return {
       ok: false,
-      error: daemonRes?.error ? `daemon failed: ${daemonRes.error}` : "daemon failed",
+      error: extensionRes?.error
+        ? `extension fetch failed: ${extensionRes.error}`
+        : "extension fetch failed",
       transient: true
     }
   }
 
-  const statusCode = Number(daemonRes.statusCode || 0)
+  const statusCode = Number(extensionRes.statusCode || 0)
   if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
     return {
       ok: false,
-      error: `daemon HTTP ${statusCode || "unknown"}`,
+      error: `extension HTTP ${statusCode || "unknown"}`,
       transient: statusCode >= 500 || statusCode === 0
     }
   }
 
-  const bytesArray = Array.isArray(daemonRes.bytes) ? daemonRes.bytes : null
-  if (!bytesArray || bytesArray.length === 0) {
+  const bytes = extensionRes.bytes
+  if (!bytes || typeof bytes.byteLength !== "number" || bytes.byteLength === 0) {
     return {
       ok: false,
-      error: "daemon empty response",
+      error: "extension empty response",
       transient: true
     }
   }
 
-  const uint8 = Uint8Array.from(bytesArray)
   return {
     ok: true,
-    bytes: uint8.buffer,
-    contentType: getHeaderValue(daemonRes.headers, "content-type") || "application/octet-stream",
+    bytes,
+    contentType:
+      getHeaderValue(extensionRes.headers, "content-type") || "application/octet-stream",
     statusCode
   }
 }
@@ -227,6 +260,16 @@ function notifyPrefetchWorkers() {
 }
 
 async function processPrefetchUrl(url) {
+  if (!isPagePrefetchAllowed()) {
+    notifyRuntime("PREFETCH_RESULT", {
+      url,
+      success: false,
+      skipped: "tab-hidden",
+      transient: true
+    })
+    return
+  }
+
   let bytes = null
   let contentType = "application/octet-stream"
   let requestStatus = 0
@@ -244,10 +287,10 @@ async function processPrefetchUrl(url) {
     contentType = res.headers.get("content-type") || "application/octet-stream"
     bytes = await res.arrayBuffer()
   } else {
-    const daemonFallback = await fetchPrefetchBytesWithDaemon(url)
-    if (!daemonFallback.ok) {
+    const extensionFallback = await fetchPrefetchBytesWithExtension(url)
+    if (!extensionFallback.ok) {
       const transient =
-        daemonFallback.transient === true ||
+        extensionFallback.transient === true ||
         requestStatus === 0 ||
         requestStatus === 408 ||
         requestStatus === 425 ||
@@ -258,15 +301,15 @@ async function processPrefetchUrl(url) {
         success: false,
         error:
           requestStatus > 0
-            ? `HTTP ${requestStatus}; ${daemonFallback.error}`
-            : daemonFallback.error,
+            ? `HTTP ${requestStatus}; ${extensionFallback.error}`
+            : extensionFallback.error,
         transient
       })
       return
     }
-    bytes = daemonFallback.bytes
-    contentType = daemonFallback.contentType
-    requestStatus = daemonFallback.statusCode
+    bytes = extensionFallback.bytes
+    contentType = extensionFallback.contentType
+    requestStatus = extensionFallback.statusCode
   }
 
   if (!bytes || bytes.byteLength === 0) {
@@ -275,7 +318,7 @@ async function processPrefetchUrl(url) {
   }
 
   // Send bytes to background for caching
-  const storeRes = await requestRuntime("STORE_CHUNK_REQUEST", {
+  const storeRes = await storeChunkForPrefetch({
     url,
     contentType,
     bytes,
@@ -289,7 +332,8 @@ async function processPrefetchUrl(url) {
     notifyRuntime("PREFETCH_RESULT", {
       url,
       success: false,
-      error: storeRes?.error ? `store failed: ${storeRes.error}` : "store failed"
+      error: storeRes?.error ? `store failed: ${storeRes.error}` : "store failed",
+      transient: isTransientStoreFailure(storeRes)
     })
     return
   }
@@ -339,6 +383,18 @@ async function prefetchSegmentsFromPage(urls) {
     if (!url || seen.has(url)) continue
     seen.add(url)
     unique.push(url)
+  }
+
+  if (!isPagePrefetchAllowed()) {
+    for (const url of unique) {
+      notifyRuntime("PREFETCH_RESULT", {
+        url,
+        success: false,
+        skipped: "tab-hidden",
+        transient: true
+      })
+    }
+    return
   }
 
   const skippedInflight = []

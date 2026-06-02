@@ -28,6 +28,40 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "EXTENSION_FETCH_CHUNK" && data.requestId) {
+    if (typeof ns.onExtensionFetchChunk === "function") {
+      ns.onExtensionFetchChunk(data.requestId, data.chunkBase64)
+    }
+    return
+  }
+
+  if (data.type === "EXTENSION_FETCH_END" && data.requestId) {
+    if (typeof ns.onExtensionFetchEnd === "function") {
+      ns.onExtensionFetchEnd(data.requestId, { ok: data.ok === true, error: data.error })
+    }
+    return
+  }
+
+  if (data.type === "EXTENSION_FETCH_RESPONSE" && data.requestId) {
+    if (data.response?.streaming === true) {
+      if (typeof ns.onExtensionFetchStreamMeta === "function") {
+        ns.onExtensionFetchStreamMeta(data.requestId, data.response)
+      }
+      return
+    }
+    if (
+      typeof ns.isExtensionFetchInFlight === "function" &&
+      ns.isExtensionFetchInFlight(data.requestId) &&
+      typeof ns.onExtensionFetchEnd === "function"
+    ) {
+      ns.onExtensionFetchEnd(data.requestId, {
+        ok: data.response?.ok === true,
+        error: data.response?.error || "extension fetch failed"
+      })
+      return
+    }
+  }
+
   // Handle response messages for pending requests
   if (!data.requestId || !pending.has(data.requestId)) return
   if (!data.type || !data.type.endsWith("_RESPONSE")) return

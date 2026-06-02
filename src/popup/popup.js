@@ -18,6 +18,8 @@ const el = {
   statHitrateBar: document.getElementById("stat-hitrate-bar"),
   
   clearCache: document.getElementById("clearCache"),
+  resetStats: document.getElementById("resetStats"),
+  statsScope: document.getElementById("statsScope"),
   
   globalStatusDot: document.getElementById("global-status-dot"),
   globalStatusText: document.getElementById("global-status-text"),
@@ -61,7 +63,11 @@ const EMPTY_STATS = {
   networkFirstByteAvgMs: 0,
   videoStalls: 0,
   videoStallMsTotal: 0,
-  videoStallLongestMs: 0
+  videoStallLongestMs: 0,
+  cacheEntries: 0,
+  activityWindowLabel: "Last 5 min",
+  hitRatePercent: 0,
+  chunksStoredInWindow: 0
 }
 
 // ---------------------------------------------------------------------------
@@ -119,18 +125,27 @@ function animateValue(element, newValue) {
 
 function renderStats(stats) {
   const safeStats = { ...EMPTY_STATS, ...(stats || {}) }
-  const effectiveMisses = (safeStats.cacheMisses || 0) + (safeStats.cacheWarmups || 0)
-  const totalLookups = safeStats.cacheHits + effectiveMisses
-  const hitRateRaw = totalLookups > 0 ? (safeStats.cacheHits / totalLookups) * 100 : 0
-  const hitRate = Math.round(hitRateRaw)
-  
-  animateValue(el.statHits, safeStats.cacheHits)
-  animateValue(el.statMisses, effectiveMisses)
-  animateValue(el.statPrefetched, safeStats.cachedChunks || safeStats.prefetched || 0)
+  const hits = safeStats.cacheHits || 0
+  const misses = safeStats.cacheMisses || 0
+  const warmups = safeStats.cacheWarmups || 0
+  const hitRate =
+    Number.isFinite(safeStats.hitRatePercent)
+      ? safeStats.hitRatePercent
+      : hits + misses > 0
+        ? Math.round((hits / (hits + misses)) * 100)
+        : 0
+  const resolvedLookups = hits + misses + warmups
+
+  animateValue(el.statHits, hits)
+  animateValue(el.statMisses, misses)
+  const inCache = Number.isFinite(safeStats.cacheEntries)
+    ? safeStats.cacheEntries
+    : (safeStats.cachedChunks || safeStats.prefetched || 0)
+  animateValue(el.statPrefetched, inCache)
   animateValue(el.statFailures, safeStats.prefetchFailed)
   animateValue(el.statPlaylists, safeStats.playlistsDetected)
   animateValue(el.statChunks, safeStats.chunksObserved)
-  animateValue(el.statLookups, safeStats.cacheLookups || totalLookups)
+  animateValue(el.statLookups, safeStats.cacheLookups || resolvedLookups)
   animateValue(el.statWarmups, safeStats.cacheWarmups)
 
   const p95 = Number.isFinite(safeStats.requestFirstByteP95Ms)
@@ -143,6 +158,12 @@ function renderStats(stats) {
   
   el.statHitrate.textContent = `${hitRate}%`
   el.statHitrateBar.style.width = `${hitRate}%`
+
+  if (el.statsScope) {
+    const windowLabel = safeStats.activityWindowLabel || "Last 5 min"
+    const stored = safeStats.chunksStoredInWindow || 0
+    el.statsScope.textContent = `${windowLabel} · ${stored} stored · JIT playback`
+  }
 
   // Make operating mode explicit so UMP behavior is not misread as "broken cache".
   if ((safeStats.youtubeUmpRequests || 0) > 0 && (safeStats.playlistsDetected || 0) === 0) {
@@ -263,6 +284,23 @@ function bindChangeHandlers() {
   el.prefetchEnabled.addEventListener("change", () => void update())
   el.serveFromCache.addEventListener("change", () => void update())
   el.prefetchWindow.addEventListener("change", () => void update())
+
+  el.resetStats.addEventListener("click", async () => {
+    el.resetStats.disabled = true
+    const originalText = el.resetStats.textContent
+    el.resetStats.textContent = "..."
+    try {
+      const res = await chrome.runtime.sendMessage({ type: "AegisStream:ResetStats" })
+      if (!res?.ok) throw new Error()
+      renderStats(res.stats || EMPTY_STATS)
+      setStatus("Stats reset")
+    } catch {
+      setStatus("Reset failed", true)
+    } finally {
+      el.resetStats.disabled = false
+      el.resetStats.textContent = originalText
+    }
+  })
 
   el.clearCache.addEventListener("click", async () => {
     el.clearCache.disabled = true

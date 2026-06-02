@@ -3,9 +3,12 @@ importScripts(
   "./background/state/runtime-state.js",
   "./background/domain/url-playlist-utils.js",
   "./background/io/cache-db.js",
+  "./background/io/store-queue.js",
+  "./background/domain/activity-metrics.js",
   "./background/domain/telemetry.js",
+  "./background/orchestration/tab-prefetch-policy.js",
   "./background/orchestration/prefetch-orchestrator.js",
-  "./background/io/native-daemon.js"
+  "./background/io/extension-fetch.js"
 )
 
 const {
@@ -28,21 +31,35 @@ const {
   rememberUmpLookupKey,
   maybeLogUmpHealthSummary,
   handleRuntimeMetric,
+  bumpActivity,
+  bumpLookupMetric,
+  buildDisplayStats,
+  resetActivityMetrics,
+  refreshCacheEntryCount,
+  enqueueStoreWrite,
+  refreshActivePrefetchTab,
+  setActivePrefetchTab,
   pruneRuntimeState,
   parseAndPrefetchFromPlaylist,
   parsePlaylistContentForTab,
   handleChunkObserved,
+  observeChunkFromWebRequest,
+  isTabInRapidSeek,
   requestPrefetchForTab,
   syncKnownSegmentsToPage,
   updatePrefetchOutcome,
   computeAdaptiveCachePolicy,
-  daemonManager
+  isTabEligibleForPrefetch,
+  fetchExtensionResponse,
+  pumpResponseBody,
+  headersToObject
 } = self.AegisBackground
 
 const ISOLATED_BRIDGE_FILES = ["src/content/content-relay.js"]
 const MAIN_BRIDGE_FILES = [
   "src/bridge/shared/range-buffer.js",
   "src/bridge/page/runtime/core.js",
+  "src/bridge/page/runtime/extension-fetch-client.js",
   "src/bridge/page/runtime/prefetch-video.js",
   "src/bridge/page/runtime/message-bridge.js",
   "src/bridge/page/domain/youtube-playlist.js",
@@ -122,7 +139,11 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
     const tabState = state.playlistByTab.get(tabId)
     if (tabState?.segments?.length) {
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: `reinject:${reason}` })
-      if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+      if (
+        isTabEligibleForPrefetch(tabId) &&
+        tabState.hasAnchor &&
+        typeof tabState.anchorIndex === "number"
+      ) {
         requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, `resume:${reason}`)
       }
     }
@@ -151,6 +172,7 @@ async function bootstrapOpenTabs(reason = "bootstrap") {
 async function initializeBackground(reason = "startup") {
   await loadSettings()
   await computeAdaptiveCachePolicy(true).catch(() => {})
+  await refreshActivePrefetchTab()
   await bootstrapOpenTabs(reason)
 }
 
@@ -166,13 +188,14 @@ chrome.webRequest.onBeforeRequest.addListener(
       addLog("INFO", `Playlist request detected via webRequest: ${url.slice(-80)}`)
       return
     }
+    if (details.tabId !== state.activePrefetchTabId) return
     const tabState = state.playlistByTab.get(details.tabId)
     if (tabState?.segments?.length) {
-      void handleChunkObserved(details.tabId, url)
+      observeChunkFromWebRequest(details.tabId, url)
       return
     }
     if (isLikelyChunkUrl(url)) {
-      void handleChunkObserved(details.tabId, url)
+      observeChunkFromWebRequest(details.tabId, url)
     }
   },
   { urls: ["<all_urls>"] }
@@ -196,7 +219,16 @@ chrome.webRequest.onHeadersReceived.addListener(
   ["responseHeaders"]
 )
 
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (!state.settings.enabled || windowId === chrome.windows.WINDOW_ID_NONE) return
+  void refreshActivePrefetchTab()
+})
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  if (state.activePrefetchTabId === tabId) {
+    state.activePrefetchTabId = null
+    void refreshActivePrefetchTab()
+  }
   state.playlistByTab.delete(tabId)
   state.bridgeHeartbeatByTab.delete(tabId)
   state.tabAnchorJumps.delete(tabId)
@@ -222,6 +254,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (!state.settings.enabled) return
+  setActivePrefetchTab(tabId, "tab-activated")
   pruneRuntimeState()
   void ensureTabBridgeReady(tabId, "tab-activated", false).then((ready) => {
     if (!ready) return
@@ -252,53 +285,83 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   })
 })
 
-function combineDaemonChunks(chunks) {
-  let totalLength = 0
-  const uint8Chunks = chunks.map((chunkBase64) => {
-    const buffer = base64ToArrayBuffer(chunkBase64)
-    if (!buffer) return new Uint8Array(0)
-    const u8 = new Uint8Array(buffer)
-    totalLength += u8.length
-    return u8
-  })
-  const combinedBytes = new Uint8Array(totalLength)
-  let offset = 0
-  for (const u8 of uint8Chunks) {
-    combinedBytes.set(u8, offset)
-    offset += u8.length
-  }
-  return combinedBytes
+function sendExtensionFetchChunk(tabId, requestId, index, chunkBase64) {
+  return chrome.tabs
+    .sendMessage(tabId, {
+      type: "AegisStream:ExtensionFetchChunk",
+      requestId,
+      index,
+      chunkBase64
+    })
+    .catch(() => {})
 }
 
-function handleDaemonFetch(message, sendResponse) {
+function sendExtensionFetchEnd(tabId, requestId, payload) {
+  return chrome.tabs
+    .sendMessage(tabId, {
+      type: "AegisStream:ExtensionFetchEnd",
+      requestId,
+      ...payload
+    })
+    .catch(() => {})
+}
+
+function handleExtensionFetch(message, sendResponse, sender) {
+  const tabId = sender?.tab?.id
+  const requestId = message.requestId
+
   ;(async () => {
+    if (!tabId || !requestId) {
+      sendResponse({ ok: false, error: "missing-tab-or-request-id" })
+      return
+    }
+
+    let metaSent = false
     try {
       const bodyBytes = extractMessageBytes(message)
-      const result = await daemonManager.fetch(
+      const response = await fetchExtensionResponse(
         message.url,
         message.method || "GET",
         message.headers || {},
         bodyBytes
       )
-      const combinedBytes = combineDaemonChunks(result.chunks)
+
       sendResponse({
         ok: true,
-        statusCode: result.statusCode,
-        headers: result.headers,
-        bytes: Array.from(combinedBytes)
+        streaming: true,
+        statusCode: response.status,
+        headers: headersToObject(response.headers)
       })
+      metaSent = true
+
+      await pumpResponseBody(response, async (index, bytes) => {
+        const chunkBase64 = arrayBufferToBase64(
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+        )
+        if (!chunkBase64) return
+        await sendExtensionFetchChunk(tabId, requestId, index, chunkBase64)
+      })
+
+      await sendExtensionFetchEnd(tabId, requestId, { ok: true })
     } catch (err) {
-      sendResponse({ ok: false, error: err.message })
+      const msg = err?.message || "extension fetch failed"
+      if (!metaSent) {
+        sendResponse({ ok: false, error: msg })
+        return
+      }
+      await sendExtensionFetchEnd(tabId, requestId, { ok: false, error: msg })
     }
   })()
 }
 
-function handleCacheLookup(message, sendResponse) {
+function handleCacheLookup(message, sendResponse, tabId = null) {
   ;(async () => {
     const method = (message.method || "GET").toUpperCase()
     const hasRange = Boolean(message.hasRange)
     const lookupUrl = stripHash(message.url)
     const isUmpLookup = isUmpCacheKey(lookupUrl)
+    const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
+    const rapidSeek = isTabInRapidSeek(tabState)
     if (
       method !== "GET" ||
       hasRange ||
@@ -306,59 +369,52 @@ function handleCacheLookup(message, sendResponse) {
       !state.settings.enabled ||
       !state.settings.serveFromCache
     ) {
-      state.stats.cacheMisses += 1
-      if (isUmpLookup) state.stats.youtubeUmpLookupMisses += 1
-      sendResponse({ ok: true, hit: false })
+      sendResponse({ ok: true, hit: false, skipped: true })
       return
     }
 
-    state.stats.cacheLookups += 1
-    if (isUmpLookup) state.stats.youtubeUmpLookups += 1
+    bumpLookupMetric("cacheLookups", lookupUrl, 1)
+    if (isUmpLookup) bumpActivity("youtubeUmpLookups", 1)
 
     const isFirstSeenUmpKey = isUmpLookup && !state.umpLookupSeenAt.has(lookupUrl)
     const stillInWarmupWindow =
+      isUmpLookup &&
       (state.stats.youtubeUmpLookups || 0) <= constants.UMP_WARMUP_LOOKUP_LIMIT &&
       (state.stats.youtubeUmpLookupHits || 0) === 0
 
-    if (isFirstSeenUmpKey && stillInWarmupWindow) {
-      state.stats.cacheWarmups += 1
-      state.stats.youtubeUmpWarmups += 1
-      rememberUmpLookupKey(lookupUrl)
-      maybeLogUmpHealthSummary()
-      sendResponse({ ok: true, hit: false, warmup: true })
-      return
-    }
-    if (isFirstSeenUmpKey) {
-      state.stats.cacheMisses += 1
-      state.stats.youtubeUmpLookupMisses += 1
-      rememberUmpLookupKey(lookupUrl)
-      maybeLogUmpHealthSummary()
-      sendResponse({ ok: true, hit: false, warmup: false })
-      return
-    }
-
     const resolved = await resolveCachedChunk(lookupUrl)
     if (!resolved?.item) {
-      state.stats.cacheMisses += 1
       if (isUmpLookup) {
-        state.stats.youtubeUmpLookupMisses += 1
-        rememberUmpLookupKey(lookupUrl)
+        if (isFirstSeenUmpKey && stillInWarmupWindow) {
+          bumpLookupMetric("cacheWarmups", lookupUrl, 1)
+          bumpActivity("youtubeUmpWarmups", 1)
+        } else if (!rapidSeek) {
+          bumpLookupMetric("cacheMisses", lookupUrl, 1)
+        }
+        if (isFirstSeenUmpKey) {
+          bumpActivity("youtubeUmpLookupMisses", 1)
+          rememberUmpLookupKey(lookupUrl)
+        }
         maybeLogUmpHealthSummary()
+      } else if (!rapidSeek) {
+        bumpLookupMetric("cacheMisses", lookupUrl, 1)
       }
-      sendResponse({ ok: true, hit: false })
+      sendResponse({
+        ok: true,
+        hit: false,
+        warmup: isUmpLookup && isFirstSeenUmpKey && stillInWarmupWindow
+      })
       return
     }
 
-    state.stats.cacheHits += 1
+    bumpLookupMetric("cacheHits", lookupUrl, 1)
     if (isUmpLookup) {
-      state.stats.youtubeUmpLookupHits += 1
+      bumpActivity("youtubeUmpLookupHits", 1)
       rememberUmpLookupKey(lookupUrl)
       maybeLogUmpHealthSummary()
     }
-    addLog(
-      "INFO",
-      `${resolved.via === "alias" ? "Cache HIT via alias" : "Cache HIT"}: ${lookupUrl.slice(-60)}`
-    )
+    const hitLabel = isUmpLookup ? "UMP cache HIT" : resolved.via === "alias" ? "Cache HIT via alias" : "Cache HIT"
+    addLog("INFO", `${hitLabel}: ${lookupUrl.slice(-60)}`)
     const bytesBase64 = arrayBufferToBase64(resolved.item.bytes)
     if (!bytesBase64) {
       addLog("ERROR", `Cache hit serialization failed: ${lookupUrl.slice(-60)}`)
@@ -400,7 +456,9 @@ function handleStoreChunk(message, sendResponse) {
       sendResponse({ ok: false, skipped: true, error: "invalid-payload" })
       return
     }
-    const storeResult = await cacheChunk(storeUrl, message.contentType, bytes)
+    const storeResult = await enqueueStoreWrite(() =>
+      cacheChunk(storeUrl, message.contentType, bytes)
+    )
     if (!storeResult?.ok) {
       sendResponse({
         ok: false,
@@ -413,12 +471,13 @@ function handleStoreChunk(message, sendResponse) {
       sendResponse({ ok: true, duplicate: true })
       return
     }
-    state.stats.cachedChunks += 1
+    bumpActivity("cachedChunks", 1)
     if (isUmpCacheKey(storeUrl)) {
-      state.stats.youtubeUmpChunks += 1
+      bumpActivity("youtubeUmpChunks", 1)
       rememberUmpLookupKey(storeUrl)
       maybeLogUmpHealthSummary()
     }
+    void refreshCacheEntryCount(true).catch(() => {})
     addLog(
       "INFO",
       `Cached chunk from page (${(bytes.byteLength / 1024).toFixed(1)} KB): ${storeUrl.slice(-60)}`
@@ -433,14 +492,34 @@ function handleStoreChunk(message, sendResponse) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return false
   switch (message.type) {
-    case "AegisStream:DaemonFetch":
-      handleDaemonFetch(message, sendResponse)
+    case "AegisStream:ExtensionFetch":
+      handleExtensionFetch(message, sendResponse, sender)
       return true
     case "AegisStream:GetSettings":
-      sendResponse({ ok: true, settings: state.settings, stats: state.stats })
+      ;(async () => {
+        const stats = await buildDisplayStats()
+        sendResponse({ ok: true, settings: state.settings, stats })
+      })().catch(() => {
+        sendResponse({ ok: true, settings: state.settings, stats: state.stats })
+      })
       return true
     case "AegisStream:GetStats":
-      sendResponse({ ok: true, stats: state.stats })
+      ;(async () => {
+        const stats = await buildDisplayStats()
+        sendResponse({ ok: true, stats })
+      })().catch(() => {
+        sendResponse({ ok: true, stats: state.stats })
+      })
+      return true
+    case "AegisStream:ResetStats":
+      resetStats()
+      addLog("INFO", "Activity stats reset by user")
+      ;(async () => {
+        const stats = await buildDisplayStats()
+        sendResponse({ ok: true, stats })
+      })().catch(() => {
+        sendResponse({ ok: true, stats: state.stats })
+      })
       return true
     case "AegisStream:GetLogs":
       sendResponse({ ok: true, logs: state.logs })
@@ -487,7 +566,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         })
       return true
     case "AegisStream:CacheLookup":
-      handleCacheLookup(message, sendResponse)
+      handleCacheLookup(message, sendResponse, sender?.tab?.id)
       return true
     case "AegisStream:StoreChunk":
       handleStoreChunk(message, sendResponse)
@@ -507,8 +586,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state.umpLookupSeenAt.clear()
         await computeAdaptiveCachePolicy(true).catch(() => {})
         resetStats()
+        await refreshCacheEntryCount(true)
         addLog("INFO", "Cache and stats cleared by user")
-        sendResponse({ ok: true, stats: state.stats })
+        const stats = await buildDisplayStats()
+        sendResponse({ ok: true, stats })
       })().catch(() => {
         sendResponse({ ok: false })
       })
@@ -535,35 +616,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true
     }
     case "AegisStream:PrefetchResult":
-      if (message.skipped === "already-inflight") {
-        updatePrefetchOutcome(message.url, true)
-        sendResponse({ ok: true })
-        return true
-      }
-      if (message.success) {
-        updatePrefetchOutcome(message.url, true)
-        state.stats.prefetched += 1
-        const sizeKB = message.size ? `(${(message.size / 1024).toFixed(1)} KB)` : ""
-        addLog("INFO", `Prefetched ${sizeKB}: ${(message.url || "").slice(-80)}`)
-      } else {
-        const outcome = updatePrefetchOutcome(
-          message.url,
-          false,
-          message.error || "unknown",
-          { transient: message.transient === true }
-        )
-        state.stats.prefetchFailed += 1
+      ;(async () => {
+        const skipped = message.skipped
+        if (
+          skipped === "already-inflight" ||
+          skipped === "tab-inactive" ||
+          skipped === "tab-hidden"
+        ) {
+          updatePrefetchOutcome(message.url, true)
+          sendResponse({ ok: true })
+          return
+        }
+        if (message.success) {
+          updatePrefetchOutcome(message.url, true)
+          bumpActivity("prefetched", 1)
+          const sizeKB = message.size ? `(${(message.size / 1024).toFixed(1)} KB)` : ""
+          addLog("INFO", `Prefetched ${sizeKB}: ${(message.url || "").slice(-80)}`)
+          sendResponse({ ok: true })
+          return
+        }
+
+        const lookupUrl = stripHash(message.url)
+        if (lookupUrl) {
+          const existing = await resolveCachedChunk(lookupUrl).catch(() => null)
+          if (existing?.item) {
+            updatePrefetchOutcome(message.url, true)
+            sendResponse({ ok: true })
+            return
+          }
+        }
+
+        const errorText = message.error || "unknown"
+        const transient =
+          message.transient === true ||
+          /tab-hidden|tab-not-active|runtime|timeout|serialize|message port/i.test(errorText)
+        const outcome = updatePrefetchOutcome(message.url, false, errorText, { transient })
+        bumpActivity("prefetchFailed", 1)
         const retryAfterSec = Math.max(1, Math.ceil((outcome.retryAfter - Date.now()) / 1000))
         const shouldLogFailure =
-          outcome.attempts <= 2 || outcome.attempts % 4 === 0 || message.error === "delegate-failed"
+          outcome.attempts <= 2 ||
+          outcome.attempts % 4 === 0 ||
+          errorText === "delegate-failed"
         if (shouldLogFailure) {
           addLog(
-            message.transient ? "WARN" : "ERROR",
-            `Prefetch failed (attempt ${outcome.attempts}, retry in ${retryAfterSec}s): ${message.error || "unknown"} — ${(message.url || "").slice(-80)}`
+            transient ? "WARN" : "ERROR",
+            `Prefetch failed (attempt ${outcome.attempts}, retry in ${retryAfterSec}s): ${errorText} — ${(message.url || "").slice(-80)}`
           )
         }
-      }
-      sendResponse({ ok: true })
+        sendResponse({ ok: true })
+      })().catch(() => {
+        sendResponse({ ok: true })
+      })
       return true
     case "AegisStream:ChunkObserved": {
       const tabId = sender?.tab?.id

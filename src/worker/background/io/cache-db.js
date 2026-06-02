@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { constants, state, addLog, stripHash, buildCacheKeyVariants } = ns
+const { constants, state, addLog, stripHash, buildCacheKeyVariants, isUmpCacheKey, getUmpBodyHashFromCacheKey } = ns
 let evictionTimerId = null
 let evictionInProgress = false
 let lastEvictionRunAt = 0
@@ -351,6 +351,21 @@ async function cacheChunk(url, contentType, bytes) {
       })
     )
   }
+  if (isUmpCacheKey(primaryKey)) {
+    const bodyHash = getUmpBodyHashFromCacheKey(primaryKey)
+    if (bodyHash) {
+      const hashAlias = `ump|${bodyHash}`
+      if (hashAlias !== primaryKey && !cacheKeys.includes(hashAlias)) {
+        aliasWrites.push(
+          dbPut(constants.STORE_ALIASES, {
+            alias: hashAlias,
+            targetUrl: primaryKey,
+            createdAt: aliasCreatedAt
+          })
+        )
+      }
+    }
+  }
   if (aliasWrites.length > 0) {
     await Promise.allSettled(aliasWrites)
   }
@@ -385,8 +400,13 @@ async function clearCacheStores() {
   await computeAdaptiveCachePolicy(true)
 }
 
+async function getCacheEntryCount() {
+  return dbCount(constants.STORE_CHUNKS)
+}
+
 ns.cacheChunk = cacheChunk
 ns.resolveCachedChunk = resolveCachedChunk
 ns.clearCacheStores = clearCacheStores
 ns.computeAdaptiveCachePolicy = computeAdaptiveCachePolicy
+ns.getCacheEntryCount = getCacheEntryCount
 })()

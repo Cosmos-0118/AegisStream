@@ -10,8 +10,52 @@ const {
   parseHlsPlaylist,
   parseDashPlaylist,
   extractStartSecondsFromPageUrl,
-  resolveCachedChunk
+  resolveCachedChunk,
+  bumpActivity,
+  isTabEligibleForPrefetch,
+  isTabInAnchorCooldown,
+  applyAnchorJumpCooldown,
+  countGlobalInflightPrefetches
 } = ns
+
+const chunkObservedDebounceAt = new Map()
+
+function pruneChunkObservedDebounce(now = Date.now()) {
+  const cutoff = now - constants.CHUNK_OBSERVED_DEBOUNCE_MS * 4
+  for (const [key, ts] of chunkObservedDebounceAt.entries()) {
+    if (ts < cutoff) chunkObservedDebounceAt.delete(key)
+  }
+}
+
+function shouldCountChunkObserved(tabId, chunkUrl) {
+  const key = `${tabId}:${chunkUrl}`
+  const now = Date.now()
+  const last = chunkObservedDebounceAt.get(key) || 0
+  if (now - last < constants.CHUNK_OBSERVED_DEBOUNCE_MS) return false
+  chunkObservedDebounceAt.set(key, now)
+  pruneChunkObservedDebounce(now)
+  return true
+}
+
+function isTabInRapidSeek(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.rapidSeekUntil || 0)
+}
+
+function noteAnchorChange(tabState, previousIndex, nextIndex) {
+  if (typeof previousIndex !== "number" || typeof nextIndex !== "number") return
+  if (previousIndex === nextIndex) return
+  const now = Date.now()
+  const recent = Array.isArray(tabState.recentAnchorChanges)
+    ? tabState.recentAnchorChanges
+    : []
+  const compacted = recent.filter((ts) => now - ts < constants.RAPID_SEEK_WINDOW_MS)
+  compacted.push(now)
+  tabState.recentAnchorChanges = compacted
+  if (compacted.length >= constants.RAPID_SEEK_CHANGE_THRESHOLD) {
+    tabState.rapidSeekUntil = now + constants.RAPID_SEEK_PAUSE_MS
+  }
+}
 
 function pruneRuntimeState() {
   const now = Date.now()
@@ -126,6 +170,12 @@ function upsertPlaylistState(tabId, normalizedSegments) {
     lastScheduledAt: previous?.lastScheduledAt || 0,
     lastSkipLogAt: previous?.lastSkipLogAt || 0,
     highChurnMode: previous?.highChurnMode === true,
+    prefetchCooldownUntil: Number(previous?.prefetchCooldownUntil || 0),
+    playlistRefreshedAt: playlistChanged
+      ? Date.now()
+      : Number(previous?.playlistRefreshedAt || 0),
+    recentAnchorChanges: playlistChanged ? [] : previous?.recentAnchorChanges || [],
+    rapidSeekUntil: playlistChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
     lastKnownSyncAt: previous?.lastKnownSyncAt || 0,
     lastKnownSyncSignature: previous?.lastKnownSyncSignature || ""
   }
@@ -216,10 +266,12 @@ function updatePrefetchOutcome(url, success, error = "unknown", options = {}) {
 
 async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   if (!state.settings.enabled || !state.settings.prefetchEnabled) return
+  if (!isTabEligibleForPrefetch(tabId)) return
   const normalized = normalizeSegments(segments)
   if (!normalized.length) return
   const tabState = upsertPlaylistState(tabId, normalized)
   if (!tabState) return
+  if (isTabInAnchorCooldown(tabState)) return
 
   const force = Boolean(options.force)
   const now = Date.now()
@@ -280,7 +332,23 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     if (!existing) uncached.push(url)
   }
 
-  if (!uncached.length) {
+  const globalCap = Math.max(1, Number(constants.GLOBAL_MAX_INFLIGHT_PREFETCHES) || 6)
+  const globalInflight = countGlobalInflightPrefetches()
+  if (globalInflight >= globalCap) {
+    const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
+    if (shouldLogSkip) {
+      addLog(
+        "INFO",
+        `Prefetch deferred on tab ${tabId}: global inflight=${globalInflight}/${globalCap}`
+      )
+      tabState.lastSkipLogAt = now
+    }
+    return
+  }
+  const availableSlots = globalCap - globalInflight
+  const batch = uncached.slice(0, availableSlots)
+
+  if (!batch.length) {
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
     if ((blockedInflight > 0 || blockedCooldown > 0) && shouldLogSkip) {
       addLog(
@@ -300,7 +368,7 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
 
   const source = options.source || "schedule"
   const inflightAt = Date.now()
-  for (const url of uncached) {
+  for (const url of batch) {
     const normalizedUrl = normalizePrefetchUrl(url)
     if (!normalizedUrl) continue
     state.inflightPrefetches.set(normalizedUrl, {
@@ -312,15 +380,15 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
 
   addLog(
     "INFO",
-    `Scheduling prefetch of ${uncached.length} chunks for tab ${tabId} (from index ${clampedStartIndex})`
+    `Scheduling prefetch of ${batch.length} chunks for tab ${tabId} (from index ${clampedStartIndex})`
   )
   tabState.lastScheduledFromIndex = clampedStartIndex
   tabState.lastScheduledAt = now
   tabState.updatedAt = now
 
-  const delegated = await delegatePrefetchToPage(tabId, uncached)
+  const delegated = await delegatePrefetchToPage(tabId, batch)
   if (!delegated) {
-    for (const url of uncached) {
+    for (const url of batch) {
       updatePrefetchOutcome(url, false, "delegate-failed")
     }
   }
@@ -328,6 +396,7 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
 
 function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor") {
   if (!Array.isArray(segments) || segments.length === 0) return
+  if (!isTabEligibleForPrefetch(tabId)) return
 
   const existing = state.pendingPrefetchByTab.get(tabId)
   if (existing?.timerId) {
@@ -420,7 +489,7 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
         `HLS playlist parsed: ${parsed.kind}, ${parsed.variants.length} variants, ${parsed.segments.length} segments`
       )
       if (parsed.kind === "master") {
-        state.stats.playlistsDetected += 1
+        bumpActivity("playlistsDetected", 1)
         if (depth >= 1) return
         const variants = parsed.variants.slice(0, constants.MAX_MASTER_VARIANTS_TO_SCAN)
         await Promise.all(
@@ -428,7 +497,7 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
         )
         return
       }
-      state.stats.playlistsDetected += 1
+      bumpActivity("playlistsDetected", 1)
       const tabState = upsertPlaylistState(tabId, normalizeSegments(parsed.segments))
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedPlaylistUrl.slice(-60)}`)
@@ -452,7 +521,7 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
       return
     }
     const segments = parseDashPlaylist(text, normalizedPlaylistUrl)
-    state.stats.playlistsDetected += 1
+    bumpActivity("playlistsDetected", 1)
     addLog("INFO", `DASH manifest parsed: ${segments.length} segments`)
     const tabState = upsertPlaylistState(tabId, normalizeSegments(segments))
     if (!tabState?.segments?.length) return
@@ -484,11 +553,11 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
         `HLS parsed from page capture: ${parsed.kind}, ${parsed.variants.length} variants, ${parsed.segments.length} segments`
       )
       if (parsed.kind === "master") {
-        state.stats.playlistsDetected += 1
+        bumpActivity("playlistsDetected", 1)
         addLog("INFO", `Master playlist with ${parsed.variants.length} variants — waiting for page to load variant playlists`)
         return
       }
-      state.stats.playlistsDetected += 1
+      bumpActivity("playlistsDetected", 1)
       if (!parsed.segments.length) {
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedUrl.slice(-60)}`)
         return
@@ -518,7 +587,7 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
       return
     }
     const segments = parseDashPlaylist(text, normalizedUrl)
-    state.stats.playlistsDetected += 1
+    bumpActivity("playlistsDetected", 1)
     addLog("INFO", `DASH parsed from page capture: ${segments.length} segments`)
     if (!segments.length) return
     const tabState = upsertPlaylistState(tabId, normalizeSegments(segments))
@@ -535,10 +604,12 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
   }
 }
 
-async function handleChunkObserved(tabId, chunkUrl) {
+async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   const normalizedChunkUrl = stripHash(chunkUrl)
   if (!normalizedChunkUrl) return
-  state.stats.chunksObserved += 1
+  if (options.countMetric !== false && shouldCountChunkObserved(tabId, normalizedChunkUrl)) {
+    bumpActivity("chunksObserved", 1)
+  }
   const tabState = state.playlistByTab.get(tabId)
   if (!tabState?.segments?.length || !tabState.indexByUrl) return
   tabState.updatedAt = Date.now()
@@ -558,6 +629,9 @@ async function handleChunkObserved(tabId, chunkUrl) {
   const previousAnchorIndex = tabState.anchorIndex
   tabState.hasAnchor = true
   tabState.anchorIndex = chunkIndex
+  if (hadAnchor && typeof previousAnchorIndex === "number" && chunkIndex !== previousAnchorIndex) {
+    noteAnchorChange(tabState, previousAnchorIndex, chunkIndex)
+  }
   if (!hadAnchor) {
     tabState.lastScheduledFromIndex = -1
     addLog("INFO", `Player anchor acquired at segment index ${chunkIndex} (tab ${tabId})`)
@@ -565,19 +639,42 @@ async function handleChunkObserved(tabId, chunkUrl) {
     typeof previousAnchorIndex === "number" &&
     Math.abs(chunkIndex - previousAnchorIndex) > Math.max(state.settings.prefetchWindow * 2, 8)
   ) {
-    noteAnchorJump(tabId)
+    const playlistJustRefreshed =
+      Date.now() - Number(tabState.playlistRefreshedAt || 0) < 8_000
     if (chunkIndex < previousAnchorIndex) {
       tabState.lastScheduledFromIndex = -1
     }
-    addLog("INFO", `Player anchor jumped from ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId})`)
+    if (playlistJustRefreshed) {
+      addLog(
+        "INFO",
+        `Playlist reset anchor ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId}); skipping seek-churn handling`
+      )
+    } else {
+      noteAnchorJump(tabId)
+      applyAnchorJumpCooldown(tabState, previousAnchorIndex, chunkIndex)
+      addLog("INFO", `Player anchor jumped from ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId})`)
+    }
   }
-  requestPrefetchForTab(tabId, tabState.segments, chunkIndex + 1, "chunk-observed")
+  if (
+    isTabEligibleForPrefetch(tabId) &&
+    !isTabInAnchorCooldown(tabState) &&
+    !isTabInRapidSeek(tabState)
+  ) {
+    requestPrefetchForTab(tabId, tabState.segments, chunkIndex + 1, "chunk-observed")
+  }
+}
+
+function observeChunkFromWebRequest(tabId, chunkUrl) {
+  if (!isTabEligibleForPrefetch(tabId)) return
+  void handleChunkObserved(tabId, chunkUrl)
 }
 
 ns.pruneRuntimeState = pruneRuntimeState
 ns.parseAndPrefetchFromPlaylist = parseAndPrefetchFromPlaylist
 ns.parsePlaylistContentForTab = parsePlaylistContentForTab
 ns.handleChunkObserved = handleChunkObserved
+ns.observeChunkFromWebRequest = observeChunkFromWebRequest
+ns.isTabInRapidSeek = isTabInRapidSeek
 ns.schedulePrefetch = schedulePrefetch
 ns.requestPrefetchForTab = requestPrefetchForTab
 ns.syncKnownSegmentsToPage = syncKnownSegmentsToPage

@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { constants, state, addLog } = ns
+const { constants, state, addLog, bumpActivity } = ns
 
 function sanitizeMetricLatencyMs(value) {
   const latency = Number(value)
@@ -93,7 +93,7 @@ function handleRuntimeMetric(message, sender) {
   const metricType = message.metricType
   const tabId = sender?.tab?.id
   if (metricType === "youtube_ump_request") {
-    state.stats.youtubeUmpRequests += 1
+    bumpActivity("youtubeUmpRequests", 1)
     if (typeof message.bodyHash === "string" && message.bodyHash.length > 0) {
       state.telemetry.umpHashes.add(message.bodyHash)
       if (state.telemetry.umpHashes.size > 5000) {
@@ -162,8 +162,8 @@ function handleRuntimeMetric(message, sender) {
   if (metricType !== "video_stall") return
   const durationMs = sanitizeMetricLatencyMs(message.durationMs)
   if (durationMs === null) return
-  state.stats.videoStalls += 1
-  state.stats.videoStallMsTotal += durationMs
+  bumpActivity("videoStalls", 1)
+  bumpActivity("videoStallMsTotal", durationMs)
   state.stats.videoStallLongestMs = Math.max(state.stats.videoStallLongestMs, durationMs)
   const reason = typeof message.reason === "string" ? message.reason : "unknown"
   const atSeconds = Number.isFinite(message.atSeconds) ? Number(message.atSeconds).toFixed(1) : "n/a"

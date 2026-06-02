@@ -76,8 +76,14 @@
 
         <div class="card stats-card">
           <div class="card-header">
-            <h2>Activity</h2>
-            <button id="clearCache" class="btn-secondary btn-sm">Clear Cache</button>
+            <div class="card-header-title">
+              <h2>Activity</h2>
+              <span class="stats-scope" id="statsScope">Last 5 min</span>
+            </div>
+            <div class="stats-actions">
+              <button id="resetStats" class="btn-secondary btn-sm" type="button">Reset</button>
+              <button id="clearCache" class="btn-secondary btn-sm" type="button">Clear Cache</button>
+            </div>
           </div>
           
           <div class="stats-grid">
@@ -87,11 +93,11 @@
             </div>
             <div class="stat-box">
               <span class="stat-value" id="stat-misses">0</span>
-              <span class="stat-label">Miss + Warmup</span>
+              <span class="stat-label">Lookup Misses</span>
             </div>
             <div class="stat-box">
               <span class="stat-value" id="stat-prefetched">0</span>
-              <span class="stat-label">Cached</span>
+              <span class="stat-label">In Cache Now</span>
             </div>
             <div class="stat-box">
               <span class="stat-value" id="stat-failures">0</span>
@@ -103,7 +109,7 @@
             </div>
             <div class="stat-box">
               <span class="stat-value" id="stat-chunks">0</span>
-              <span class="stat-label">Chunks Seen</span>
+              <span class="stat-label">Segments Req.</span>
             </div>
           </div>
 
@@ -128,7 +134,7 @@
           
           <div class="progress-container">
             <div class="progress-labels">
-              <span>Hit Rate</span>
+              <span>Lookup Hit Rate</span>
               <span id="stat-hitrate">0%</span>
             </div>
             <div class="progress-bar-bg">
