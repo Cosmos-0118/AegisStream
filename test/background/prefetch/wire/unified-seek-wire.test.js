@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/unified-seek-wire.test.js
+ * Run: node test/background/prefetch/wire/unified-seek-wire.test.js
  */
 "use strict"
 
@@ -7,7 +7,7 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const wirePath = path.join(__dirname, "../../../src/background/prefetch/unified-seek-wire.js")
+const wirePath = path.join(__dirname, "../../../../src/background/prefetch/wire/unified-seek-wire.js")
 const sandbox = { self: { AegisBackground: {} } }
 sandbox.globalThis = sandbox
 vm.runInContext(fs.readFileSync(wirePath, "utf8"), vm.createContext(sandbox))

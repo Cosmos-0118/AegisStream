@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/chunk-store-metrics.test.js
+ * Run: node test/background/telemetry/collectors/chunk-store-metrics.test.js
  */
 "use strict"
 
@@ -7,7 +7,7 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const root = path.join(__dirname, "../../..")
+const root = path.join(__dirname, "../../../..")
 
 function loadScript(relativePath) {
   vm.runInContext(
@@ -32,7 +32,7 @@ sandbox.self = sandbox
 
 loadScript("src/background/config/constants.js")
 loadScript("src/background/state/runtime-state.js")
-loadScript("src/background/telemetry/runtime-metrics.js")
+loadScript("src/background/telemetry/collectors/runtime-metrics.js")
 
 const api = sandbox.self.AegisBackground
 

@@ -232,6 +232,22 @@ function recordSpeculativeUsed(url, bytes = 0, tabId = null) {
   }
 
   maybeLogSpeculativeHealth()
+
+  if (Number.isFinite(resolvedTabId) && typeof ns.tryResolveSpeculationAtSegment === "function") {
+    const tabState = state.playlistByTab.get(resolvedTabId)
+    let segmentIndex = null
+    if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
+      segmentIndex = ns.resolveSegmentIndexInManifest(url, tabState)
+    }
+    if (typeof segmentIndex === "number") {
+      ns.tryResolveSpeculationAtSegment(resolvedTabId, segmentIndex, {
+        was_hit: true,
+        resolve_source: "cache-hit",
+        bitrate_tier_used: entry.toRung || tabState?.activeRungLabel || null
+      })
+    }
+  }
+
   return true
 }
 

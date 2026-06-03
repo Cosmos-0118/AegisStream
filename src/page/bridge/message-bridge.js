@@ -45,6 +45,17 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "RESET_SEEKING_STATE") {
+    if (typeof ns.resetAllSeekingControllers === "function") {
+      ns.resetAllSeekingControllers(data.anchorIndex)
+    }
+    logBridge?.(
+      `Seeking/Kalman state reset (${data.reason || "manifest-reset"})`,
+      "DEBUG"
+    )
+    return
+  }
+
   if (data.type === "KNOWN_SEGMENTS" && data.urls) {
     if (data.playbackHint && typeof data.playbackHint === "object") {
       ns.playbackManifestHint = {
@@ -56,6 +67,9 @@ window.addEventListener("message", (event) => {
           ? Number(data.playbackHint.totalDuration)
           : null
       }
+    }
+    if (data.resetSeeking === true && typeof ns.resetAllSeekingControllers === "function") {
+      ns.resetAllSeekingControllers(data.anchorIndex)
     }
     for (const u of data.urls) {
       knownSegments.add(u.split("?")[0])

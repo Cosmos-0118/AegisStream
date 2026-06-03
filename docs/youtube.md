@@ -71,7 +71,7 @@ Hooks include `ytcfg` setter, `yt-page-data-updated`, `EXPERIMENT_FLAGS`, `seria
 
 ### Range / sequence parsing (`AegisRangeBuffer`)
 
-Implemented in `src/page/shared/range-buffer.js`, used from `src/page/media/youtube/playlist.js`.
+Implemented in `src/page/cache/range-buffer.js`, used from `src/page/media/youtube/playlist.js`.
 
 Parsing order:
 
@@ -263,7 +263,7 @@ Aggregated in popup stats and throttled health logs (`telemetry.js`).
 | File | Responsibility |
 |------|----------------|
 | `src/page/media/youtube/kill-ump.js` | YouTube experiment flag patching |
-| `src/page/shared/range-buffer.js` | Parse range/sq, stream ID, cache keys, heuristic prefetch |
+| `src/page/cache/range-buffer.js` | Parse range/sq, stream ID, cache keys, heuristic prefetch |
 | `src/page/media/youtube/playlist.js` | UMP state, proxy+cache, chunk helpers, playlist sniffing |
 | `src/page/interceptors/fetch.js` | Main intercept, extension fetch miss path, UMP streaming |
 | `src/page/interceptors/xhr.js` | GET videoplayback, XHR cache serve |

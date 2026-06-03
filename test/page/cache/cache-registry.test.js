@@ -1,5 +1,5 @@
 /**
- * Run: node test/page/shared/cache-registry.test.js
+ * Run: node test/page/cache/cache-registry.test.js
  */
 "use strict"
 
@@ -7,8 +7,8 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const mediaKeyPath = path.join(__dirname, "../../../src/page/shared/media-cache-key-page.js")
-const registryPath = path.join(__dirname, "../../../src/page/shared/cache-registry.js")
+const mediaKeyPath = path.join(__dirname, "../../../src/page/media/media-cache-key-page.js")
+const registryPath = path.join(__dirname, "../../../src/page/cache/cache-registry.js")
 
 const sandbox = { globalThis: {}, URL }
 sandbox.self = sandbox.globalThis

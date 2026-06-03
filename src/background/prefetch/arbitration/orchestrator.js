@@ -289,6 +289,12 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
   if (typeof tabState.mediaSequence === "number") {
     tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
   }
+  if (typeof ns.tryResolveSpeculationAtSegment === "function") {
+    ns.tryResolveSpeculationAtSegment(tabId, clampedTarget, {
+      resolve_source: source || "dom-seeked",
+      bitrate_tier_used: tabState.activeRungLabel || null
+    })
+  }
 
   if (typeof ns.resetPassiveAnchorDeferral === "function") {
     ns.resetPassiveAnchorDeferral(tabState)
@@ -444,12 +450,39 @@ function handleScrubVelocityPrefetch(tabId, payload = {}) {
   const predictedIndex = Number(payload.predictedIndex)
   if (!Number.isFinite(predictedIndex)) return
   const radius = Math.max(1, Number(constants.SCRUB_VELOCITY_PREFETCH_RADIUS) || 3)
-  const clamped = Math.max(0, Math.min(Math.round(predictedIndex), tabState.segments.length - 1))
+  let clamped = Math.max(0, Math.min(Math.round(predictedIndex), tabState.segments.length - 1))
+  const currentIndex = Number(payload.currentIndex)
+  const maxJump = Number(constants.SCRUB_VELOCITY_MAX_JUMP_SEGMENTS) || 8
+  if (Number.isFinite(currentIndex) && Math.abs(clamped - currentIndex) > maxJump) {
+    clamped = Math.max(
+      0,
+      Math.min(
+        tabState.segments.length - 1,
+        currentIndex + Math.sign(clamped - currentIndex) * maxJump
+      )
+    )
+  }
   const start = Math.max(0, clamped - radius)
+  const windowSize = radius * 2 + 1
+  const needed = countPrefetchWindowNeedingFetch(tabId, tabState, start, windowSize)
+  if (needed === 0) {
+    if (typeof ns.recordScrubPrewarmSkippedDedup === "function") {
+      ns.recordScrubPrewarmSkippedDedup()
+    }
+    addLog(
+      "DEBUG",
+      `Scrub velocity prewarm skipped on tab ${tabId}: indices ${start}-${Math.min(tabState.segments.length - 1, start + windowSize - 1)} already inflight`
+    )
+    return
+  }
+  if (typeof ns.recordScrubPrewarmScheduled === "function") {
+    ns.recordScrubPrewarmScheduled()
+  }
   addLog(
     "INFO",
-    `Scrub velocity prewarm on tab ${tabId}: predicted index ${clamped} (v=${Number(payload.velocitySegPerSec || 0).toFixed(1)} seg/s)`
+    `Scrub velocity prewarm on tab ${tabId}: predicted index ${clamped} (v=${Number(payload.velocitySegPerSec || 0).toFixed(1)} seg/s, need=${needed}/${windowSize})`
   )
+  noteInflightSegmentIndices(tabState, start, windowSize)
   void schedulePrefetch(tabId, tabState.segments, start, {
     force: true,
     source: "scrub-velocity-prewarm",
@@ -610,14 +643,24 @@ function isLowRunwayForStallOverride(tabState) {
   return tabState.bufferTier === "emergency" || tabState.bufferTier === "aggressive"
 }
 
+function isActivelyScrubbingPayloadOrState(tabState, options = {}) {
+  if (options.isScrubbing === true) return true
+  return (
+    typeof ns.isScrubbingTrainActive === "function" && ns.isScrubbingTrainActive(tabState)
+  )
+}
+
 function maybeBreakPassengerLockForStallRecovery(tabId, tabState, options = {}) {
   if (!tabState) return false
+  if (isActivelyScrubbingPayloadOrState(tabState, options)) return false
+
   const now = Date.now()
   const releaseWindow = Number(constants.SEEK_RELEASE_STALL_OVERRIDE_MS) || 3_000
   const recentRelease =
-    options.isRelease === true ||
-    (Number(tabState.lastSeekReleaseAt || 0) > 0 &&
-      now - Number(tabState.lastSeekReleaseAt) < releaseWindow)
+    options.isRelease === true &&
+    options.isScrubbing !== true &&
+    Number(tabState.lastSeekReleaseAt || 0) > 0 &&
+    now - Number(tabState.lastSeekReleaseAt) < releaseWindow
   const inPassenger =
     typeof ns.isSeekPredictionPassengerPhase === "function" &&
     ns.isSeekPredictionPassengerPhase(tabState)
@@ -729,9 +772,10 @@ function handleUnifiedSeekState(tabId, rawPayload = {}) {
           typeof payload.currentIndex === "number" ? payload.currentIndex : estimatedIndex
       })
     }
-    if (payload.isRelease === true) {
+    if (payload.isRelease === true && !isScrubbing) {
       const brokeLock = maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
         isRelease: true,
+        isScrubbing: false,
         reason: "release-low-runway"
       })
       if (brokeLock) {
@@ -744,9 +788,10 @@ function handleUnifiedSeekState(tabId, rawPayload = {}) {
     return
   }
 
-  if (payload.isRelease === true) {
+  if (payload.isRelease === true && !isScrubbing) {
     const brokeLock = maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
       isRelease: true,
+      isScrubbing: false,
       reason: "release-low-runway"
     })
     if (brokeLock) {
@@ -1965,6 +2010,10 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       "INFO",
       `HLS quality variant switch on tab ${tabId}${matrixNote} — cleared stale prefetch tracking, resuming from anchor ${logAnchor}`
     )
+    notifyPageSeekingStateReset(tabId, {
+      reason: "variant-switch",
+      anchorIndex: typeof anchorIndex === "number" ? anchorIndex : previous?.anchorIndex
+    })
   } else if (
     playbackState === PlaybackStates.TOKEN_REFRESHING &&
     urlsChanged &&
@@ -2128,7 +2177,13 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     playlistGeneration: Number(previous?.playlistGeneration) || 0,
     networkGeneration: nextNetworkGeneration,
     prefetchDownloadRegistry: nextPrefetchRegistry,
-    activeEngineMode: previous?.activeEngineMode || null
+    activeEngineMode: previous?.activeEngineMode || null,
+    activeInflightSegmentIndices:
+      qualityVariantSwitch || episodeChangedByFingerprint
+        ? new Set()
+        : previous?.activeInflightSegmentIndices instanceof Set
+          ? previous.activeInflightSegmentIndices
+          : new Set()
   }
   if (typeof ns.syncLegacyNetworkGeneration === "function") {
     ns.syncLegacyNetworkGeneration(tabState)
@@ -2293,6 +2348,9 @@ function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex)
 function segmentIndexHasActivePrefetch(tabId, tabState, segmentIndex) {
   if (!tabState?.segments?.length || typeof segmentIndex !== "number") return false
   const idx = Math.max(0, Math.min(Math.round(segmentIndex), tabState.segments.length - 1))
+  if (tabState.activeInflightSegmentIndices instanceof Set && tabState.activeInflightSegmentIndices.has(idx)) {
+    return true
+  }
   const normalizedUrl = normalizePrefetchUrl(tabState.segments[idx])
   if (!normalizedUrl) return false
   const inflight = state.inflightPrefetches.get(normalizedUrl)
@@ -2310,6 +2368,42 @@ function segmentIndexHasActivePrefetch(tabId, tabState, segmentIndex) {
     if (tabState.prefetchDownloadRegistry.has(key)) return true
   }
   return false
+}
+
+function noteInflightSegmentIndices(tabState, startIndex, count = 1) {
+  if (!tabState || typeof startIndex !== "number") return
+  if (!(tabState.activeInflightSegmentIndices instanceof Set)) {
+    tabState.activeInflightSegmentIndices = new Set()
+  }
+  const end = Math.min(tabState.segments?.length || 0, Math.max(0, startIndex) + Math.max(1, count))
+  for (let idx = Math.max(0, startIndex); idx < end; idx += 1) {
+    tabState.activeInflightSegmentIndices.add(idx)
+  }
+}
+
+function countPrefetchWindowNeedingFetch(tabId, tabState, startIndex, windowSize) {
+  if (!tabState?.segments?.length || typeof startIndex !== "number") return 0
+  const end = Math.min(tabState.segments.length, Math.max(0, startIndex) + Math.max(1, windowSize))
+  let needed = 0
+  for (let idx = Math.max(0, startIndex); idx < end; idx += 1) {
+    if (!segmentIndexHasActivePrefetch(tabId, tabState, idx)) needed += 1
+  }
+  return needed
+}
+
+function notifyPageSeekingStateReset(tabId, options = {}) {
+  if (!Number.isFinite(tabId)) return
+  if (typeof ns.recordKalmanStateReset === "function") {
+    ns.recordKalmanStateReset()
+  }
+  chrome.tabs
+    .sendMessage(tabId, {
+      type: "AegisStream:ResetSeekingState",
+      reason: options.reason || "manifest-reset",
+      anchorIndex:
+        typeof options.anchorIndex === "number" ? Math.round(options.anchorIndex) : null
+    })
+    .catch(() => {})
 }
 
 function maybeRequestPrefetchForTab(tabId, segments, startIndex, source, options = {}) {
@@ -2389,6 +2483,12 @@ function updatePrefetchOutcome(url, success, error = "unknown", options = {}) {
   const inflight = state.inflightPrefetches.get(normalizedUrl)
   const tabId = options.tabId ?? inflight?.tabId
   state.inflightPrefetches.delete(normalizedUrl)
+  if (Number.isFinite(tabId)) {
+    const tabState = state.playlistByTab.get(tabId)
+    if (tabState?.activeInflightSegmentIndices instanceof Set && typeof inflight?.segmentIndex === "number") {
+      tabState.activeInflightSegmentIndices.delete(Math.round(inflight.segmentIndex))
+    }
+  }
 
   if (success) {
     state.failedPrefetches.delete(normalizedUrl)
@@ -2807,6 +2907,15 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
           : "prefetch"
     }
     state.inflightPrefetches.set(normalizedUrl, inflightEntry)
+    if (typeof inflightEntry.segmentIndex !== "number" && tabState?.segments?.length) {
+      const urlIndex = tabState.segments.findIndex(
+        (segmentUrl) => normalizePrefetchUrl(segmentUrl) === normalizedUrl
+      )
+      if (urlIndex >= 0) inflightEntry.segmentIndex = urlIndex
+    }
+    if (typeof inflightEntry.segmentIndex === "number") {
+      noteInflightSegmentIndices(tabState, inflightEntry.segmentIndex, 1)
+    }
   }
 
   const scheduleSource = options.source || "schedule"
@@ -2933,6 +3042,12 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
 
 function syncKnownSegmentsToPage(tabId, segments, options = {}) {
   if (!segments || !segments.length) return
+  if (options.resetSeeking === true) {
+    notifyPageSeekingStateReset(tabId, {
+      reason: options.reason || "known-segments-sync",
+      anchorIndex: options.anchorIndex
+    })
+  }
   const tabState = state.playlistByTab.get(tabId)
   const now = Date.now()
   const signature = `${segments.length}:${segments[0]}:${segments[segments.length - 1]}`
@@ -2965,7 +3080,11 @@ function syncKnownSegmentsToPage(tabId, segments, options = {}) {
     .sendMessage(tabId, {
       type: "AegisStream:KnownSegments",
       urls: segments,
-      playbackHint
+      playbackHint,
+      resetSeeking: options.resetSeeking === true,
+      anchorIndex:
+        typeof options.anchorIndex === "number" ? options.anchorIndex : undefined,
+      reason: options.reason || undefined
     })
     .then(() => {
       addLog(
@@ -3295,6 +3414,12 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   tabState.anchorRetainedByRefresh = false
   if (typeof tabState.mediaSequence === "number") {
     tabState.anchorMediaSequence = tabState.mediaSequence + chunkIndex
+  }
+  if (typeof ns.tryResolveSpeculationAtSegment === "function") {
+    ns.tryResolveSpeculationAtSegment(tabId, chunkIndex, {
+      resolve_source: "chunk-observed",
+      bitrate_tier_used: tabState.activeRungLabel || null
+    })
   }
   if (typeof ns.resolveSeekPredictionActual === "function") {
     ns.resolveSeekPredictionActual(tabId, chunkIndex, { source: "player-segment" })

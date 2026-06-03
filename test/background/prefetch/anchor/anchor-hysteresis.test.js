@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/anchor-hysteresis.test.js
+ * Run: node test/background/prefetch/anchor/anchor-hysteresis.test.js
  */
 "use strict"
 
@@ -7,8 +7,8 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const constantsPath = path.join(__dirname, "../../../src/background/config/constants.js")
-const hysteresisPath = path.join(__dirname, "../../../src/background/prefetch/anchor-hysteresis.js")
+const constantsPath = path.join(__dirname, "../../../../src/background/config/constants.js")
+const hysteresisPath = path.join(__dirname, "../../../../src/background/prefetch/anchor/anchor-hysteresis.js")
 
 const sandbox = { self: {} }
 sandbox.globalThis = sandbox

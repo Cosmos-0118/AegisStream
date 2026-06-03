@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/congestion-controller.test.js
+ * Run: node test/background/prefetch/arbitration/congestion-controller.test.js
  */
 "use strict"
 
@@ -7,7 +7,7 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const root = path.join(__dirname, "../../..")
+const root = path.join(__dirname, "../../../..")
 
 function loadScript(relativePath) {
   vm.runInContext(
@@ -32,8 +32,8 @@ sandbox.self = sandbox
 
 loadScript("src/background/config/constants.js")
 loadScript("src/background/state/runtime-state.js")
-loadScript("src/background/prefetch/network-panic-policy.js")
-loadScript("src/background/prefetch/congestion-controller.js")
+loadScript("src/background/prefetch/policy/network-panic-policy.js")
+loadScript("src/background/prefetch/arbitration/congestion-controller.js")
 
 const api = sandbox.self.AegisBackground
 const { state } = api

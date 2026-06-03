@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/extension-fetch-metrics.test.js
+ * Run: node test/background/telemetry/domains/extension-fetch-metrics.test.js
  */
 "use strict"
 
@@ -8,7 +8,7 @@ const path = require("path")
 const vm = require("vm")
 
 function loadScript(relativePath) {
-  const filePath = path.join(__dirname, "../../..", relativePath)
+  const filePath = path.join(__dirname, "../../../..", relativePath)
   vm.runInContext(fs.readFileSync(filePath, "utf8"), vm.createContext(sandbox))
 }
 
@@ -32,7 +32,7 @@ const sandbox = {
 
 loadScript("src/background/config/constants.js")
 loadScript("src/background/state/runtime-state.js")
-loadScript("src/background/telemetry/extension-fetch-metrics.js")
+loadScript("src/background/telemetry/domains/extension-fetch-metrics.js")
 const api = sandbox.self.AegisBackground
 
 function assert(condition, message) {

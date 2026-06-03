@@ -8,8 +8,11 @@ function releaseInflightForTab(tabId, options = {}) {
       state.inflightPrefetches.delete(url)
     }
   }
-  if (options.notifyPage === false) return
   const tabState = state.playlistByTab.get(tabId)
+  if (tabState?.activeInflightSegmentIndices instanceof Set) {
+    tabState.activeInflightSegmentIndices.clear()
+  }
+  if (options.notifyPage === false) return
   if (tabState && typeof ns.broadcastDelegatedPrefetchAbort === "function") {
     ns.broadcastDelegatedPrefetchAbort(tabId, tabState, {
       reason: options.reason || "release-inflight",

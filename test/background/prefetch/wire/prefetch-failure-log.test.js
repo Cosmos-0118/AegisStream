@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/prefetch-failure-log.test.js
+ * Run: node test/background/prefetch/wire/prefetch-failure-log.test.js
  */
 "use strict"
 
@@ -7,8 +7,8 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const constantsPath = path.join(__dirname, "../../../src/background/config/constants.js")
-const logPath = path.join(__dirname, "../../../src/background/prefetch/prefetch-failure-log.js")
+const constantsPath = path.join(__dirname, "../../../../src/background/config/constants.js")
+const logPath = path.join(__dirname, "../../../../src/background/prefetch/wire/prefetch-failure-log.js")
 
 const sandbox = {
   self: {

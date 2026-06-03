@@ -146,12 +146,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
 
+  if (message?.type === "AegisStream:ResetSeekingState") {
+    window.postMessage(
+      {
+        __aegisstream: true,
+        type: "RESET_SEEKING_STATE",
+        reason: message.reason || "manifest-reset",
+        anchorIndex:
+          typeof message.anchorIndex === "number" ? message.anchorIndex : null
+      },
+      "*"
+    )
+    sendResponse({ ok: true })
+    return true
+  }
+
   if (message?.type === "AegisStream:KnownSegments" && message.urls) {
     window.postMessage({
       __aegisstream: true,
       type: "KNOWN_SEGMENTS",
       urls: message.urls,
-      playbackHint: message.playbackHint || null
+      playbackHint: message.playbackHint || null,
+      resetSeeking: message.resetSeeking === true,
+      anchorIndex:
+        typeof message.anchorIndex === "number" ? message.anchorIndex : null,
+      reason: message.reason || null
     }, "*")
     sendResponse({ ok: true })
     return true

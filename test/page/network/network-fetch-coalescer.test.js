@@ -1,5 +1,5 @@
 /**
- * Run: node test/page/shared/network-fetch-coalescer.test.js
+ * Run: node test/page/network/network-fetch-coalescer.test.js
  */
 "use strict"
 
@@ -9,11 +9,11 @@ const vm = require("vm")
 
 const coalescerPath = path.join(
   __dirname,
-  "../../../src/page/shared/network-fetch-coalescer.js"
+  "../../../src/page/network/network-fetch-coalescer.js"
 )
 const keyPath = path.join(
   __dirname,
-  "../../../src/page/shared/media-cache-key-page.js"
+  "../../../src/page/media/media-cache-key-page.js"
 )
 
 const sandbox = { globalThis: {}, URL, ArrayBuffer, Uint8Array, setTimeout, clearTimeout }

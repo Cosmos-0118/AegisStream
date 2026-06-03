@@ -136,10 +136,19 @@ function collectSpeculativeRungUrls(tabId, tabState) {
     (typeof ns.computeCongestionDirectivesForTab === "function"
       ? ns.computeCongestionDirectivesForTab(tabId)
       : null)
-  if (congestion && congestion.speculativeAllowed !== true) return []
-
   const runway = Number(tabState.bufferRunwaySec)
-  if (!Number.isFinite(runway) || runway < constants.SPECULATIVE_MIN_RUNWAY_SEC) return []
+  const continuousFloor =
+    Number(constants.SPECULATIVE_CONTINUOUS_RUNWAY_FLOOR_SEC) ||
+    Number(constants.SPECULATIVE_MIN_RUNWAY_SEC) ||
+    5
+  if (!Number.isFinite(runway) || runway < continuousFloor) return []
+
+  if (
+    typeof ns.isContinuousSpeculationAllowed === "function" &&
+    !ns.isContinuousSpeculationAllowed(tabId, tabState)
+  ) {
+    return []
+  }
 
   const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
   if (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE) return []
@@ -167,18 +176,34 @@ function collectSpeculativeRungUrls(tabId, tabState) {
   const adjacent = getAdjacentRungLabels(matrix, activeLabel)
   if (!adjacent.length) return []
 
+  const continuousEval =
+    typeof ns.evaluateContinuousSpeculation === "function"
+      ? ns.evaluateContinuousSpeculation(tabId, tabState)
+      : null
+
   const urls = []
   let ahead = Math.max(1, Number(limits.segmentsAhead) || 1)
   if (congestion) {
     const congestionAhead = Number(congestion.speculativeSegmentsAhead) || 0
-    ahead = Math.min(ahead, congestionAhead)
+    if (congestion.speculativeAllowed === true && congestionAhead > 0) {
+      ahead = Math.min(ahead, congestionAhead)
+    } else if (continuousEval?.priorityTier === "CONSERVATIVE_LQ") {
+      ahead = Math.min(ahead, 1)
+    }
     if (!ahead) return []
   }
   for (let offset = 1; offset <= ahead; offset += 1) {
     const index = tabState.anchorIndex + offset
     for (const label of adjacent) {
       const url = getMatrixSegmentUrl(matrix, index, label)
-      if (url) urls.push({ url, fromRung: activeLabel, toRung: label })
+      if (url) {
+        urls.push({
+          url,
+          segmentIndex: index,
+          fromRung: activeLabel,
+          toRung: label
+        })
+      }
     }
   }
 
@@ -202,9 +227,13 @@ async function scheduleSpeculativeRungPrefetch(tabId, tabState = null) {
       return
     }
   }
+  const continuousEval =
+    typeof ns.evaluateContinuousSpeculation === "function"
+      ? ns.evaluateContinuousSpeculation(tabId, resolved)
+      : null
   if (typeof ns.computeCongestionDirectivesForTab === "function") {
     const directives = ns.computeCongestionDirectivesForTab(tabId)
-    if (directives?.speculativeAllowed !== true) {
+    if (directives?.speculativeAllowed !== true && continuousEval?.allowSpeculation !== true) {
       if (typeof ns.notePainCongestionThrottle === "function") {
         ns.notePainCongestionThrottle(
           `speculative blocked, tier=${directives?.activeTierName || "unknown"}`
@@ -255,8 +284,43 @@ async function scheduleSpeculativeRungPrefetch(tabId, tabState = null) {
 
   if (!delegated) return
 
+  const confidence =
+    typeof ns.getPredictionConfidence === "function" ? ns.getPredictionConfidence() : 0
+  const directives =
+    typeof ns.computeCongestionDirectivesForTab === "function"
+      ? ns.computeCongestionDirectivesForTab(tabId)
+      : null
+  const networkTier = String(
+    directives?.activeTierName || resolved.bufferTier || "NOMINAL"
+  ).toUpperCase()
+
+  if (typeof ns.recordSpeculationAllocated === "function") {
+    const seenIndices = new Set()
+    for (const item of uncached) {
+      if (typeof item.segmentIndex !== "number" || seenIndices.has(item.segmentIndex)) continue
+      seenIndices.add(item.segmentIndex)
+      ns.recordSpeculationAllocated({
+        tab_id: tabId,
+        confidence,
+        buffer_runway_sec: Number(resolved.bufferRunwaySec) || 0,
+        calculated_score: Number(continuousEval?.score) || 0,
+        assigned_tier: continuousEval?.priorityTier || "CONSERVATIVE_LQ",
+        target_segment_index: item.segmentIndex,
+        network_tier: networkTier,
+        bitrate_tier_used: item.toRung || null
+      })
+    }
+  }
+
   resolved.lastSpeculativePrefetchAt = Date.now()
   resolved.updatedAt = Date.now()
+  if (continuousEval?.allowSpeculation && typeof ns.recordDecision === "function") {
+    ns.recordDecision(
+      "speculative",
+      "scheduled",
+      `score=${Math.round((continuousEval.score || 0) * 100)}%, tier=${continuousEval.priorityTier || "unknown"}, urls=${uncached.length}`
+    )
+  }
   bumpActivity("speculativePrefetchScheduled", uncached.length)
 
   const limits = typeof ns.getAdaptiveLimits === "function" ? ns.getAdaptiveLimits() : null

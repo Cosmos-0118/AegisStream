@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/seek-prediction-telemetry.test.js
+ * Run: node test/background/telemetry/domains/seek-prediction-telemetry.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const telemetryPath = path.join(
   __dirname,
-  "../../../src/background/telemetry/seek-prediction-telemetry.js"
+  "../../../../src/background/telemetry/domains/seek-prediction-telemetry.js"
 )
 
 const logs = []

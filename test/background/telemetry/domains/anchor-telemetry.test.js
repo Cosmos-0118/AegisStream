@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/anchor-telemetry.test.js
+ * Run: node test/background/telemetry/domains/anchor-telemetry.test.js
  */
 "use strict"
 
@@ -7,10 +7,10 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const constantsPath = path.join(__dirname, "../../../src/background/config/constants.js")
-const activityPath = path.join(__dirname, "../../../src/background/telemetry/activity-metrics.js")
-const authorityPath = path.join(__dirname, "../../../src/background/prefetch/anchor-authority.js")
-const telemetryPath = path.join(__dirname, "../../../src/background/telemetry/anchor-telemetry.js")
+const constantsPath = path.join(__dirname, "../../../../src/background/config/constants.js")
+const activityPath = path.join(__dirname, "../../../../src/background/telemetry/collectors/activity-metrics.js")
+const authorityPath = path.join(__dirname, "../../../../src/background/prefetch/anchor/anchor-authority.js")
+const telemetryPath = path.join(__dirname, "../../../../src/background/telemetry/domains/anchor-telemetry.js")
 
 const sandbox = { self: {}, chrome: {} }
 sandbox.globalThis = sandbox

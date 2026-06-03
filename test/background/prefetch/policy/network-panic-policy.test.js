@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/network-panic-policy.test.js
+ * Run: node test/background/prefetch/policy/network-panic-policy.test.js
  */
 "use strict"
 
@@ -8,7 +8,7 @@ const path = require("path")
 const vm = require("vm")
 
 function loadScript(relativePath) {
-  const filePath = path.join(__dirname, "../../..", relativePath)
+  const filePath = path.join(__dirname, "../../../..", relativePath)
   vm.runInContext(fs.readFileSync(filePath, "utf8"), vm.createContext(sandbox))
 }
 
@@ -37,7 +37,7 @@ const sandbox = {
   }
 }
 
-loadScript("src/background/prefetch/network-panic-policy.js")
+loadScript("src/background/prefetch/policy/network-panic-policy.js")
 const api = sandbox.self.AegisBackground
 
 function assert(condition, message) {

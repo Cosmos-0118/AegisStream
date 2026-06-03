@@ -8,10 +8,9 @@ const TRAIN_COOLDOWN_MS = 800
 const TRAIN_IDLE_MS = 1_000
 const MIN_DEBOUNCE_MS = 30
 const MAX_DEBOUNCE_MS = 150
-const INDEX_SAMPLE_MAX = 6
-const VELOCITY_LOOKAHEAD_MS = 400
 const VELOCITY_MIN_SEG_PER_SEC = 0.5
 const VELOCITY_PREWARM_MIN_MS = 120
+const KALMAN_MAX_JUMP_SEGMENTS = 8
 
 const FLAG_SCRUB = 1
 const FLAG_RELEASE = 2
@@ -78,17 +77,10 @@ function computeDebounceMs(timeVelocitySecPerMs) {
   return Math.min(MAX_DEBOUNCE_MS, Math.max(MIN_DEBOUNCE_MS, secPerMs * 2000))
 }
 
-function computeSegmentVelocity(samples) {
-  if (!Array.isArray(samples) || samples.length < 2) return null
-  const first = samples[0]
-  const last = samples[samples.length - 1]
-  const dtSec = (last.t - first.t) / 1000
-  if (dtSec <= 0.05) return null
-  const velocity = (last.index - first.index) / dtSec
-  if (!Number.isFinite(velocity) || Math.abs(velocity) < VELOCITY_MIN_SEG_PER_SEC) {
-    return null
-  }
-  return { velocity, lastIndex: last.index }
+function resolveSegmentCount() {
+  const hint = ns.playbackManifestHint
+  const count = Number(hint?.segmentCount)
+  return Number.isFinite(count) && count > 0 ? count : null
 }
 
 class SeekingController {
@@ -100,10 +92,12 @@ class SeekingController {
     this.scrubTrainActive = false
     this.trainTimeoutTimer = null
     this.flushTimer = null
-    this.indexSamples = []
     this.lastVelocityPrewarmAt = 0
     this.lastPrearmedPredictedIndex = null
     this.lastSeekAt = 0
+    this.kalman =
+      typeof ns.KalmanSegmentFilter === "function" ? new ns.KalmanSegmentFilter() : null
+    ns.SCRUB_KALMAN_MAX_JUMP_SEGMENTS = KALMAN_MAX_JUMP_SEGMENTS
 
     this.handleSeeking = this.handleSeeking.bind(this)
     this.handleSeeked = this.handleSeeked.bind(this)
@@ -142,19 +136,20 @@ class SeekingController {
 
     const wallNow = Date.now()
     const mapper = resolveManifestMapper()
+    let measuredIndex = null
     if (mapper) {
-      const index = mapper.getSegmentIndexFromTime(currentTime)
-      if (typeof index === "number" && index >= 0) {
-        this.indexSamples.push({ index, t: wallNow })
-        if (this.indexSamples.length > INDEX_SAMPLE_MAX) {
-          this.indexSamples.shift()
-        }
+      measuredIndex = mapper.getSegmentIndexFromTime(currentTime)
+      if (typeof measuredIndex === "number" && measuredIndex >= 0 && this.kalman) {
+        this.kalman.update(measuredIndex, now)
       }
     }
 
     if (this.lastSeekAt > 0 && wallNow - this.lastSeekAt < TRAIN_COOLDOWN_MS) {
       if (!this.scrubTrainActive) {
         this.scrubTrainActive = true
+        if (this.kalman && typeof measuredIndex === "number") {
+          this.kalman.reset(measuredIndex)
+        }
         logBridge?.("Scrubbing train active (rapid seeking)", "DEBUG")
       }
     }
@@ -181,35 +176,55 @@ class SeekingController {
     this.trainTimeoutTimer = null
     if (!this.scrubTrainActive) return
     this.scrubTrainActive = false
-    this.indexSamples = []
     this.lastVelocityPrewarmAt = 0
     this.lastPrearmedPredictedIndex = null
+    if (this.kalman) {
+      const mapper = resolveManifestMapper()
+      const t = Number(this.video.currentTime)
+      if (mapper && Number.isFinite(t)) {
+        const index = mapper.getSegmentIndexFromTime(t)
+        if (typeof index === "number") this.kalman.reset(index)
+      }
+    }
     logBridge?.("Scrubbing train idle", "DEBUG")
     this.emitPayload(false, true)
   }
 
   buildVelocityPayload(estimatedIndex) {
-    const kinematics = computeSegmentVelocity(this.indexSamples)
-    if (!kinematics) return {}
+    if (!this.kalman?.initialized) return {}
+    const velocity = this.kalman.x[1]
+    if (!Number.isFinite(velocity) || Math.abs(velocity) < VELOCITY_MIN_SEG_PER_SEC) {
+      return {}
+    }
+
+    const anchorIndex =
+      typeof estimatedIndex === "number" && estimatedIndex >= 0
+        ? estimatedIndex
+        : Math.round(this.kalman.x[0])
+    const predictedIndex = this.kalman.predictIndex(
+      null,
+      resolveSegmentCount(),
+      anchorIndex
+    )
+
     const wallNow = Date.now()
     if (wallNow - this.lastVelocityPrewarmAt < VELOCITY_PREWARM_MIN_MS) {
-      return { velocitySegPerSec: kinematics.velocity }
+      return { velocitySegPerSec: velocity }
     }
-    const lookaheadSec = VELOCITY_LOOKAHEAD_MS / 1000
-    const predictedIndex = Math.round(kinematics.lastIndex + kinematics.velocity * lookaheadSec)
     if (predictedIndex === this.lastPrearmedPredictedIndex) {
-      return { velocitySegPerSec: kinematics.velocity }
+      return { velocitySegPerSec: velocity }
     }
+
     this.lastVelocityPrewarmAt = wallNow
     this.lastPrearmedPredictedIndex = predictedIndex
     logBridge?.(
-      `Scrub velocity prewarm: index ${kinematics.lastIndex} -> ${predictedIndex} (${kinematics.velocity.toFixed(1)} seg/s)`,
+      `Scrub velocity prewarm: index ${anchorIndex} -> ${predictedIndex} (${velocity.toFixed(1)} seg/s)`,
       "DEBUG"
     )
     return {
-      velocitySegPerSec: kinematics.velocity,
+      velocitySegPerSec: velocity,
       velocityPredictedIndex: predictedIndex,
-      currentIndex: typeof estimatedIndex === "number" ? estimatedIndex : kinematics.lastIndex
+      currentIndex: anchorIndex
     }
   }
 
@@ -265,7 +280,29 @@ function startSeekingController() {
   }
 }
 
+function resetAllSeekingControllers(anchorIndex = null) {
+  const mapper = resolveManifestMapper()
+  document.querySelectorAll("video").forEach((video) => {
+    const controller = controllersByVideo.get(video)
+    if (!controller) return
+    controller.scrubTrainActive = false
+    controller.lastVelocityPrewarmAt = 0
+    controller.lastPrearmedPredictedIndex = null
+    if (controller.kalman) {
+      let index = Number(anchorIndex)
+      if (!Number.isFinite(index) && mapper && video instanceof HTMLMediaElement) {
+        const t = Number(video.currentTime)
+        if (Number.isFinite(t)) {
+          index = mapper.getSegmentIndexFromTime(t)
+        }
+      }
+      controller.kalman.reset(Number.isFinite(index) ? index : 0)
+    }
+  })
+}
+
 ns.setupSeekingController = setupSeekingController
+ns.resetAllSeekingControllers = resetAllSeekingControllers
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", startSeekingController, { once: true })

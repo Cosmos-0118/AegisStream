@@ -123,10 +123,27 @@
           `Predictor: ON — confidence=${confPct}%, hitRate=${Math.round((seekSummary.hitRate || 0) * 100)}%`
         )
       }
-      if (!seekSummary.speculative) {
+      const tabId = state.activePrefetchTabId
+      const tabState = Number.isFinite(tabId) ? state.playlistByTab?.get(tabId) : null
+      const continuous =
+        Number.isFinite(tabId) && typeof ns.evaluateContinuousSpeculation === "function"
+          ? ns.evaluateContinuousSpeculation(tabId, tabState)
+          : null
+      if (continuous?.allowSpeculation) {
+        lines.push(
+          `Speculation: allowed — score=${Math.round((continuous.score || 0) * 100)}%, tier=${continuous.priorityTier}, conf=${confPct}%`
+        )
+      } else if (continuous) {
+        const threshold = Math.round(
+          (Number(ns.constants?.SPECULATIVE_CONTINUOUS_THRESHOLD) || 0.35) * 100
+        )
+        lines.push(
+          `Speculation: denied — score=${Math.round((continuous.score || 0) * 100)}%<${threshold}% (conf=${confPct}%, runway=${Number.isFinite(tabState?.bufferRunwaySec) ? tabState.bufferRunwaySec.toFixed(1) : "?"}s)`
+        )
+      } else if (!seekSummary.speculative) {
         lines.push(
           seekSummary.enabled
-            ? `Speculation: denied — confidence=${confPct}% below speculative threshold ${specAbove}%`
+            ? `Speculation: denied — confidence=${confPct}% below legacy threshold ${specAbove}%`
             : `Speculation: denied — predictor OFF (confidence=${confPct}%)`
         )
       } else {
@@ -168,6 +185,18 @@
     if (tabState?.activeEngineMode) {
       const latch = tabState.rescueLaneLatched ? ", rescueLatched=ON" : ""
       lines.push(`Engine mode: ${tabState.activeEngineMode}${latch}`)
+    }
+
+    const rollup =
+      typeof ns.getLastMetricsRollup === "function" ? ns.getLastMetricsRollup() : null
+    if (rollup?.timestamp) {
+      const eff =
+        rollup.efficiency_ratio != null
+          ? `${Math.round(rollup.efficiency_ratio * 100)}%`
+          : "n/a"
+      lines.push(
+        `60s rollup: spec eff ${eff}, alloc ${rollup.speculative_allocated}, hits ${rollup.speculative_hits}, scrub skip ${rollup.scrub_prewarm_skipped_dedup}`
+      )
     }
 
     const collapse = state.telemetry?.requestCollapse
@@ -284,7 +313,23 @@
     if (!state.settings?.speculativePrefetchEnabled) {
       return "setting=off"
     }
-    if (
+    if (typeof ns.evaluateContinuousSpeculation === "function") {
+      const evaluation = ns.evaluateContinuousSpeculation(tabId, tabState)
+      if (!evaluation.allowSpeculation) {
+        const conf =
+          typeof ns.getPredictionConfidence === "function"
+            ? Math.round(ns.getPredictionConfidence() * 100)
+            : "?"
+        const threshold = Math.round(
+          (Number(ns.constants?.SPECULATIVE_CONTINUOUS_THRESHOLD) || 0.35) * 100
+        )
+        return `specScore=${Math.round((evaluation.score || 0) * 100)}%<${threshold}% conf=${conf}% runway=${Number.isFinite(tabState?.bufferRunwaySec) ? tabState.bufferRunwaySec.toFixed(1) : "?"}s`
+      }
+      if (tabState) {
+        tabState.speculativePriorityTier = evaluation.priorityTier
+        tabState.speculativeContinuousScore = evaluation.score
+      }
+    } else if (
       typeof ns.isSpeculativePredictionEnabled === "function" &&
       !ns.isSpeculativePredictionEnabled()
     ) {
@@ -310,7 +355,11 @@
         ? ns.computeCongestionDirectivesForTab(tabId)
         : null)
     if (congestion && congestion.speculativeAllowed !== true) {
-      return `congestion=${congestion.activeTierName || "blocked"}`
+      const score = Number(tabState?.speculativeContinuousScore)
+      const threshold = Number(ns.constants?.SPECULATIVE_CONTINUOUS_THRESHOLD) || 0.35
+      if (!(Number.isFinite(score) && score >= threshold)) {
+        return `congestion=${congestion.activeTierName || "blocked"}`
+      }
     }
     const runway = Number(tabState.bufferRunwaySec)
     if (!Number.isFinite(runway) || runway < Number(ns.constants?.SPECULATIVE_MIN_RUNWAY_SEC || 0)) {

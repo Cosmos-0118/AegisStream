@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/episode-transition-telemetry.test.js
+ * Run: node test/background/telemetry/domains/episode-transition-telemetry.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const srcPath = path.join(
   __dirname,
-  "../../../src/background/telemetry/episode-transition-telemetry.js"
+  "../../../../src/background/telemetry/domains/episode-transition-telemetry.js"
 )
 
 const logs = []

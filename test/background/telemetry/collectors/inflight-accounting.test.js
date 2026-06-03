@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/inflight-accounting.test.js
+ * Run: node test/background/telemetry/collectors/inflight-accounting.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const accountingPath = path.join(
   __dirname,
-  "../../../src/background/telemetry/inflight-accounting.js"
+  "../../../../src/background/telemetry/collectors/inflight-accounting.js"
 )
 
 const sandbox = {

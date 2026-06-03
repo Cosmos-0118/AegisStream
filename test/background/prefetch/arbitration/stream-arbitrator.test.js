@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/stream-arbitrator.test.js
+ * Run: node test/background/prefetch/arbitration/stream-arbitrator.test.js
  */
 "use strict"
 
@@ -7,8 +7,8 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const rescuePath = path.join(__dirname, "../../../src/background/prefetch/rescue-lane.js")
-const arbPath = path.join(__dirname, "../../../src/background/prefetch/stream-arbitrator.js")
+const rescuePath = path.join(__dirname, "../../../../src/background/prefetch/lanes/rescue-lane.js")
+const arbPath = path.join(__dirname, "../../../../src/background/prefetch/arbitration/stream-arbitrator.js")
 
 const sandbox = {
   self: {

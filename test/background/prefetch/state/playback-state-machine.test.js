@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/playback-state-machine.test.js
+ * Run: node test/background/prefetch/state/playback-state-machine.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const srcPath = path.join(
   __dirname,
-  "../../../src/background/prefetch/playback-state-machine.js"
+  "../../../../src/background/prefetch/state/playback-state-machine.js"
 )
 
 const sandbox = { self: {} }

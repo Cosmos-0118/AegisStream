@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/rescue-lane.test.js
+ * Run: node test/background/prefetch/lanes/rescue-lane.test.js
  */
 "use strict"
 
@@ -7,7 +7,7 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const rescuePath = path.join(__dirname, "../../../src/background/prefetch/rescue-lane.js")
+const rescuePath = path.join(__dirname, "../../../../src/background/prefetch/lanes/rescue-lane.js")
 
 const sandbox = {
   self: {

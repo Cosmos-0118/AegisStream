@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/speculative-telemetry.test.js
+ * Run: node test/background/telemetry/domains/speculative-telemetry.test.js
  */
 "use strict"
 
@@ -21,13 +21,13 @@ function loadBackground(modules) {
   return sandbox.self.AegisBackground
 }
 
-const root = path.join(__dirname, "../../..")
+const root = path.join(__dirname, "../../../..")
 const api = loadBackground([
   path.join(root, "src/background/config/constants.js"),
   path.join(root, "src/background/state/runtime-state.js"),
   path.join(root, "src/background/media/cache-keys.js"),
-  path.join(root, "src/background/telemetry/activity-metrics.js"),
-  path.join(root, "src/background/telemetry/speculative-telemetry.js")
+  path.join(root, "src/background/telemetry/collectors/activity-metrics.js"),
+  path.join(root, "src/background/telemetry/domains/speculative-telemetry.js")
 ])
 
 function assert(condition, message) {

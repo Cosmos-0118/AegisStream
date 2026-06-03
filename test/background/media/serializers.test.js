@@ -34,7 +34,10 @@ assert(fromBuffer?.byteLength === 3, "ArrayBuffer payload should copy")
 assert(describeWireBytes(new Uint8Array(4)) === "Uint8Array", "wire type for Uint8Array")
 assert(describeWireBytes(source) === "ArrayBuffer", "wire type for ArrayBuffer")
 assert(describeWireBytes(null) === "none", "wire type for missing bytes")
-assert(describeStoreMessageWire({ bytesBase64: "AQID" }) === "base64", "store wire base64")
+assert(
+  describeStoreMessageWire({ bytesBase64: "AQID" }) === "ipc-base64",
+  "store wire base64"
+)
 
 const b64 = Buffer.from([40, 41, 42]).toString("base64")
 const fromB64 = extractMessageBytes({ bytesBase64: b64 })

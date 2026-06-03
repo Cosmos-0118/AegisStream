@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/decision-observability.test.js
+ * Run: node test/background/telemetry/observability/decision-observability.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const observabilityPath = path.join(
   __dirname,
-  "../../../src/background/telemetry/decision-observability.js"
+  "../../../../src/background/telemetry/observability/decision-observability.js"
 )
 
 const painCalls = []

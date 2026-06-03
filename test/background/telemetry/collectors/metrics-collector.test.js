@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/telemetry/metrics-collector.test.js
+ * Run: node test/background/telemetry/collectors/metrics-collector.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const srcPath = path.join(
   __dirname,
-  "../../../src/background/telemetry/metrics-collector.js"
+  "../../../../src/background/telemetry/collectors/metrics-collector.js"
 )
 
 const sandbox = { self: {} }

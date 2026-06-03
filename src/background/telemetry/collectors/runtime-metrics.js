@@ -423,6 +423,9 @@ function handleRuntimeMetric(message, sender) {
   if (typeof ns.notePainPlaybackStall === "function") {
     ns.notePainPlaybackStall(durationMs)
   }
+  if (typeof ns.recordPlaybackStallForRollup === "function") {
+    ns.recordPlaybackStallForRollup(durationMs)
+  }
   state.stats.videoStallLongestMs = Math.max(state.stats.videoStallLongestMs, durationMs)
   const reason = typeof message.reason === "string" ? message.reason : "unknown"
   const atSeconds = Number.isFinite(message.atSeconds) ? Number(message.atSeconds).toFixed(1) : "n/a"
@@ -438,6 +441,7 @@ function handleRuntimeMetric(message, sender) {
       typeof ns.maybeBreakPassengerLockForStallRecovery === "function" &&
       ns.maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
         stall: true,
+        isScrubbing: false,
         reason: "video-stall"
       }) &&
       typeof ns.handleSeekPrediction === "function" &&

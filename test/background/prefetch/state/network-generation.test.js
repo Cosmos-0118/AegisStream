@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/prefetch/network-generation.test.js
+ * Run: node test/background/prefetch/state/network-generation.test.js
  */
 "use strict"
 
@@ -7,8 +7,8 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const constantsPath = path.join(__dirname, "../../../src/background/config/constants.js")
-const genPath = path.join(__dirname, "../../../src/background/prefetch/network-generation.js")
+const constantsPath = path.join(__dirname, "../../../../src/background/config/constants.js")
+const genPath = path.join(__dirname, "../../../../src/background/prefetch/state/network-generation.js")
 
 const logs = []
 const sandbox = {

@@ -5,24 +5,28 @@ var ns = (self.AegisBackground ||= {})
 ns.ISOLATED_CONTENT_FILES = [
   "src/content/execution-guard.js",
   "src/content/relay.js",
-  "src/content/smoother/asset-tracker.js"
+  "src/content/asset-tracker.js"
 ]
 
 /** MAIN-world scripts for general pages (load order matters). */
 ns.MAIN_PAGE_SCRIPT_FILES = [
-  "src/page/shared/execution-guard.js",
-  "src/page/shared/manifest-mapper.js",
-  "src/page/shared/site-policy.js",
-  "src/page/shared/cache-response-headers.js",
-  "src/page/shared/range-buffer.js",
-  "src/page/shared/youtube-ump-flags.js",
+  "src/page/core/execution-guard.js",
+  "src/page/media/manifest-mapper.js",
+  "src/page/core/site-policy.js",
+  "src/page/cache/cache-response-headers.js",
+  "src/page/cache/range-buffer.js",
+  "src/page/media/youtube/youtube-ump-flags.js",
   "src/page/bridge/core.js",
+  "src/page/media/media-cache-key-page.js",
+  "src/page/network/network-fetch-coalescer.js",
+  "src/page/cache/cache-registry.js",
   "src/page/smoother/shared.js",
   "src/page/smoother/circuit-breaker/timing.js",
   "src/page/smoother/circuit-breaker/asset-breaker.js",
   "src/page/prefetch/buffer-health-monitor.js",
   "src/page/prefetch/prefetch-failure.js",
   "src/page/prefetch/seek-predictor.js",
+  "src/page/media/kalman-segment-filter.js",
   "src/page/media/seeking-controller.js",
   "src/page/media/video-monitor.js",
   "src/page/bridge/extension-fetch-client.js",
