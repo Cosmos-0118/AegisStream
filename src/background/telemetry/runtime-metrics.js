@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { constants, state, addLog, bumpActivity } = ns
+const { constants, state, addLog, bumpActivity, noteTabPageUrl, isReactivePrefetchTab } = ns
 
 function sanitizeMetricLatencyMs(value) {
   const latency = Number(value)
@@ -95,6 +95,12 @@ function handleRuntimeMetric(message, sender) {
   if (metricType === "buffer_health") {
     const runwaySec = Number(message.runwaySec)
     if (!Number.isFinite(runwaySec) || runwaySec < 0) return
+    if (typeof message.pageUrl === "string" && typeof ns.noteTabPageUrl === "function") {
+      noteTabPageUrl(tabId, message.pageUrl)
+    }
+    if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) {
+      return
+    }
     if (typeof ns.updateTabBufferHealth === "function" && Number.isFinite(tabId)) {
       ns.updateTabBufferHealth(tabId, {
         runwaySec,
@@ -176,6 +182,9 @@ function handleRuntimeMetric(message, sender) {
   }
 
   if (metricType !== "video_stall") return
+  if (typeof isReactivePrefetchTab === "function" && isReactivePrefetchTab(tabId)) {
+    return
+  }
   const durationMs = sanitizeMetricLatencyMs(message.durationMs)
   if (durationMs === null) return
   bumpActivity("videoStalls", 1)

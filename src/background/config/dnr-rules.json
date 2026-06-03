@@ -16,22 +16,6 @@
     }
   },
   {
-    "id": 2,
-    "priority": 2,
-    "action": {
-      "type": "modifyHeaders",
-      "requestHeaders": [
-        { "header": "Client-ID", "operation": "set", "value": "kimne7vfc12a6wmd6w685up43b39dj" },
-        { "header": "Origin", "operation": "set", "value": "https://www.twitch.tv" },
-        { "header": "Referer", "operation": "set", "value": "https://www.twitch.tv/" }
-      ]
-    },
-    "condition": {
-      "urlFilter": "||twitch.tv^",
-      "resourceTypes": ["xmlhttprequest", "other"]
-    }
-  },
-  {
     "id": 3,
     "priority": 2,
     "action": {

@@ -10,6 +10,7 @@ const {
   observeChunkFromWebRequest,
   noteTwitchAuthFromUrl,
   noteTabPageUrl,
+  isReactivePrefetchTab,
   refreshActivePrefetchTab,
   setActivePrefetchTab,
   syncKnownSegmentsToPage,
@@ -33,7 +34,9 @@ function registerChromeEventListeners() {
       if (!url) return
       noteTwitchAuthFromUrl(details.tabId, url)
       if (isPlaylistUrl(url)) {
-        addLog("INFO", `Playlist request detected via webRequest: ${url.slice(-80)}`)
+        if (!isReactivePrefetchTab(details.tabId)) {
+          addLog("INFO", `Playlist request detected via webRequest: ${url.slice(-80)}`)
+        }
         return
       }
       if (details.tabId !== state.activePrefetchTabId) return
@@ -59,7 +62,9 @@ function registerChromeEventListeners() {
         if (header.name.toLowerCase() !== "content-type") continue
         const ct = (header.value || "").toLowerCase()
         if (ct.includes("mpegurl") || ct.includes("x-mpegurl") || ct.includes("dash+xml")) {
-          addLog("INFO", `Playlist detected via content-type (${ct}): ${url.slice(-80)}`)
+          if (!isReactivePrefetchTab(details.tabId)) {
+            addLog("INFO", `Playlist detected via content-type (${ct}): ${url.slice(-80)}`)
+          }
         }
       }
     },
@@ -106,6 +111,12 @@ function registerChromeEventListeners() {
     if (!state.settings.enabled || state.settings.headerEarlyHints === false) return
     if (changeInfo.status !== "loading" || !isScriptInjectionAllowedUrl(tab?.url)) return
     if (isSkippableHeaderHintUrl(tab.url)) return
+    try {
+      const pathname = new URL(tab.url).pathname || ""
+      if (/^\/watch\//i.test(pathname)) return
+    } catch {
+      // ignore
+    }
     void armHeaderHintsForUrl(tab.url, "tab-loading").catch(() => {})
   })
 

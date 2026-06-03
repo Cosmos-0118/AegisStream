@@ -98,6 +98,25 @@ function AegisXHR() {
 
   const originalSend = xhr.send.bind(xhr)
   xhr.send = function (body) {
+    if (_url && globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.(_url)) {
+      return originalSend(body)
+    }
+
+    const isSiteApi =
+      _url &&
+      typeof smoother?.isSiteApiPath === "function" &&
+      (() => {
+        try {
+          return smoother.isSiteApiPath(new URL(_url, location.href).pathname)
+        } catch {
+          return false
+        }
+      })()
+
+    if (isSiteApi) {
+      return originalSend(body)
+    }
+
     const requestRangeHeaders = new Headers()
     if (_rangeHeaderValue) {
       requestRangeHeaders.set("Range", _rangeHeaderValue)

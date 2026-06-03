@@ -29,7 +29,8 @@ const {
   maybeCapturePlaylist,
   bodyToArrayBuffer,
   rememberKnownUmpKey,
-  knownUmpCacheKeys
+  knownUmpCacheKeys,
+  smoother
 } = ns
 
 const networkFetch = fetchWithCircuitBreaker || originalFetch
@@ -84,6 +85,20 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk
 async function aegisFetch(input, init) {
   const { url, method, hasRange, requestHeaders } = getRequestDetails(input, init)
   const requestStartedAt = monotonicNow()
+
+  if (url && globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.(url)) {
+    return originalFetch(input, init)
+  }
+
+  if (url && typeof smoother?.isSiteApiPath === "function") {
+    try {
+      if (smoother.isSiteApiPath(new URL(url, location.href).pathname)) {
+        return originalFetch(input, init)
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   if (method === "POST" && isYoutubeInternalApiUrl(url)) {
     const apiResponse = await networkFetch(input, init)

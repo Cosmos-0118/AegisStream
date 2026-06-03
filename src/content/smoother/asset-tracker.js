@@ -14,8 +14,9 @@ let domQuietTimer = null
 let scheduledDelays = new Set()
 
 function isSkippedHost() {
-  const host = location.hostname || ""
-  return host === "youtube.com" || host.endsWith(".youtube.com")
+  const host = (location.hostname || "").toLowerCase()
+  if (host === "youtube.com" || host.endsWith(".youtube.com")) return true
+  return host === "twitch.tv" || host.endsWith(".twitch.tv")
 }
 
 function isBlockingScript(el) {

@@ -42,9 +42,33 @@
     return isTwitchPageHost(location.hostname)
   }
 
+  /**
+   * On Twitch tabs the player must own every fetch/XHR (signed HLS + GQL).
+   * Intercepting .m3u8 via extension-fetch caused AUTHZ_DISALLOWED_BITRATE.
+   */
+  function shouldPassthroughPlayerRequest(_url) {
+    return isReactivePrefetchSite()
+  }
+
+  /** @deprecated use shouldPassthroughPlayerRequest on Twitch */
+  function shouldPassthroughTwitchApi(url) {
+    if (!isReactivePrefetchSite()) return false
+    return shouldPassthroughPlayerRequest(url)
+  }
+
+  function isSmootherSkippedHost(hostname) {
+    const host = normalizeHost(hostname)
+    if (!host) return true
+    if (host === "youtube.com" || host.endsWith(".youtube.com")) return true
+    return isTwitchPageHost(host)
+  }
+
   globalThis.AegisSitePolicy = {
     isTwitchPageHost,
     isTwitchMediaUrl,
-    isReactivePrefetchSite
+    isReactivePrefetchSite,
+    shouldPassthroughPlayerRequest,
+    shouldPassthroughTwitchApi,
+    isSmootherSkippedHost
   }
 })()

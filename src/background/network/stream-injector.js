@@ -2,6 +2,9 @@
 var ns = (self.AegisBackground ||= {})
 
 function isSkippableDocumentUrl(url) {
+  if (typeof ns.isSkippableSmootherUrl === "function") {
+    return ns.isSkippableSmootherUrl(url)
+  }
   if (typeof url !== "string") return true
   try {
     const parsed = new URL(url)

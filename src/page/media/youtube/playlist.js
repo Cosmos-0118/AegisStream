@@ -537,7 +537,10 @@ function cacheNetworkStreamInBackground({
 
 function isLikelyChunk(url) {
   if (!url) return false
-  
+
+  if (globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.()) return false
+  if (globalThis.AegisSitePolicy?.isTwitchMediaUrl?.(url)) return true
+
   // Exact match from parsed playlists
   const base = url.split("?")[0]
   if (knownSegments.has(base)) return true
@@ -585,6 +588,7 @@ function looksLikePlaylistBody(text) {
  */
 function maybeCapturePlaylist(url, contentType, responseClone) {
   if (!url) return
+  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
   // Dedupe
   const key = url.split("?")[0] // rough dedup key
   if (relayedPlaylists.has(key)) return

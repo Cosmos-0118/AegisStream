@@ -222,6 +222,10 @@ function observeVideos() {
 }
 
 function startBufferHealthMonitor() {
+  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+    logBridge("Buffer health monitor skipped (Twitch reactive passthrough)", "DEBUG")
+    return
+  }
   observeVideos()
   const observer = new MutationObserver(() => observeVideos())
   const root = document.documentElement || document.body

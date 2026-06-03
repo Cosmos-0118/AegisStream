@@ -9,6 +9,9 @@ const HINT_LOG_THROTTLE_MS = 4000
 const lastHintLogByKey = new Map()
 
 function isSkippableDocumentUrl(url) {
+  if (typeof ns.isSkippableSmootherUrl === "function") {
+    return ns.isSkippableSmootherUrl(url)
+  }
   if (typeof url !== "string") return true
   try {
     const parsed = new URL(url)

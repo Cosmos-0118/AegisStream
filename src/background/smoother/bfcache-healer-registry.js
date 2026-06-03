@@ -5,6 +5,8 @@ const CONTENT_SCRIPT_ID = "aegis-bfcache-healer"
 const BFCACHE_HEALER_JS = ["src/page/smoother/navigation/bfcache-healer.js"]
 
 const YOUTUBE_EXCLUDE = ["*://youtube.com/*", "*://*.youtube.com/*"]
+const TWITCH_EXCLUDE = ["*://twitch.tv/*", "*://*.twitch.tv/*"]
+const SMOOTHER_SCRIPT_EXCLUDE = [...YOUTUBE_EXCLUDE, ...TWITCH_EXCLUDE]
 
 function shouldEnableBfcacheHealer(state) {
   return state?.settings?.enabled !== false && state?.settings?.bfcacheEnforcerEnabled !== false
@@ -27,7 +29,7 @@ async function registerBfcacheHealerScript() {
       id: CONTENT_SCRIPT_ID,
       js: BFCACHE_HEALER_JS,
       matches: ["<all_urls>"],
-      excludeMatches: YOUTUBE_EXCLUDE,
+      excludeMatches: SMOOTHER_SCRIPT_EXCLUDE,
       runAt: "document_start",
       world: "MAIN"
     }

@@ -283,7 +283,9 @@ function installVideoHealthMonitor() {
   observer.observe(root, { childList: true, subtree: true })
 }
 
-installVideoHealthMonitor()
+if (!globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+  installVideoHealthMonitor()
+}
 
 function isPrefetchUrlStale(url) {
   const queuedAt = prefetchQueuedAt.get(url)

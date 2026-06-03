@@ -6,6 +6,8 @@ const DEFUSE_AGGRESSIVE_RULESET_ID = "aegis_defuse_aggressive_rules"
 const CONTENT_SCRIPT_ID = "aegis-telemetry-defuser"
 
 const YOUTUBE_EXCLUDE = ["*://youtube.com/*", "*://*.youtube.com/*"]
+const TWITCH_EXCLUDE = ["*://twitch.tv/*", "*://*.twitch.tv/*"]
+const SMOOTHER_SCRIPT_EXCLUDE = [...YOUTUBE_EXCLUDE, ...TWITCH_EXCLUDE]
 
 const STANDARD_DEFUSER_JS = [
   "src/page/smoother/mock/universal-mock-prelude-standard.js",
@@ -34,7 +36,7 @@ async function registerTelemetryDefuserScript(aggressive) {
       id: CONTENT_SCRIPT_ID,
       js: aggressive ? AGGRESSIVE_DEFUSER_JS : STANDARD_DEFUSER_JS,
       matches: ["<all_urls>"],
-      excludeMatches: YOUTUBE_EXCLUDE,
+      excludeMatches: SMOOTHER_SCRIPT_EXCLUDE,
       runAt: "document_start",
       world: "MAIN"
     }

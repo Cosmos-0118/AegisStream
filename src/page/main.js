@@ -15,6 +15,13 @@ if (window.__aegisKillUmpStatus) {
 }
 
 logBridge("AegisStream page-bridge successfully injected into MAIN world")
+if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+  logBridge(
+    "Twitch watch-only mode — native player untouched (no fetch/XHR hooks, prefetch, or cache intercept)",
+    "INFO"
+  )
+  return
+}
 
 installFetchInterceptor()
 installXhrInterceptor()

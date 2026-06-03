@@ -20,11 +20,33 @@ function hostMatchesSuffix(host, suffix) {
   return normalized === bare || normalized.endsWith(suffix)
 }
 
+function isYouTubeHost(host) {
+  const normalized = normalizeHost(host)
+  if (!normalized) return false
+  return normalized === "youtube.com" || normalized.endsWith(".youtube.com")
+}
+
 function isTwitchPageHost(host) {
   const normalized = normalizeHost(host)
   if (!normalized) return false
   if (normalized === "twitch.tv") return true
   return TWITCH_PAGE_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(normalized, suffix))
+}
+
+/** Pages where document/header boost breaks SPA + GraphQL (YouTube, Twitch). */
+function isSkippableSmootherHost(host) {
+  return isYouTubeHost(host) || isTwitchPageHost(host)
+}
+
+function isSkippableSmootherUrl(url) {
+  if (typeof url !== "string" || !url) return true
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true
+    return isSkippableSmootherHost(parsed.hostname)
+  } catch {
+    return true
+  }
 }
 
 function isTwitchPageUrl(url) {
@@ -92,7 +114,10 @@ function pruneTabPageHosts() {
 ns.TWITCH_CLIENT_ID = TWITCH_CLIENT_ID
 ns.TWITCH_ORIGIN = TWITCH_ORIGIN
 ns.TWITCH_REFERER = TWITCH_REFERER
+ns.isYouTubeHost = isYouTubeHost
 ns.isTwitchPageHost = isTwitchPageHost
+ns.isSkippableSmootherHost = isSkippableSmootherHost
+ns.isSkippableSmootherUrl = isSkippableSmootherUrl
 ns.isTwitchPageUrl = isTwitchPageUrl
 ns.isTwitchMediaHost = isTwitchMediaHost
 ns.isTwitchMediaUrl = isTwitchMediaUrl

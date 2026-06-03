@@ -16,14 +16,21 @@ function clearHoverTimer() {
 }
 
 function prefetchDocumentForLink(link) {
-  if (!smoother.isNavigableLink(link)) return
-  const href = link.href
-  const injected = smoother.injectHeadLink("prefetch", href, { as: "document" })
-  if (injected && typeof logBridge === "function") {
-    logBridge(`Hover-prefetch queued: ${href.slice(0, 96)}`, "DEBUG")
+  if (typeof smoother.shouldAllowNavigationBoost === "function") {
+    if (!smoother.shouldAllowNavigationBoost(link)) return
+  } else if (!smoother.isNavigableLink(link)) {
+    return
   }
-  if (typeof ns.notifyRuntime === "function") {
-    ns.notifyRuntime("ARM_HEADER_HINTS", { targetUrl: href, reason: "hover-intent" })
+
+  try {
+    const parsed = new URL(link.href, location.href)
+    // Light hint only — rel=prefetch as=document triggers full HTML fetches per sidebar link.
+    const injected = smoother.injectHeadLink("dns-prefetch", parsed.origin)
+    if (injected && typeof logBridge === "function") {
+      logBridge(`Hover dns-prefetch: ${parsed.origin}`, "DEBUG")
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -35,15 +42,23 @@ function onPointerOver(event) {
   }
   if (link === activeLink) return
   clearHoverTimer()
-  if (!smoother.isNavigableLink(link)) return
+  if (typeof smoother.shouldAllowNavigationBoost === "function") {
+    if (!smoother.shouldAllowNavigationBoost(link)) return
+  } else if (!smoother.isNavigableLink(link)) {
+    return
+  }
 
   activeLink = link
+  const delayMs =
+    typeof smoother.resolveHoverThresholdMs === "function"
+      ? smoother.resolveHoverThresholdMs()
+      : smoother.HOVER_THRESHOLD_MS
   hoverTimeout = setTimeout(() => {
     hoverTimeout = null
-    if (activeLink === link && smoother.isNavigableLink(link)) {
+    if (activeLink === link) {
       prefetchDocumentForLink(link)
     }
-  }, smoother.HOVER_THRESHOLD_MS)
+  }, delayMs)
 }
 
 function onPointerOut(event) {
@@ -59,7 +74,7 @@ function installHoverPrefetch() {
   root.addEventListener("pointerover", onPointerOver, true)
   root.addEventListener("pointerout", onPointerOut, true)
   if (typeof logBridge === "function") {
-    logBridge("Hover-prefetch engine active", "DEBUG")
+    logBridge("Hover-prefetch engine active (dns-prefetch only)", "DEBUG")
   }
 }
 

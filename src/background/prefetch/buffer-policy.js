@@ -65,7 +65,14 @@ function updateTabBufferHealth(tabId, payload) {
 
   if (previousTier !== tier) {
     const scoreLabel = Number.isFinite(healthScore) ? `${healthScore}%` : "n/a"
-    if (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE) {
+    const reactive =
+      typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)
+    if (reactive) {
+      addLog(
+        "DEBUG",
+        `Buffer ${tier} on tab ${tabId} (runway=${runwaySec.toFixed(1)}s, health=${scoreLabel}) — Twitch reactive passthrough (prefetch/cache intercept off)`
+      )
+    } else if (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE) {
       addLog(
         "INFO",
         `Buffer ${tier} on tab ${tabId} (runway=${runwaySec.toFixed(1)}s, health=${scoreLabel}) — increasing prefetch`

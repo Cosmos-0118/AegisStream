@@ -9,6 +9,12 @@ let observer = null
 let mutationObserver = null
 
 function warmOriginForLink(link) {
+  if (
+    typeof smoother.shouldAllowNavigationBoost === "function" &&
+    !smoother.shouldAllowNavigationBoost(link)
+  ) {
+    return false
+  }
   const origin = smoother.linkOrigin(link)
   if (!origin || warmedOrigins.has(origin)) return false
 
