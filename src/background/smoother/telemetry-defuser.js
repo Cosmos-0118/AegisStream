@@ -8,13 +8,13 @@ const CONTENT_SCRIPT_ID = "aegis-telemetry-defuser"
 const YOUTUBE_EXCLUDE = ["*://youtube.com/*", "*://*.youtube.com/*"]
 
 const STANDARD_DEFUSER_JS = [
-  "src/page/smoother/universal-mock-prelude-standard.js",
-  "src/page/smoother/universal-mock.js"
+  "src/page/smoother/mock/universal-mock-prelude-standard.js",
+  "src/page/smoother/mock/universal-mock.js"
 ]
 
 const AGGRESSIVE_DEFUSER_JS = [
-  "src/page/smoother/universal-mock-prelude-aggressive.js",
-  "src/page/smoother/universal-mock.js"
+  "src/page/smoother/mock/universal-mock-prelude-aggressive.js",
+  "src/page/smoother/mock/universal-mock.js"
 ]
 
 async function unregisterTelemetryDefuserScript() {

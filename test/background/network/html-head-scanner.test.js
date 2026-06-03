@@ -1,5 +1,5 @@
 /**
- * Run: node test/background/io/html-head-scanner.test.js
+ * Run: node test/background/network/html-head-scanner.test.js
  */
 "use strict"
 
@@ -7,7 +7,7 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const scannerPath = path.join(__dirname, "../../../src/background/io/html-head-scanner.js")
+const scannerPath = path.join(__dirname, "../../../src/background/network/html-head-scanner.js")
 const code = fs.readFileSync(scannerPath, "utf8")
 const sandbox = { self: {}, URL }
 vm.runInContext(code, vm.createContext(sandbox))

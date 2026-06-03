@@ -18,7 +18,10 @@ const {
   countGlobalInflightPrefetches,
   resolveBufferAdjustedPrefetchWindow,
   resolveBufferAdjustedGlobalCap,
-  getTabBufferTier
+  getTabBufferTier,
+  getManifestUrlSignature,
+  buildManifestSequenceIndex,
+  resolveSegmentIndexInManifest
 } = ns
 
 const TIER_EMERGENCY = "emergency"
@@ -107,29 +110,11 @@ async function delegatePrefetchToPage(tabId, urls) {
   }
 }
 
-function buildIndexByUrl(segments) {
-  const indexByUrl = new Map()
-  segments.forEach((segment, index) => {
-    const keys = buildCacheKeyVariants(segment)
-    for (const key of keys) {
-      if (!indexByUrl.has(key)) {
-        indexByUrl.set(key, index)
-        continue
-      }
-      const existing = indexByUrl.get(key)
-      if (typeof existing === "number" && existing !== index) {
-        // Mark ambiguous keys so anchor matching won't bounce to wrong indices.
-        indexByUrl.set(key, -1)
-      }
-    }
-  })
-  return indexByUrl
-}
-
 function upsertPlaylistState(tabId, normalizedSegments) {
   if (!Array.isArray(normalizedSegments) || normalizedSegments.length === 0) return null
   const previous = state.playlistByTab.get(tabId)
-  const indexByUrl = buildIndexByUrl(normalizedSegments)
+  const { signatures: manifestSignatures, signatureToIndex } =
+    buildManifestSequenceIndex(normalizedSegments)
   const playlistChanged =
     !previous?.segments ||
     previous.segments.length !== normalizedSegments.length ||
@@ -149,12 +134,12 @@ function upsertPlaylistState(tabId, normalizedSegments) {
   ) {
     const previousAnchorUrl = previous.segments[previous.anchorIndex]
     if (previousAnchorUrl) {
-      for (const key of buildCacheKeyVariants(previousAnchorUrl)) {
-        const idx = indexByUrl.get(key)
-        if (typeof idx === "number") {
+      const anchorSignature = getManifestUrlSignature(previousAnchorUrl)
+      if (anchorSignature) {
+        const idx = signatureToIndex.get(anchorSignature)
+        if (typeof idx === "number" && idx >= 0) {
           hasAnchor = true
           anchorIndex = idx
-          break
         }
       }
     }
@@ -170,7 +155,8 @@ function upsertPlaylistState(tabId, normalizedSegments) {
 
   const tabState = {
     segments: normalizedSegments,
-    indexByUrl,
+    manifestSignatures,
+    signatureToIndex,
     updatedAt: Date.now(),
     hasAnchor,
     anchorIndex,
@@ -774,18 +760,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
     bumpActivity("chunksObserved", 1)
   }
   const tabState = state.playlistByTab.get(tabId)
-  if (!tabState?.segments?.length || !tabState.indexByUrl) return
+  if (!tabState?.segments?.length || !tabState.signatureToIndex) return
   tabState.updatedAt = Date.now()
-  const candidateKeys = buildCacheKeyVariants(normalizedChunkUrl)
-  let chunkIndex = null
-  for (const key of candidateKeys) {
-    const idx = tabState.indexByUrl.get(key)
-    if (idx === -1) continue
-    if (typeof idx === "number") {
-      chunkIndex = idx
-      break
-    }
-  }
+  const chunkIndex = resolveSegmentIndexInManifest(normalizedChunkUrl, tabState)
   if (typeof chunkIndex !== "number") return
 
   const hadAnchor = tabState.hasAnchor === true
@@ -797,7 +774,10 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   }
   if (!hadAnchor) {
     tabState.lastScheduledFromIndex = -1
-    addLog("INFO", `Player anchor acquired at segment index ${chunkIndex} (tab ${tabId})`)
+    addLog(
+      "INFO",
+      `Player anchor acquired at manifest index ${chunkIndex}/${tabState.segments.length - 1} (tab ${tabId})`
+    )
   } else if (
     typeof previousAnchorIndex === "number" &&
     Math.abs(chunkIndex - previousAnchorIndex) > Math.max(state.settings.prefetchWindow * 2, 8)

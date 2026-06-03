@@ -1,5 +1,7 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("message-bridge")) return
+
 const { prefetchSegmentsFromPage, pending } = ns
 
 const knownSegments = new Set()

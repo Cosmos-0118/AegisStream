@@ -1,7 +1,6 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
-if (ns.__bufferHealthMonitorInstalled === true) return
-ns.__bufferHealthMonitorInstalled = true
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("buffer-health")) return
 
 const { notifyRuntime, logBridge } = ns
 

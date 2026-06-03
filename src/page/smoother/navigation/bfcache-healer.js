@@ -8,9 +8,10 @@
   const smoother = ns.smoother
 
   function installBfcacheHealer() {
-    if (ns.__bfcacheHealerInstalled === true) return
+    if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("bfcache-healer")) {
+      return
+    }
     if (smoother?.isSmootherSkippedHost?.(location.hostname)) return
-    ns.__bfcacheHealerInstalled = true
 
     const socketRegistry = new Set()
     const eventSourceRegistry = new Set()

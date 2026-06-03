@@ -1,7 +1,6 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
-if (ns.__prefetchVideoInstalled === true) return
-ns.__prefetchVideoInstalled = true
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("prefetch-video")) return
 const {
   originalFetch,
   stripHash,
@@ -20,6 +19,7 @@ const queuedPrefetches = new Set()
 const prefetchQueuedAt = new Map()
 const prefetchQueue = []
 const prefetchQueueWaiters = []
+const prefetchAbortControllers = new Map()
 let prefetchWorkersStarted = false
 const observedChunkAt = new Map()
 const knownUmpCacheKeys = new Set()
@@ -101,6 +101,28 @@ function rememberKnownUmpKey(cacheKey) {
     for (const key of toDelete) {
       knownUmpCacheKeys.delete(key)
     }
+  }
+}
+
+function cancelPrefetchRunway(keepUrls = []) {
+  const keep = new Set(keepUrls.filter(Boolean))
+  for (const [url, controller] of prefetchAbortControllers.entries()) {
+    if (!keep.has(url)) {
+      controller.abort()
+      prefetchAbortControllers.delete(url)
+    }
+  }
+  prefetchQueue.length = 0
+  for (const url of Array.from(queuedPrefetches)) {
+    if (keep.has(url)) continue
+    queuedPrefetches.delete(url)
+    prefetchQueuedAt.delete(url)
+    notifyRuntime("PREFETCH_RESULT", {
+      url,
+      success: false,
+      skipped: "stale-queue",
+      transient: true
+    })
   }
 }
 
@@ -353,23 +375,32 @@ async function processPrefetchUrl(url) {
     return
   }
 
+  const controller = new AbortController()
+  prefetchAbortControllers.set(url, controller)
+
   let bytes = null
   let contentType = "application/octet-stream"
   let requestStatus = 0
 
+  try {
   // Fetch without credentials first (most CDNs use wildcard CORS which breaks with credentials)
   // The browser will use the cache/cookies appropriate for the origin automatically
-  let res = await originalFetch(url, { cache: "no-store" })
+  let res = await originalFetch(url, { cache: "no-store", signal: controller.signal })
   
   // If 403, fallback to include credentials just in case it's same-origin and requires them
   if (res.status === 403 || res.status === 401) {
-     res = await originalFetch(url, { credentials: "include", cache: "no-store" })
+     res = await originalFetch(url, {
+       credentials: "include",
+       cache: "no-store",
+       signal: controller.signal
+     })
   }
   requestStatus = Number(res.status || 0)
   if (res.ok && res.status !== 206) {
     contentType = res.headers.get("content-type") || "application/octet-stream"
     bytes = await res.arrayBuffer()
   } else {
+    if (controller.signal.aborted) return
     const extensionFallback = await fetchPrefetchBytesWithExtension(url)
     if (!extensionFallback.ok) {
       const transient =
@@ -422,6 +453,20 @@ async function processPrefetchUrl(url) {
   }
 
   notifyRuntime("PREFETCH_RESULT", { url, success: true, size: bytes.byteLength })
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      notifyRuntime("PREFETCH_RESULT", {
+        url,
+        success: false,
+        skipped: "stale-queue",
+        transient: true
+      })
+      return
+    }
+    throw e
+  } finally {
+    prefetchAbortControllers.delete(url)
+  }
 }
 
 async function runPrefetchWorker() {
@@ -519,13 +564,13 @@ async function prefetchSegmentsFromPage(urls) {
 
   if (!toQueue.length) return
 
-  // Newest anchor updates are typically the most relevant under rapid seeks.
+  cancelPrefetchRunway(unique)
+
   const now = Date.now()
-  for (let i = toQueue.length - 1; i >= 0; i -= 1) {
-    const url = toQueue[i]
+  for (const url of toQueue) {
     queuedPrefetches.add(url)
     prefetchQueuedAt.set(url, now)
-    prefetchQueue.unshift(url)
+    prefetchQueue.push(url)
   }
   trimPrefetchQueue()
   notifyPrefetchWorkers()

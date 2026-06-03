@@ -7,7 +7,7 @@ const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
 
-const srcDir = path.join(__dirname, "../../../src/page/smoother")
+const srcDir = path.join(__dirname, "../../../src/page/smoother/mock")
 
 const sandbox = {
   window: {},

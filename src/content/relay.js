@@ -5,7 +5,20 @@
 // ---------------------------------------------------------------------------
 
 (() => {
-if (globalThis.__aegisContentRelayInstalled === true) {
+if (typeof globalThis.claimAegisContentSlot === "function") {
+  if (!globalThis.claimAegisContentSlot("relay")) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:BridgeReady",
+        reason: "reinject",
+        pageUrl: location.href
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+} else if (globalThis.__aegisContentRelayInstalled === true) {
   try {
     chrome.runtime.sendMessage({
       type: "AegisStream:BridgeReady",
@@ -17,7 +30,6 @@ if (globalThis.__aegisContentRelayInstalled === true) {
   }
   return
 }
-globalThis.__aegisContentRelayInstalled = true
 
 // ---------------------------------------------------------------------------
 // Messages FROM background service worker → relay to page-bridge

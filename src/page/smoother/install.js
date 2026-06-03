@@ -1,9 +1,8 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("smoother-install")) return
 
 function installPageSmoother() {
-  if (ns.__pageSmootherInstalled === true) return
-  ns.__pageSmootherInstalled = true
 
   if (typeof ns.installHoverPrefetch === "function") {
     const startHover = () => ns.installHoverPrefetch()

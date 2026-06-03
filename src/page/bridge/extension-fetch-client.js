@@ -1,5 +1,9 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("extension-fetch-client")) {
+  return
+}
+
 const { nextRequestId, base64ToArrayBuffer } = ns
 
 const EXTENSION_FETCH_TIMEOUT_MS = 65_000

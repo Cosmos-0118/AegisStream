@@ -48,9 +48,10 @@ function observeLinks(root) {
 }
 
 function installViewportPreconnect() {
-  if (ns.__viewportPreconnectInstalled === true) return
+  if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("viewport-preconnect")) {
+    return
+  }
   if (typeof IntersectionObserver !== "function") return
-  ns.__viewportPreconnectInstalled = true
 
   observer = new IntersectionObserver(
     (entries) => {

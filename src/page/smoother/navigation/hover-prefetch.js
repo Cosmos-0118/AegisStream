@@ -53,8 +53,7 @@ function onPointerOut(event) {
 }
 
 function installHoverPrefetch() {
-  if (ns.__hoverPrefetchInstalled === true) return
-  ns.__hoverPrefetchInstalled = true
+  if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("hover-prefetch")) return
 
   const root = document.documentElement || document
   root.addEventListener("pointerover", onPointerOver, true)

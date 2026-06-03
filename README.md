@@ -27,10 +27,29 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 ## Project layout
 
 - `manifest.json` - extension declaration and permissions.
-- `src/background/service-worker.js` - service-worker entrypoint wiring listeners, message routing, and tab bridge reinjection.
-- `src/background/` - service worker modules: `config`, `state`, `domain`, `io`, `orchestration`, `smoother`, `assets`.
-- `src/page/` - MAIN-world scripts: `shared`, `runtime`, `interceptors`, `youtube`, `smoother`, and `main.js` entry.
-- `src/content/` - ISOLATED-world scripts: `relay.js` and `smoother/asset-tracker.js`.
+- `src/background/service-worker.js` - thin entry: registers listeners only (no top-level init). Engine state wakes on demand; tab bootstrap runs on install only.
+- `src/background/` - service worker by responsibility:
+  - `config/` - constants and DNR rule JSON
+  - `state/` - runtime settings and in-memory state
+  - `injection/` - which pages may receive scripts
+  - `media/` - URL normalization, cache keys, serializers
+  - `parsing/` - HLS/DASH playlist parsing
+  - `cache/` - IndexedDB storage and write queue
+  - `network/` - extension fetch, HTML stream injection, head scanner
+  - `prefetch/` - tab policy, buffer-aware scheduling, orchestrator
+  - `telemetry/` - activity metrics and runtime/UMP telemetry
+  - `smoother/` - layout assets, header hints, CPU defuse, BFCache healer
+  - `lifecycle/` - page script manifest, engine wake vs install bootstrap, tab bridge, Chrome events
+  - `messaging/` - `runtime.onMessage` handlers
+- `src/page/` - MAIN-world page bridge:
+  - `bridge/` - core intercept plumbing, message bridge, extension fetch client
+  - `prefetch/` - buffer health and delegated video prefetch
+  - `interceptors/` - `fetch` and `XHR` hooks
+  - `media/youtube/` - UMP kill-switch and YouTube playlist helpers
+  - `smoother/` - navigation hints, circuit breaker, CPU mock scripts (`mock/`), `install.js`
+  - `shared/` - execution guard, range buffer, YouTube UMP flags
+  - `main.js` - installs interceptors and smoother after dependencies load
+- `src/content/` - ISOLATED-world relay and smoother asset tracker.
 - `src/popup/` - popup UI controls and diagnostics.
 - `test/` - unit tests mirroring `src/` layout (run with `node test/...`).
 - `docs/ROADMAP.md` - detailed build and rollout roadmap.

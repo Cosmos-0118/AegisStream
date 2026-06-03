@@ -1,5 +1,7 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("core")) return
+
 const originalFetch = window.fetch.bind(window)
 const OriginalXHR = window.XMLHttpRequest
 let reqCounter = 0

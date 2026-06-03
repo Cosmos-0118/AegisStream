@@ -3,6 +3,8 @@
 // ---------------------------------------------------------------------------
 
 (() => {
+  const bridge = self.AegisPageBridge
+  if (bridge?.claimExecutionSlot && !bridge.claimExecutionSlot("range-buffer")) return
   if (window.AegisRangeBuffer) return
 
   const originalFetch = window.fetch.bind(window)

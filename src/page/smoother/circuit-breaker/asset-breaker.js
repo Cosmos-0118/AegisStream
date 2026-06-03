@@ -1,5 +1,9 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("asset-breaker")) {
+  return
+}
+
 const { originalFetch, getRequestDetails, logBridge, smoother } = ns
 if (!originalFetch || !getRequestDetails || !smoother?.isCriticalStaticAsset) return
 

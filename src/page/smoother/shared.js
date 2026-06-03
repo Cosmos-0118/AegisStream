@@ -1,5 +1,9 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("smoother-shared")) {
+  return
+}
+
 const smoother = (ns.smoother ||= {})
 
 const HOVER_THRESHOLD_MS = 65

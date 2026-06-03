@@ -1,5 +1,9 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("circuit-timing")) {
+  return
+}
+
 const smoother = ns.smoother
 if (!smoother) return
 

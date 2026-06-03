@@ -1,6 +1,9 @@
 (() => {
-if (globalThis.__aegisAssetTrackerInstalled === true) return
-globalThis.__aegisAssetTrackerInstalled = true
+if (typeof globalThis.claimAegisContentSlot === "function") {
+  if (!globalThis.claimAegisContentSlot("asset-tracker")) return
+} else if (globalThis.__aegisAssetTrackerInstalled === true) {
+  return
+}
 
 const MAX_SCRIPT_ASSETS = 6
 const SPA_DELAYS_MS = [0, 2000, 6000]

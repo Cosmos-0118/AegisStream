@@ -58,7 +58,7 @@ Hooks include `ytcfg` setter, `yt-page-data-updated`, `EXPERIMENT_FLAGS`, `seria
 
 **Goal:** Encourage **MediaSource + byte-range or `sq`** requests so chunks have stable, parseable identifiers. This is best-effort; YouTube may still use UMP.
 
-**Source:** `src/page/youtube/kill-ump.js`
+**Source:** `src/page/media/youtube/kill-ump.js`
 
 ---
 
@@ -71,7 +71,7 @@ Hooks include `ytcfg` setter, `yt-page-data-updated`, `EXPERIMENT_FLAGS`, `seria
 
 ### Range / sequence parsing (`AegisRangeBuffer`)
 
-Implemented in `src/page/shared/range-buffer.js`, used from `src/page/youtube/playlist.js`.
+Implemented in `src/page/shared/range-buffer.js`, used from `src/page/media/youtube/playlist.js`.
 
 Parsing order:
 
@@ -170,11 +170,11 @@ AegisStream runs outbound media fetches in the **service worker** using parallel
 
 | Piece | Role |
 |-------|------|
-| `src/background/io/extension-fetch.js` | `raceExtensionFetch()`, `pumpResponseBody()` (256 KB chunks) |
+| `src/background/network/extension-fetch.js` | `raceExtensionFetch()`, `pumpResponseBody()` (256 KB chunks) |
 | `src/background/config/dnr-rules.json` | DNR rules: Origin/Referer for `googlevideo.com/videoplayback` |
-| `src/background/service-worker.js` | `handleExtensionFetch` — streams body to tab via `ExtensionFetchChunk` / `End` |
+| `src/background/messaging/message-router.js` | Extension fetch handler — streams body to tab via `ExtensionFetchChunk` / `End` |
 | `src/content/relay.js` | Relays fetch request + chunk/end messages to MAIN world |
-| `src/page/runtime/extension-fetch-client.js` | `requestExtensionFetchStream()` (player) / `requestExtensionFetchBuffered()` (prefetch) |
+| `src/page/bridge/extension-fetch-client.js` | `requestExtensionFetchStream()` (player) / `requestExtensionFetchBuffered()` (prefetch) |
 
 **Manifest:** `declarativeNetRequest` + `declarativeNetRequestWithHostAccess` (no `nativeMessaging`).
 
@@ -210,7 +210,7 @@ On extension fetch failure, the bridge falls back to **`originalFetch`** / norma
 
 ## 6. Background cache and UMP policy
 
-Chunks are stored in **IndexedDB** via `STORE_CHUNK_REQUEST` (`src/background/io/cache-db.js`).
+Chunks are stored in **IndexedDB** via `STORE_CHUNK_REQUEST` (`src/background/cache/db.js`).
 
 **Store rules (simplified):** `GET`-oriented keys, no `hasRange` flag on stored entries, status not `206` at store time (stored as full objects keyed by synthetic URL).
 
@@ -262,14 +262,14 @@ Aggregated in popup stats and throttled health logs (`telemetry.js`).
 
 | File | Responsibility |
 |------|----------------|
-| `src/page/youtube/kill-ump.js` | YouTube experiment flag patching |
+| `src/page/media/youtube/kill-ump.js` | YouTube experiment flag patching |
 | `src/page/shared/range-buffer.js` | Parse range/sq, stream ID, cache keys, heuristic prefetch |
-| `src/page/youtube/playlist.js` | UMP state, proxy+cache, chunk helpers, playlist sniffing |
+| `src/page/media/youtube/playlist.js` | UMP state, proxy+cache, chunk helpers, playlist sniffing |
 | `src/page/interceptors/fetch.js` | Main intercept, extension fetch miss path, UMP streaming |
 | `src/page/interceptors/xhr.js` | GET videoplayback, XHR cache serve |
 | `src/content/relay.js` | Page ↔ background relay (including extension fetch) |
-| `src/background/io/extension-fetch.js` | Service worker fetch + race |
-| `src/background/service-worker.js` | `handleExtensionFetch`, cache lookup/store |
+| `src/background/network/extension-fetch.js` | Service worker fetch + race |
+| `src/background/messaging/message-router.js` | Cache lookup/store and extension fetch routing |
 | `src/background/config/dnr-rules.json` | YouTube googlevideo header injection |
 
 ---

@@ -2,7 +2,7 @@
 var ns = (self.AegisBackground ||= {})
 
 const CONTENT_SCRIPT_ID = "aegis-bfcache-healer"
-const BFCACHE_HEALER_JS = ["src/page/smoother/bfcache-healer.js"]
+const BFCACHE_HEALER_JS = ["src/page/smoother/navigation/bfcache-healer.js"]
 
 const YOUTUBE_EXCLUDE = ["*://youtube.com/*", "*://*.youtube.com/*"]
 

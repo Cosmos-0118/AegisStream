@@ -1,0 +1,142 @@
+(() => {
+var ns = (self.AegisBackground ||= {})
+const {
+  state,
+  addLog,
+  stripHash,
+  isPlaylistUrl,
+  isLikelyChunkUrl,
+  pruneRuntimeState,
+  observeChunkFromWebRequest,
+  refreshActivePrefetchTab,
+  setActivePrefetchTab,
+  syncKnownSegmentsToPage,
+  requestPrefetchForTab,
+  isScriptInjectionAllowedUrl,
+  isSkippableHeaderHintUrl,
+  armHeaderHintsForUrl,
+  ensureTabBridgeReady,
+  wakeBackgroundEngine,
+  handleExtensionInstall,
+  handleBrowserStartup
+} = ns
+
+function registerChromeEventListeners() {
+  chrome.webRequest.onBeforeRequest.addListener(
+    (details) => {
+      void wakeBackgroundEngine()
+      if (details.tabId < 0 || !state.settings.enabled) return
+      pruneRuntimeState()
+      const url = stripHash(details.url)
+      if (!url) return
+      if (isPlaylistUrl(url)) {
+        addLog("INFO", `Playlist request detected via webRequest: ${url.slice(-80)}`)
+        return
+      }
+      if (details.tabId !== state.activePrefetchTabId) return
+      const tabState = state.playlistByTab.get(details.tabId)
+      if (tabState?.segments?.length) {
+        observeChunkFromWebRequest(details.tabId, url)
+        return
+      }
+      if (isLikelyChunkUrl(url)) {
+        observeChunkFromWebRequest(details.tabId, url)
+      }
+    },
+    { urls: ["<all_urls>"] }
+  )
+
+  chrome.webRequest.onHeadersReceived.addListener(
+    (details) => {
+      if (details.tabId < 0 || !state.settings.enabled) return
+      const url = stripHash(details.url)
+      if (!url) return
+      const headers = details.responseHeaders || []
+      for (const header of headers) {
+        if (header.name.toLowerCase() !== "content-type") continue
+        const ct = (header.value || "").toLowerCase()
+        if (ct.includes("mpegurl") || ct.includes("x-mpegurl") || ct.includes("dash+xml")) {
+          addLog("INFO", `Playlist detected via content-type (${ct}): ${url.slice(-80)}`)
+        }
+      }
+    },
+    { urls: ["<all_urls>"] },
+    ["responseHeaders"]
+  )
+
+  chrome.windows.onFocusChanged.addListener((windowId) => {
+    if (!state.settings.enabled || windowId === chrome.windows.WINDOW_ID_NONE) return
+    void refreshActivePrefetchTab()
+  })
+
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (state.activePrefetchTabId === tabId) {
+      state.activePrefetchTabId = null
+      void refreshActivePrefetchTab()
+    }
+    state.playlistByTab.delete(tabId)
+    state.bridgeHeartbeatByTab.delete(tabId)
+    state.tabAnchorJumps.delete(tabId)
+    const pending = state.pendingPrefetchByTab.get(tabId)
+    if (pending?.timerId) clearTimeout(pending.timerId)
+    state.pendingPrefetchByTab.delete(tabId)
+    for (const [url, inflight] of state.inflightPrefetches.entries()) {
+      if (inflight?.tabId === tabId) {
+        state.inflightPrefetches.delete(url)
+      }
+    }
+  })
+
+  chrome.runtime.onInstalled.addListener(() => {
+    addLog("INFO", "Extension installed/updated")
+    void handleExtensionInstall()
+  })
+
+  chrome.runtime.onStartup.addListener(() => {
+    addLog("INFO", "Browser started — loading settings")
+    void handleBrowserStartup()
+  })
+
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+    if (!state.settings.enabled || state.settings.headerEarlyHints === false) return
+    if (changeInfo.status !== "loading" || !isScriptInjectionAllowedUrl(tab?.url)) return
+    if (isSkippableHeaderHintUrl(tab.url)) return
+    void armHeaderHintsForUrl(tab.url, "tab-loading").catch(() => {})
+  })
+
+  chrome.tabs.onActivated.addListener(({ tabId }) => {
+    if (!state.settings.enabled) return
+    setActivePrefetchTab(tabId, "tab-activated")
+    pruneRuntimeState()
+    void ensureTabBridgeReady(tabId, "tab-activated", false).then((ready) => {
+      if (!ready) return
+      const tabState = state.playlistByTab.get(tabId)
+      if (!tabState?.segments?.length) return
+      syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-activated" })
+      if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
+      }
+    })
+  })
+
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url) {
+      state.bridgeHeartbeatByTab.delete(tabId)
+    }
+    if (changeInfo.status !== "complete") return
+    if (!isScriptInjectionAllowedUrl(tab?.url)) return
+
+    void ensureTabBridgeReady(tabId, "tab-updated", false).then((ready) => {
+      if (!ready) return
+      const tabState = state.playlistByTab.get(tabId)
+      if (!tabState?.segments?.length) return
+      syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-updated" })
+      if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-updated")
+      }
+    })
+  })
+}
+
+ns.registerChromeEventListeners = registerChromeEventListeners
+})()

@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisPageBridge ||= {})
-if (ns.__bridgeInstalled === true) return
+if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("main")) return
 if (
   typeof ns.logBridge !== "function" ||
   typeof ns.installFetchInterceptor !== "function" ||
@@ -8,7 +8,6 @@ if (
 ) {
   return
 }
-ns.__bridgeInstalled = true
 const { logBridge, installFetchInterceptor, installXhrInterceptor, installPageSmoother } = ns
 
 if (window.__aegisKillUmpStatus) {
