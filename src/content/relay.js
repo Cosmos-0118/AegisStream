@@ -120,6 +120,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
 
+  if (message?.type === "AegisStream:CancelPrefetch") {
+    window.postMessage({
+      __aegisstream: true,
+      type: "CANCEL_PREFETCH"
+    }, "*")
+    sendResponse({ ok: true })
+    return true
+  }
+
   if (message?.type === "AegisStream:KnownSegments" && message.urls) {
     window.postMessage({
       __aegisstream: true,

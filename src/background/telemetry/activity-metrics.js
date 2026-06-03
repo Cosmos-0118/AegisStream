@@ -68,6 +68,9 @@ function bumpLookupMetric(metric, url, amount = 1) {
 
 /** Always count player-facing cache serves (no per-URL dedupe). */
 function recordCacheServeHit(url) {
+  if (typeof ns.recordStreamMetric === "function") {
+    ns.recordStreamMetric("hls", "hits", 1)
+  }
   bumpActivity("cacheHits", 1)
   bumpActivity("cacheLookups", 1)
   if (url && typeof url === "string") {
@@ -77,6 +80,9 @@ function recordCacheServeHit(url) {
 }
 
 function recordCacheLookupMiss(url) {
+  if (typeof ns.recordStreamMetric === "function") {
+    ns.recordStreamMetric("hls", "misses", 1)
+  }
   bumpLookupMetric("cacheMisses", url, 1)
 }
 
@@ -85,6 +91,12 @@ function resetActivityMetrics() {
   cacheCountSnapshot = 0
   cacheCountFetchedAt = 0
   recentLookupMetricAt.clear()
+  if (typeof ns.resetMetricsCollector === "function") {
+    ns.resetMetricsCollector()
+  }
+  if (typeof ns.resetSeekPredictionTelemetry === "function") {
+    ns.resetSeekPredictionTelemetry()
+  }
 }
 
 function sumWindowCounters() {
@@ -115,8 +127,18 @@ async function refreshCacheEntryCount(force = false) {
 async function buildDisplayStats() {
   const windowTotals = sumWindowCounters()
   const cacheEntries = await refreshCacheEntryCount()
-  const hits = Math.max(windowTotals.cacheHits || 0, Number(state.stats.cacheHits) || 0)
-  const misses = Math.max(windowTotals.cacheMisses || 0, Number(state.stats.cacheMisses) || 0)
+  const streamSnapshot =
+    typeof ns.metrics?.getSnapshot === "function" ? ns.metrics.getSnapshot() : null
+  const hits = Math.max(
+    windowTotals.cacheHits || 0,
+    Number(state.stats.cacheHits) || 0,
+    streamSnapshot?.hls?.hits || 0
+  )
+  const misses = Math.max(
+    windowTotals.cacheMisses || 0,
+    Number(state.stats.cacheMisses) || 0,
+    streamSnapshot?.hls?.misses || 0
+  )
   const warmups = windowTotals.cacheWarmups || 0
   const lookups = windowTotals.cacheLookups || 0
   const resolvedLookups = hits + misses + warmups
@@ -183,6 +205,12 @@ async function buildDisplayStats() {
     speculative:
       typeof ns.getSpeculativeTelemetrySummary === "function"
         ? ns.getSpeculativeTelemetrySummary()
+        : null,
+    streamMetrics:
+      typeof ns.metrics?.getSnapshot === "function" ? ns.metrics.getSnapshot() : null,
+    seekPrediction:
+      typeof ns.getSeekPredictionSummary === "function"
+        ? ns.getSeekPredictionSummary()
         : null
   }
 }

@@ -132,23 +132,16 @@ function updateSmoothedFill(instantFill) {
 
 function computeHealthScore(runwaySec, smoothedFill, paused) {
   const targetRunwaySec = getTargetRunwaySec()
-  const secureRunwaySec = 15
-  const stallPenalty = Math.min(20, recentStallPenaltyMs() / 400)
-
-  if (runwaySec >= secureRunwaySec) {
-    const baseHealth = Math.min(100, (runwaySec / targetRunwaySec) * 100)
-    const drainPenalty =
-      smoothedFill < 0 && !paused ? Math.min(25, Math.abs(smoothedFill) * 0.5) : 0
-    return Math.min(
-      100,
-      Math.max(20, Math.round(baseHealth - drainPenalty - stallPenalty))
-    )
-  }
-
-  const lowRunwayHealth = Math.max(0, (runwaySec / secureRunwaySec) * 100)
-  const fillAssist =
-    smoothedFill > 0 ? Math.min(15, smoothedFill * 4) : Math.max(-15, smoothedFill * 2)
-  return Math.min(100, Math.max(0, Math.round(lowRunwayHealth + fillAssist - stallPenalty)))
+  const stallPenalty = Math.min(15, recentStallPenaltyMs() / 500)
+  const baseScore = (runwaySec / targetRunwaySec) * 100
+  const velocityModifier =
+    smoothedFill < 0 && !paused ? smoothedFill * 2.5 : 0
+  const fillBoost =
+    smoothedFill > 0 && !paused ? Math.min(8, smoothedFill * 2) : 0
+  return Math.min(
+    100,
+    Math.max(0, Math.round(baseScore + velocityModifier + fillBoost - stallPenalty))
+  )
 }
 
 function isSeekSettling() {

@@ -60,20 +60,31 @@ function maybeLogUmpHealthSummary(force = false) {
   if (!force && now - state.telemetry.lastUmpHealthLogAt < constants.UMP_HEALTH_LOG_INTERVAL_MS) {
     return
   }
-  const lookups = state.stats.youtubeUmpLookups || 0
-  const requests = state.stats.youtubeUmpRequests || 0
-  if (!force && requests === 0 && lookups === 0) return
+
+  const snapshot =
+    typeof ns.metrics?.getSnapshot === "function" ? ns.metrics.getSnapshot() : null
+  const hls = snapshot?.hls || {
+    lookups: state.stats.cacheLookups || 0,
+    hits: state.stats.cacheHits || 0,
+    misses: state.stats.cacheMisses || 0,
+    warmups: state.stats.cacheWarmups || 0
+  }
+  const ump = snapshot?.ump || {
+    requests: state.stats.youtubeUmpRequests || 0,
+    lookups: state.stats.youtubeUmpLookups || 0,
+    hits: state.stats.youtubeUmpLookupHits || 0,
+    misses: state.stats.youtubeUmpLookupMisses || 0,
+    warmups: state.stats.youtubeUmpWarmups || 0
+  }
+  const hasUmp = (ump.requests || 0) > 0 || (ump.lookups || 0) > 0
+  const hasHls = (hls.lookups || 0) > 0 || (hls.hits || 0) > 0 || (hls.misses || 0) > 0
+  const stallCount = state.stats.videoStalls || 0
+
+  if (!force && !hasUmp && !hasHls && stallCount === 0) return
 
   state.telemetry.lastUmpHealthLogAt = now
-  const hits = state.stats.youtubeUmpLookupHits || 0
-  const misses = state.stats.youtubeUmpLookupMisses || 0
-  const warmups = state.stats.youtubeUmpWarmups || 0
   const captureSkipped = state.stats.youtubeUmpCaptureSkipped || 0
-  const effective = hits + misses + warmups
-  const hitRate = effective > 0 ? Math.round((hits / effective) * 100) : 0
   const stallSeconds = (state.stats.videoStallMsTotal / 1000).toFixed(1)
-  const modeLabel =
-    requests > 0 || lookups > 0 ? "YouTube realtime health" : "AegisStream realtime health"
   const extensionFetchLine =
     typeof ns.formatExtensionFetchMetricsLine === "function"
       ? ns.formatExtensionFetchMetricsLine()
@@ -89,10 +100,40 @@ function maybeLogUmpHealthSummary(force = false) {
     typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
       ? ", panic=ON"
       : ""
+  const combined = snapshot?.combined
+
+  if (hasUmp) {
+    const umpLookups = ump.lookups || ump.hits + ump.misses + ump.warmups
+    const effective = ump.hits + ump.misses + ump.warmups
+    const hitRate = effective > 0 ? Math.round((ump.hits / effective) * 100) : 0
+    addLog(
+      "INFO",
+      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    )
+    return
+  }
+
+  const hlsLookups = hls.lookups || hls.hits + hls.misses + hls.warmups
+  const hitRateDenominator = hls.hits + hls.misses
+  const hitRate =
+    hitRateDenominator > 0
+      ? Math.round((hls.hits / hitRateDenominator) * 100)
+      : combined?.hitRatePercent || 0
+  const seekSummary =
+    typeof ns.getSeekPredictionSummary === "function"
+      ? ns.getSeekPredictionSummary()
+      : null
+  const seekLine =
+    seekSummary && seekSummary.samples > 0
+      ? `, seekPred(mean=${seekSummary.meanError}, p95=${seekSummary.p95Error}, n=${seekSummary.samples})`
+      : ""
   addLog(
     "INFO",
-    `${modeLabel} — req=${requests}, lookups=${lookups}, hits=${hits}, miss=${misses}, warmup=${warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${state.stats.videoStalls} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
+  if (typeof ns.maybeLogSeekPredictionSummary === "function") {
+    ns.maybeLogSeekPredictionSummary(force)
+  }
 }
 
 function rememberUmpLookupKey(key) {
@@ -111,6 +152,18 @@ function rememberUmpLookupKey(key) {
 function handleRuntimeMetric(message, sender) {
   const metricType = message.metricType
   const tabId = sender?.tab?.id
+  if (metricType === "seek_prediction") {
+    const currentTime = Number(message.currentTime)
+    if (!Number.isFinite(currentTime) || !Number.isFinite(tabId)) return
+    if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) {
+      return
+    }
+    if (typeof ns.handleSeekPrediction === "function") {
+      ns.handleSeekPrediction(tabId, currentTime)
+    }
+    return
+  }
+
   if (metricType === "buffer_health") {
     const runwaySec = Number(message.runwaySec)
     if (!Number.isFinite(runwaySec) || runwaySec < 0) return
@@ -134,6 +187,9 @@ function handleRuntimeMetric(message, sender) {
   }
 
   if (metricType === "youtube_ump_request") {
+    if (typeof ns.recordStreamMetric === "function") {
+      ns.recordStreamMetric("ump", "requests", 1)
+    }
     bumpActivity("youtubeUmpRequests", 1)
     if (typeof message.bodyHash === "string" && message.bodyHash.length > 0) {
       state.telemetry.umpHashes.add(message.bodyHash)

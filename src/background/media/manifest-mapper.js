@@ -114,6 +114,106 @@ function roundDurationSeconds(totalDuration) {
   return Math.round(totalDuration * 1000) / 1000
 }
 
+function fnv1aHashHex(payload) {
+  if (typeof payload !== "string" || !payload.length) return "0"
+  let hash = 2166136261
+  for (let i = 0; i < payload.length; i += 1) {
+    hash ^= payload.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
+}
+
+function roundDurationMs(duration) {
+  if (!Number.isFinite(duration) || duration <= 0) return 0
+  return Math.round(duration * 1000)
+}
+
+function getRelativePathTail(url) {
+  const signature = getManifestUrlSignature(url)
+  if (!signature) return ""
+  const parts = signature.split("/").filter(Boolean)
+  if (parts.length <= 2) return parts.join("/")
+  return parts.slice(-2).join("/")
+}
+
+function buildRelativePathProfile(segments, maxHead = 16, maxTail = 6) {
+  const list = Array.isArray(segments) ? segments : []
+  if (list.length === 0) return ""
+  const head = list.slice(0, maxHead).map(getRelativePathTail)
+  const tail = list.length > maxHead + maxTail ? list.slice(-maxTail).map(getRelativePathTail) : []
+  return `${head.join(";")}|${tail.join(";")}`
+}
+
+function buildDiscontinuityProfile(markers) {
+  if (!Array.isArray(markers) || markers.length === 0) return ""
+  let count = 0
+  const slots = []
+  for (let i = 0; i < markers.length; i += 1) {
+    if (markers[i] === 1) {
+      count += 1
+      if (slots.length < 12) slots.push(i)
+    }
+  }
+  return `${count}:${slots.join(",")}`
+}
+
+/**
+ * Timeline anatomy only: counts, durations, relative path tails, discontinuity slots.
+ * Ignores playlist comments, CDN hosts, and signed query tokens.
+ */
+function buildStructuralPlaylistHash({
+  segmentDurations,
+  segments,
+  discontinuityMarkers,
+  isLive,
+  segmentCount
+}) {
+  const durations = Array.isArray(segmentDurations) ? segmentDurations : []
+  const count = Number.isFinite(segmentCount) ? segmentCount : durations.length
+  const head = durations.slice(0, 24).map(roundDurationMs)
+  const tail = count > 12 ? durations.slice(-6).map(roundDurationMs) : []
+  const pathProfile = buildRelativePathProfile(segments)
+  const discontinuityProfile = buildDiscontinuityProfile(discontinuityMarkers)
+  const payload = [
+    count,
+    isLive === true ? "live" : "vod",
+    head.join(","),
+    tail.join(","),
+    pathProfile,
+    discontinuityProfile
+  ].join("|")
+  return fnv1aHashHex(payload)
+}
+
+function estimateManifestIndexFromTime(currentTimeSec, segmentDurations, options = {}) {
+  const time = Number(currentTimeSec)
+  if (!Number.isFinite(time) || time < 0) return null
+  const durations = Array.isArray(segmentDurations) ? segmentDurations : []
+  const fallback = Number(options.fallbackSegmentDurationSec) || 4
+
+  if (durations.length > 0) {
+    let elapsed = 0
+    for (let index = 0; index < durations.length; index += 1) {
+      const raw = durations[index]
+      const segmentDuration =
+        Number.isFinite(raw) && raw > 0 ? raw : fallback
+      if (time < elapsed + segmentDuration) return index
+      elapsed += segmentDuration
+    }
+    return Math.max(0, durations.length - 1)
+  }
+
+  const totalDuration = Number(options.totalDurationSec)
+  const segmentCount = Number(options.segmentCount)
+  if (Number.isFinite(totalDuration) && totalDuration > 0 && Number.isFinite(segmentCount) && segmentCount > 0) {
+    const ratio = Math.min(1, time / totalDuration)
+    return Math.min(segmentCount - 1, Math.max(0, Math.floor(ratio * segmentCount)))
+  }
+
+  return null
+}
+
 function buildPlaylistFingerprint({
   segments,
   mediaPlaylistPath,
@@ -247,6 +347,9 @@ ns.buildManifestSequenceIndex = buildManifestSequenceIndex
 ns.resolveSegmentIndexInManifest = resolveSegmentIndexInManifest
 ns.getSequentialPrefetchTargets = getSequentialPrefetchTargets
 ns.getPageUrlFingerprint = getPageUrlFingerprint
+ns.getRelativePathTail = getRelativePathTail
+ns.buildStructuralPlaylistHash = buildStructuralPlaylistHash
+ns.estimateManifestIndexFromTime = estimateManifestIndexFromTime
 ns.buildPlaylistFingerprint = buildPlaylistFingerprint
 ns.scorePlaylistFingerprintChange = scorePlaylistFingerprintChange
 ns.comparePlaylistFingerprints = comparePlaylistFingerprints

@@ -28,8 +28,12 @@ const {
   getManifestUrlSignature,
   buildManifestSequenceIndex,
   buildPlaylistFingerprint,
+  buildStructuralPlaylistHash,
   scorePlaylistFingerprintChange,
-  resolveSegmentIndexInManifest
+  resolveSegmentIndexInManifest,
+  determinePlaybackTransition,
+  PlaybackStates,
+  estimateManifestIndexFromTime
 } = ns
 
 const TIER_EMERGENCY = "emergency"
@@ -66,6 +70,132 @@ function isTabInRapidSeek(tabState) {
   return Date.now() < Number(tabState.rapidSeekUntil || 0)
 }
 
+function isTabInSeekChurnAggressive(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)
+}
+
+function isTabInTeleportMode(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.teleportModeUntil || 0)
+}
+
+function markSeekChurnAggressive(tabState) {
+  if (!tabState) return
+  const now = Date.now()
+  tabState.seekChurnAggressiveUntil = now + constants.SEEK_CHURN_AGGRESSIVE_MS
+  tabState.highChurnMode = true
+  tabState.rapidSeekUntil = 0
+}
+
+function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport") {
+  if (!tabState?.segments?.length || typeof targetIndex !== "number") return
+  const now = Date.now()
+  const radius = Math.max(1, Number(constants.TELEPORT_MODE_RADIUS) || 5)
+  const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
+  const start = Math.max(0, clampedTarget - radius)
+  const previousAnchor = tabState.anchorIndex
+
+  tabState.teleportModeUntil = now + constants.TELEPORT_MODE_DURATION_MS
+  tabState.teleportTargetIndex = clampedTarget
+  markSeekChurnAggressive(tabState)
+  tabState.hasAnchor = true
+  tabState.anchorIndex = clampedTarget
+  tabState.anchorRetainedByRefresh = false
+  tabState.lastScheduledFromIndex = -1
+  if (typeof tabState.mediaSequence === "number") {
+    tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
+  }
+
+  cancelPendingPrefetchForTab(tabId)
+  releaseInflightForTab(tabId)
+  try {
+    chrome.tabs.sendMessage(tabId, { type: "AegisStream:CancelPrefetch" })
+  } catch {
+    // tab may not be ready
+  }
+
+  addLog(
+    "INFO",
+    `Teleport mode activated on tab ${tabId} (${source}): anchor=${clampedTarget}/${tabState.segments.length - 1}, prefetching target ring ${start}-${Math.min(tabState.segments.length - 1, clampedTarget + radius)}`
+  )
+  if (typeof ns.recordSeekPrediction === "function") {
+    ns.recordSeekPrediction(tabId, {
+      predictedIndex: clampedTarget,
+      currentTimeSec: null,
+      previousIndex: previousAnchor,
+      teleport: true,
+      source
+    })
+  }
+
+  void schedulePrefetch(tabId, tabState.segments, start, {
+    force: true,
+    source: "teleport-mode"
+  })
+  if (typeof ns.maybeScheduleSpeculativePrefetch === "function") {
+    ns.maybeScheduleSpeculativePrefetch(tabId)
+  }
+}
+
+function handleSeekPrediction(tabId, currentTimeSec) {
+  if (!Number.isFinite(tabId)) return
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.segments?.length) return
+
+  const estimatedIndex = estimateManifestIndexFromTime(currentTimeSec, tabState.segmentDurations, {
+    totalDurationSec: tabState.playlistFingerprint?.totalDuration,
+    segmentCount: tabState.segments.length,
+    fallbackSegmentDurationSec: 4
+  })
+  if (typeof estimatedIndex !== "number") return
+
+  tabState.predictedAnchorIndex = estimatedIndex
+  tabState.predictedAnchorAt = Date.now()
+
+  const previousIndex = tabState.hasAnchor ? tabState.anchorIndex : null
+  if (typeof ns.recordSeekPrediction === "function") {
+    ns.recordSeekPrediction(tabId, {
+      predictedIndex: estimatedIndex,
+      currentTimeSec,
+      previousIndex,
+      teleport: false,
+      source: "seek-prediction"
+    })
+  }
+  const teleportThreshold = Number(constants.TELEPORT_MODE_JUMP_THRESHOLD) || 20
+
+  if (typeof previousIndex === "number") {
+    const jump = Math.abs(estimatedIndex - previousIndex)
+    if (jump >= teleportThreshold) {
+      enterTeleportMode(tabId, tabState, estimatedIndex, "seek-prediction")
+      return
+    }
+    if (jump > 1) {
+      markSeekChurnAggressive(tabState)
+      tabState.anchorIndex = estimatedIndex
+      if (typeof tabState.mediaSequence === "number") {
+        tabState.anchorMediaSequence = tabState.mediaSequence + estimatedIndex
+      }
+      void schedulePrefetch(tabId, tabState.segments, Math.max(0, estimatedIndex - 1), {
+        force: true,
+        source: "seek-prediction"
+      })
+    }
+    return
+  }
+
+  tabState.hasAnchor = true
+  tabState.anchorIndex = estimatedIndex
+  if (typeof tabState.mediaSequence === "number") {
+    tabState.anchorMediaSequence = tabState.mediaSequence + estimatedIndex
+  }
+  void schedulePrefetch(tabId, tabState.segments, Math.max(0, estimatedIndex), {
+    force: true,
+    source: "seek-prediction"
+  })
+}
+
 function noteAnchorChange(tabState, previousIndex, nextIndex) {
   if (typeof previousIndex !== "number" || typeof nextIndex !== "number") return
   if (previousIndex === nextIndex) return
@@ -77,7 +207,7 @@ function noteAnchorChange(tabState, previousIndex, nextIndex) {
   compacted.push(now)
   tabState.recentAnchorChanges = compacted
   if (compacted.length >= constants.RAPID_SEEK_CHANGE_THRESHOLD) {
-    tabState.rapidSeekUntil = now + constants.RAPID_SEEK_PAUSE_MS
+    markSeekChurnAggressive(tabState)
   }
 }
 
@@ -603,14 +733,38 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     urlsChanged && !structureChanged && contentChangedByFingerprint
   const segmentCountChanged =
     !previous?.segments || previous.segments.length !== normalizedSegments.length
-  const qualityVariantSwitch =
-    urlsChanged && !segmentCountChanged && structureChanged && !contentChangedByFingerprint
+  const structuralHash = buildStructuralPlaylistHash({
+    segmentDurations: meta.segmentDurations ?? previous?.segmentDurations,
+    segments: normalizedSegments,
+    discontinuityMarkers:
+      meta.discontinuityMarkers ?? previous?.discontinuityMarkers ?? null,
+    isLive: meta.isLive === true || previous?.isLive === true,
+    segmentCount: normalizedSegments.length
+  })
+  const playbackTransition = determinePlaybackTransition(previous, {
+    structuralHash,
+    activeRungLabel: meta.activeRungLabel || previous?.activeRungLabel || null,
+    mediaPlaylistPath,
+    episodeChanged: episodeChangedByFingerprint,
+    urlsChanged
+  })
+  const playbackState = playbackTransition.state
+  const qualityVariantSwitch = playbackTransition.qualitySwitch === true
 
   if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0) {
-    clearPrefetchTrackingForUrls(previous.segments)
-    if (qualityVariantSwitch || episodeChangedByFingerprint) {
-      state.tabAnchorJumps.delete(tabId)
+    if (playbackTransition.clearPrefetch) {
+      clearPrefetchTrackingForUrls(previous.segments)
+      if (qualityVariantSwitch || episodeChangedByFingerprint) {
+        state.tabAnchorJumps.delete(tabId)
+      }
     }
+  }
+
+  if (playbackState === PlaybackStates.TOKEN_REFRESHING && urlsChanged) {
+    addLog(
+      "DEBUG",
+      `HLS playlist token refresh on tab ${tabId} (structural hash stable, anchor retained)`
+    )
   }
 
   if (episodeChangedByFingerprint) {
@@ -689,7 +843,7 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     typeof previous.anchorIndex === "number" &&
     previous.isLive !== true &&
     urlsChanged &&
-    !structureChanged
+    playbackTransition.retainAnchor
   ) {
     hasAnchor = true
     anchorIndex = Math.min(
@@ -786,20 +940,43 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       anchorRetainedByRefresh || previous?.anchorRetainedByRefresh === true,
     prefetchFailureWindow: previous?.prefetchFailureWindow || null,
     playlistFingerprint,
+    structuralHash,
+    segmentDurations: Array.isArray(meta.segmentDurations)
+      ? meta.segmentDurations
+      : previous?.segmentDurations || null,
+    discontinuityMarkers: Array.isArray(meta.discontinuityMarkers)
+      ? meta.discontinuityMarkers
+      : previous?.discontinuityMarkers || null,
+    teleportModeUntil: Number(previous?.teleportModeUntil || 0),
+    teleportTargetIndex:
+      typeof previous?.teleportTargetIndex === "number"
+        ? previous.teleportTargetIndex
+        : null,
+    seekChurnAggressiveUntil: Number(previous?.seekChurnAggressiveUntil || 0),
+    predictedAnchorIndex:
+      typeof previous?.predictedAnchorIndex === "number"
+        ? previous.predictedAnchorIndex
+        : null,
+    predictedAnchorAt: Number(previous?.predictedAnchorAt || 0),
+    playbackState,
+    mediaPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
     fingerprintReason: fingerprintReason || null,
     fingerprintScore,
     fingerprintThreshold: fingerprintAssessment.threshold,
-    playlistClassification: episodeChangedByFingerprint
-      ? "new-playback"
-      : qualityVariantSwitch
-        ? "quality-switch"
-        : tokensRefreshed
-          ? "token-refresh"
-          : structureChanged
-            ? "structure-change"
-            : urlsChanged
-              ? "urls-changed"
-              : "unchanged",
+    playlistClassification:
+      playbackState === PlaybackStates.NEW_PLAYBACK
+        ? "new-playback"
+        : playbackState === PlaybackStates.QUALITY_SWITCHING
+          ? "quality-switch"
+          : playbackState === PlaybackStates.TOKEN_REFRESHING
+            ? "token-refresh"
+            : playbackState === PlaybackStates.STABLE_PLAYBACK && urlsChanged
+              ? "stable-refresh"
+              : tokensRefreshed
+                ? "token-refresh"
+                : urlsChanged
+                  ? "urls-changed"
+                  : "unchanged",
     recentAnchorChanges:
       qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint
         ? []
@@ -898,6 +1075,16 @@ function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnch
     return { accept: true, index: chunkIndex }
   }
 
+  if (isTabInTeleportMode(tabState) && typeof tabState.teleportTargetIndex === "number") {
+    const radius = Math.max(1, Number(constants.TELEPORT_MODE_RADIUS) || 5)
+    if (Math.abs(chunkIndex - tabState.teleportTargetIndex) <= radius + 2) {
+      tabState.anchorPendingIndex = null
+      tabState.anchorPendingCount = 0
+      tabState.anchorLockStartedAt = 0
+      return { accept: true, index: chunkIndex }
+    }
+  }
+
   const jump = Math.abs(chunkIndex - previousAnchorIndex)
   const isZeroReset = chunkIndex === 0 && previousAnchorIndex > 10
   const isExtremeJump = jump > Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD || 5)
@@ -967,8 +1154,8 @@ function maybeRequestPrefetchForTab(tabId, segments, startIndex, source, options
   const tabState = state.playlistByTab.get(tabId)
   if (isPrefetchBlocked(tabState)) return
   if (!options.force) {
-    if (isTabInRapidSeek(tabState)) return
-    if (isTabInAnchorCooldown(tabState)) return
+    if (isTabInRapidSeek(tabState) && !isTabInSeekChurnAggressive(tabState)) return
+    if (isTabInAnchorCooldown(tabState) && !isTabInTeleportMode(tabState)) return
   }
   requestPrefetchForTab(tabId, segments, startIndex, source, options)
 }
@@ -981,8 +1168,13 @@ function resolveEffectivePrefetchWindow(tabId) {
   const tabState = state.playlistByTab.get(tabId)
   const recentVariantSwitch =
     Date.now() - Number(tabState?.lastQualityVariantSwitchAt || 0) < 5000
-  if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD && !recentVariantSwitch) {
-    windowSize = Math.min(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
+  if (tabState && isTabInSeekChurnAggressive(tabState)) {
+    windowSize = Math.max(
+      windowSize,
+      Number(constants.SEEK_CHURN_PREFETCH_WINDOW_MIN) || 10
+    )
+  } else if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD && !recentVariantSwitch) {
+    windowSize = Math.max(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
   }
   if (isInRefreshRecovery(tabState)) {
     windowSize = Math.min(windowSize, constants.REFRESH_RECOVERY_MAX_CHUNKS)
@@ -1209,17 +1401,16 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     return
   }
 
-  if (effectiveWindow < state.settings.prefetchWindow && tabState.highChurnMode !== true) {
-    tabState.highChurnMode = true
-    addLog(
-      "INFO",
-      `High seek churn detected on tab ${tabId}; temporarily reducing prefetch window to ${effectiveWindow}`
-    )
-  } else if (effectiveWindow >= state.settings.prefetchWindow && tabState.highChurnMode === true) {
+  if (tabState.highChurnMode === true && !isTabInSeekChurnAggressive(tabState)) {
     tabState.highChurnMode = false
     addLog(
       "INFO",
       `Seek churn normalized on tab ${tabId}; restoring prefetch window to ${state.settings.prefetchWindow}`
+    )
+  } else if (isTabInSeekChurnAggressive(tabState) && effectiveWindow >= state.settings.prefetchWindow) {
+    addLog(
+      "INFO",
+      `Seek churn aggressive on tab ${tabId}; prefetch window ${effectiveWindow} (guard ring expanded)`
     )
   }
 
@@ -1263,10 +1454,14 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   const globalInflight = countGlobalInflightPrefetches()
   const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
   const panicActive = typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
+  const churnOrTeleport =
+    isTabInSeekChurnAggressive(tabState) || isTabInTeleportMode(tabState)
   const batchInflightCap =
-    panicActive || tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE
-      ? constants.PREFETCH_BATCH_INFLIGHT_CAP + 2
-      : constants.PREFETCH_BATCH_INFLIGHT_CAP
+    churnOrTeleport
+      ? Math.min(10, constants.PREFETCH_BATCH_INFLIGHT_CAP + 2)
+      : panicActive || tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE
+        ? constants.PREFETCH_BATCH_INFLIGHT_CAP + 2
+        : constants.PREFETCH_BATCH_INFLIGHT_CAP
 
   if (globalInflight >= globalCap) {
     if (!options.capRetry) {
@@ -1523,7 +1718,9 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
         isLive: parsed.isLive === true,
         mediaSequence: parsed.mediaSequence,
         totalDuration: parsed.totalDuration,
-        mediaPlaylistUrl: normalizedPlaylistUrl
+        mediaPlaylistUrl: normalizedPlaylistUrl,
+        segmentDurations: parsed.segmentDurations,
+        discontinuityMarkers: parsed.discontinuityMarkers
       })
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedPlaylistUrl.slice(-60)}`)
@@ -1621,7 +1818,9 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
         mediaSequence: parsed.mediaSequence,
         totalDuration: parsed.totalDuration,
         mediaPlaylistUrl: normalizedUrl,
-        pageUrl
+        pageUrl,
+        segmentDurations: parsed.segmentDurations,
+        discontinuityMarkers: parsed.discontinuityMarkers
       })
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 usable segments: ${normalizedUrl.slice(-60)}`)
@@ -1741,6 +1940,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   if (typeof tabState.mediaSequence === "number") {
     tabState.anchorMediaSequence = tabState.mediaSequence + chunkIndex
   }
+  if (typeof ns.resolveSeekPredictionActual === "function") {
+    ns.resolveSeekPredictionActual(tabId, chunkIndex, { source: "player-segment" })
+  }
   noteRefreshRecoverySuccess(tabId, tabState)
   if (hadAnchor && typeof previousAnchorIndex === "number" && chunkIndex !== previousAnchorIndex) {
     noteAnchorChange(tabState, previousAnchorIndex, chunkIndex)
@@ -1769,15 +1971,24 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
         `Playlist refresh anchor drift ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId}); skipping seek-churn handling`
       )
     } else if (Math.abs(chunkIndex - previousAnchorIndex) > 1) {
-      noteAnchorJump(tabId)
-      applyAnchorJumpCooldown(tabState, previousAnchorIndex, chunkIndex)
-      addLog("INFO", `Player anchor jumped from ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId})`)
+      const teleportThreshold = Number(constants.TELEPORT_MODE_JUMP_THRESHOLD) || 20
+      if (Math.abs(chunkIndex - previousAnchorIndex) >= teleportThreshold) {
+        enterTeleportMode(tabId, tabState, chunkIndex, "anchor-jump")
+      } else {
+        noteAnchorJump(tabId)
+        applyAnchorJumpCooldown(tabState, previousAnchorIndex, chunkIndex)
+        markSeekChurnAggressive(tabState)
+        addLog(
+          "INFO",
+          `Player anchor jumped from ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId})`
+        )
+      }
     }
   }
   if (
     isTabEligibleForPrefetch(tabId) &&
-    !isTabInAnchorCooldown(tabState) &&
-    !isTabInRapidSeek(tabState)
+    (!isTabInAnchorCooldown(tabState) || isTabInTeleportMode(tabState)) &&
+    (!isTabInRapidSeek(tabState) || isTabInSeekChurnAggressive(tabState))
   ) {
     maybeRequestPrefetchForTab(tabId, tabState.segments, chunkIndex + 1, "chunk-observed")
   }
@@ -1795,6 +2006,9 @@ ns.pruneRuntimeState = pruneRuntimeState
 ns.parseAndPrefetchFromPlaylist = parseAndPrefetchFromPlaylist
 ns.parsePlaylistContentForTab = parsePlaylistContentForTab
 ns.handleChunkObserved = handleChunkObserved
+ns.handleSeekPrediction = handleSeekPrediction
+ns.isTabInSeekChurnAggressive = isTabInSeekChurnAggressive
+ns.isTabInTeleportMode = isTabInTeleportMode
 ns.observeChunkFromWebRequest = observeChunkFromWebRequest
 ns.isTabInRapidSeek = isTabInRapidSeek
 ns.schedulePrefetch = schedulePrefetch

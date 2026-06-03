@@ -124,6 +124,9 @@ function resetStats() {
   if (typeof ns.resetExtensionFetchMetrics === "function") {
     ns.resetExtensionFetchMetrics()
   }
+  if (typeof ns.resetSeekPredictionTelemetry === "function") {
+    ns.resetSeekPredictionTelemetry()
+  }
 }
 
 async function loadSettings() {

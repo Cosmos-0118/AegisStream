@@ -119,4 +119,41 @@ const refreshDelta = api.scorePlaylistFingerprintChange(fp1, {
 assert(!refreshDelta.contentChanged, "identical fingerprint is not new content")
 assert(refreshDelta.fingerprintReason === null, "no reason when score is zero")
 
+const segmentUrlsA = [
+  "https://cdn.example.com/vod/seg-00001.ts?sig=A",
+  "https://cdn.example.com/vod/seg-00002.ts?sig=A"
+]
+const segmentUrlsB = [
+  "https://cdn.example.com/vod/seg-00001.ts?sig=B",
+  "https://cdn.example.com/vod/seg-00002.ts?sig=B"
+]
+const structuralA = api.buildStructuralPlaylistHash({
+  segmentDurations: [4, 4, 4, 4],
+  segments: segmentUrlsA,
+  discontinuityMarkers: [0, 0, 0, 0],
+  isLive: false,
+  segmentCount: 4
+})
+const structuralB = api.buildStructuralPlaylistHash({
+  segmentDurations: [4, 4, 4, 4],
+  segments: segmentUrlsB,
+  discontinuityMarkers: [0, 0, 0, 0],
+  isLive: false,
+  segmentCount: 4
+})
+assert(structuralA === structuralB, "same timeline anatomy yields same structural hash")
+const structuralQuality = api.buildStructuralPlaylistHash({
+  segmentDurations: [2, 2, 2, 2],
+  segments: segmentUrlsA,
+  discontinuityMarkers: [0, 1, 0, 0],
+  isLive: false,
+  segmentCount: 4
+})
+assert(structuralA !== structuralQuality, "duration/discontinuity changes alter structural hash")
+
+const timeIdx = api.estimateManifestIndexFromTime(9, [4, 4, 4, 4, 4], {
+  fallbackSegmentDurationSec: 4
+})
+assert(timeIdx === 2, "manifest index estimated from segment durations")
+
 console.log("manifest-mapper.test.js: ok")

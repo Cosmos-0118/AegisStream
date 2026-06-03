@@ -14,14 +14,31 @@ function addUrlToProtectedSet(url, protectedSet) {
 /**
  * URLs inside [anchor - past, anchor + future] for every tab with a known anchor.
  */
+function isTabInSeekChurnAggressive(tabState) {
+  if (!tabState) return false
+  const until = Number(tabState.seekChurnAggressiveUntil || 0)
+  return Date.now() < until
+}
+
 function collectGuardRingProtectedUrls() {
   const protectedSet = new Set()
-  const past = Math.max(0, Number(constants.CACHE_GUARD_RING_PAST_SEGMENTS) || 2)
-  const future = Math.max(0, Number(constants.CACHE_GUARD_RING_FUTURE_SEGMENTS) || 12)
+  const defaultPast = Math.max(0, Number(constants.CACHE_GUARD_RING_PAST_SEGMENTS) || 2)
+  const defaultFuture = Math.max(0, Number(constants.CACHE_GUARD_RING_FUTURE_SEGMENTS) || 12)
 
   for (const tabState of state.playlistByTab.values()) {
     if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue
-    const anchor = tabState.anchorIndex
+    const seekChurn = isTabInSeekChurnAggressive(tabState)
+    const teleportActive = Date.now() < Number(tabState.teleportModeUntil || 0)
+    const past = seekChurn || teleportActive
+      ? Math.max(defaultPast, Number(constants.CACHE_GUARD_RING_SEEK_CHURN_PAST) || 5)
+      : defaultPast
+    const future = seekChurn || teleportActive
+      ? Math.max(defaultFuture, Number(constants.CACHE_GUARD_RING_SEEK_CHURN_FUTURE) || 24)
+      : defaultFuture
+    const anchor =
+      teleportActive && typeof tabState.teleportTargetIndex === "number"
+        ? tabState.teleportTargetIndex
+        : tabState.anchorIndex
     const start = Math.max(0, anchor - past)
     const end = Math.min(tabState.segments.length - 1, anchor + future)
     for (let index = start; index <= end; index += 1) {

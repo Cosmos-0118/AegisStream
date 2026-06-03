@@ -21,7 +21,9 @@ function parseHlsPlaylist(text, playlistUrl) {
   let pendingVariantMeta = null
   let hasEndList = false
   const segmentDurations = []
+  const discontinuityMarkers = []
   let pendingDuration = null
+  let pendingDiscontinuity = false
   let mediaSequence = null
 
   for (const line of lines) {
@@ -34,6 +36,10 @@ function parseHlsPlaylist(text, playlistUrl) {
       if (match?.[1]) {
         mediaSequence = Number(match[1])
       }
+      continue
+    }
+    if (line.startsWith("#EXT-X-DISCONTINUITY")) {
+      pendingDiscontinuity = true
       continue
     }
     if (line.startsWith("#EXTINF:")) {
@@ -93,6 +99,8 @@ function parseHlsPlaylist(text, playlistUrl) {
     segmentDurations.push(
       Number.isFinite(pendingDuration) && pendingDuration !== null ? pendingDuration : null
     )
+    discontinuityMarkers.push(pendingDiscontinuity ? 1 : 0)
+    pendingDiscontinuity = false
     pendingDuration = null
   }
 
@@ -120,6 +128,7 @@ function parseHlsPlaylist(text, playlistUrl) {
       segments: [],
       isLive: false,
       segmentDurations: [],
+      discontinuityMarkers: [],
       mediaSequence: null,
       totalDuration: null
     }
@@ -131,6 +140,7 @@ function parseHlsPlaylist(text, playlistUrl) {
     segments,
     isLive: !hasEndList,
     segmentDurations,
+    discontinuityMarkers,
     mediaSequence: Number.isFinite(mediaSequence) ? mediaSequence : null,
     totalDuration: totalDuration > 0 ? totalDuration : null
   }

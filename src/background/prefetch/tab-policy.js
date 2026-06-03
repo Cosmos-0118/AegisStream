@@ -67,10 +67,13 @@ function applyAnchorJumpCooldown(tabState, previousIndex, nextIndex) {
   const threshold = Math.max(state.settings.prefetchWindow * 2, 8)
   if (Math.abs(nextIndex - previousIndex) < threshold) return
   const now = Date.now()
-  tabState.prefetchCooldownUntil = now + constants.PREFETCH_ANCHOR_COOLDOWN_MS
-  tabState.rapidSeekUntil = Math.max(
-    Number(tabState.rapidSeekUntil || 0),
-    now + constants.RAPID_SEEK_PAUSE_MS
+  const teleportThreshold = Number(constants.TELEPORT_MODE_JUMP_THRESHOLD) || 20
+  if (Math.abs(nextIndex - previousIndex) >= teleportThreshold) {
+    return
+  }
+  tabState.prefetchCooldownUntil = Math.min(
+    Number(tabState.prefetchCooldownUntil || 0) || now + constants.PREFETCH_ANCHOR_COOLDOWN_MS,
+    now + Math.floor(constants.PREFETCH_ANCHOR_COOLDOWN_MS / 2)
   )
 }
 

@@ -106,24 +106,35 @@ function updateTabBufferHealth(tabId, payload) {
   }
 }
 
+function isTabInSeekChurnAggressive(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)
+}
+
+function isTabInTeleportMode(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.teleportModeUntil || 0)
+}
+
 function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
   if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) {
     return 0
   }
   const tabState = state.playlistByTab.get(tabId)
-  if (
-    tabState &&
-    typeof ns.isTabInRapidSeek === "function" &&
-    ns.isTabInRapidSeek(tabState)
-  ) {
-    return Math.max(1, Math.min(baseWindow, 2))
+  const churnMin = Math.max(
+    baseWindow,
+    Number(constants.SEEK_CHURN_PREFETCH_WINDOW_MIN) || 10
+  )
+  if (tabState && (isTabInSeekChurnAggressive(tabState) || isTabInTeleportMode(tabState))) {
+    return Math.min(20, Math.max(churnMin, Math.ceil(baseWindow * 1.5)))
   }
   if (
     tabState &&
     typeof ns.isTabInAnchorCooldown === "function" &&
-    ns.isTabInAnchorCooldown(tabState)
+    ns.isTabInAnchorCooldown(tabState) &&
+    !isTabInTeleportMode(tabState)
   ) {
-    return Math.max(1, Math.min(baseWindow, 2))
+    return Math.max(1, Math.min(baseWindow, 4))
   }
   const tier = getTabBufferTier(tabId)
   if (!tier) return baseWindow
@@ -140,7 +151,11 @@ function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
       adjusted = baseWindow
       break
     case TIER_MAINTENANCE:
-      adjusted = Math.max(1, Math.min(baseWindow, 2))
+      if (tabState && isTabInSeekChurnAggressive(tabState)) {
+        adjusted = Math.max(churnMin, Math.min(baseWindow, 6))
+      } else {
+        adjusted = Math.max(1, Math.min(baseWindow, 2))
+      }
       break
     case TIER_IDLE:
       adjusted = 1
@@ -156,8 +171,11 @@ function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
 
 function resolveBufferAdjustedGlobalCap(tabId) {
   const base = Math.max(1, Number(constants.GLOBAL_MAX_INFLIGHT_PREFETCHES) || 6)
+  const tabState = state.playlistByTab.get(tabId)
+  const healthScore = Number(tabState?.bufferHealthScore)
+  const deficitFloor = Number.isFinite(healthScore) ? getRequiredConcurrency(healthScore) : 0
   const tier = getTabBufferTier(tabId)
-  if (!tier) return base
+  if (!tier) return Math.max(base, deficitFloor)
 
   let adjusted = base
   switch (tier) {
@@ -179,31 +197,37 @@ function resolveBufferAdjustedGlobalCap(tabId) {
     default:
       adjusted = base
   }
+  adjusted = Math.max(adjusted, deficitFloor)
   if (typeof ns.resolvePanicAdjustedGlobalCap === "function") {
     return ns.resolvePanicAdjustedGlobalCap(adjusted)
   }
   return adjusted
 }
 
+function getRequiredConcurrency(healthScore) {
+  const score = Number(healthScore)
+  if (!Number.isFinite(score)) return constants.PREFETCH_CONCURRENCY
+  if (score > 80) return 1
+  if (score > 40) return 2
+  return 4
+}
+
 function resolvePagePrefetchConcurrency(tierOrRunway, healthScore) {
+  const score = Number(healthScore)
+  if (Number.isFinite(score)) {
+    return getRequiredConcurrency(score)
+  }
   const tier =
     typeof tierOrRunway === "string"
       ? tierOrRunway
-      : classifyTierFromRunway(Number(tierOrRunway), Number(healthScore))
-
-  switch (tier) {
-    case TIER_EMERGENCY:
-      return Math.min(5, constants.PREFETCH_CONCURRENCY + 2)
-    case TIER_AGGRESSIVE:
-      return Math.min(4, constants.PREFETCH_CONCURRENCY + 1)
-    case TIER_NORMAL:
-      return constants.PREFETCH_CONCURRENCY
-    case TIER_MAINTENANCE:
-    case TIER_IDLE:
-      return 1
-    default:
-      return constants.PREFETCH_CONCURRENCY
+      : classifyTierFromRunway(Number(tierOrRunway), 50)
+  if (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE) {
+    return 4
   }
+  if (tier === TIER_MAINTENANCE || tier === TIER_IDLE) {
+    return 1
+  }
+  return constants.PREFETCH_CONCURRENCY
 }
 
 function isMaintenancePrefetchTier(tier) {
@@ -214,6 +238,9 @@ ns.getTabBufferTier = getTabBufferTier
 ns.updateTabBufferHealth = updateTabBufferHealth
 ns.resolveBufferAdjustedPrefetchWindow = resolveBufferAdjustedPrefetchWindow
 ns.resolveBufferAdjustedGlobalCap = resolveBufferAdjustedGlobalCap
+ns.isTabInSeekChurnAggressive = isTabInSeekChurnAggressive
+ns.isTabInTeleportMode = isTabInTeleportMode
+ns.getRequiredConcurrency = getRequiredConcurrency
 ns.resolvePagePrefetchConcurrency = resolvePagePrefetchConcurrency
 ns.isMaintenancePrefetchTier = isMaintenancePrefetchTier
 })()

@@ -193,7 +193,14 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     }
 
     bumpLookupMetric("cacheLookups", lookupUrl, 1)
-    if (isUmpLookup) bumpActivity("youtubeUmpLookups", 1)
+    if (isUmpLookup) {
+      if (typeof ns.recordStreamMetric === "function") {
+        ns.recordStreamMetric("ump", "lookups", 1)
+      }
+      bumpActivity("youtubeUmpLookups", 1)
+    } else if (typeof ns.recordStreamMetric === "function") {
+      ns.recordStreamMetric("hls", "lookups", 1)
+    }
 
     const isFirstSeenUmpKey = isUmpLookup && !state.umpLookupSeenAt.has(lookupUrl)
     const stillInWarmupWindow =
@@ -206,11 +213,17 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       if (isUmpLookup) {
         if (isFirstSeenUmpKey && stillInWarmupWindow) {
           bumpLookupMetric("cacheWarmups", lookupUrl, 1)
+          if (typeof ns.recordStreamMetric === "function") {
+            ns.recordStreamMetric("ump", "warmups", 1)
+          }
           bumpActivity("youtubeUmpWarmups", 1)
         } else if (!rapidSeek) {
           recordCacheLookupMiss(lookupUrl)
         }
         if (isFirstSeenUmpKey) {
+          if (typeof ns.recordStreamMetric === "function") {
+            ns.recordStreamMetric("ump", "misses", 1)
+          }
           bumpActivity("youtubeUmpLookupMisses", 1)
           rememberUmpLookupKey(lookupUrl)
         }
@@ -228,9 +241,17 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
 
     recordCacheServeHit(lookupUrl)
     if (isUmpLookup) {
+      if (typeof ns.recordStreamMetric === "function") {
+        ns.recordStreamMetric("ump", "hits", 1)
+      }
       bumpActivity("youtubeUmpLookupHits", 1)
       rememberUmpLookupKey(lookupUrl)
       maybeLogUmpHealthSummary()
+    } else {
+      const hlsHits = ns.metrics?.registry?.hls?.hits || state.stats.cacheHits || 0
+      if (hlsHits % 25 === 0) {
+        maybeLogUmpHealthSummary()
+      }
     }
     if (typeof ns.recordSpeculativeUsed === "function") {
       ns.recordSpeculativeUsed(

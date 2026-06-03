@@ -54,6 +54,13 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "CANCEL_PREFETCH") {
+    if (typeof cancelPrefetchRunway === "function") {
+      cancelPrefetchRunway()
+    }
+    return
+  }
+
   if (data.type === "SETTINGS_UPDATED" && data.settings) {
     applyRuntimeSettings(data.settings)
     return

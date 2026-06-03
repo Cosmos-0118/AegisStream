@@ -47,35 +47,30 @@ function isMaintenancePrefetchMode() {
   return tier === ns.TIER_MAINTENANCE || tier === ns.TIER_IDLE
 }
 
+function getRequiredConcurrency(healthScore) {
+  const score = Number(healthScore)
+  if (!Number.isFinite(score)) return PREFETCH_CONCURRENCY
+  if (score > 80) return 1
+  if (score > 40) return 2
+  return 4
+}
+
 function getBufferAdjustedConcurrency() {
-  const tier = getBufferTier()
   const healthScore = Number(ns.bufferHealthScore)
+  if (Number.isFinite(healthScore)) {
+    const required = getRequiredConcurrency(healthScore)
+    if (ns.networkPanicActive === true) {
+      return Math.max(required, 4)
+    }
+    return required
+  }
+  const tier = getBufferTier()
   if (!tier) {
-    return ns.networkPanicActive === true
-      ? Math.min(5, PREFETCH_CONCURRENCY + 2)
-      : PREFETCH_CONCURRENCY
+    return ns.networkPanicActive === true ? 4 : PREFETCH_CONCURRENCY
   }
-
-  if (ns.networkPanicActive === true && tier === ns.TIER_NORMAL) {
-    return Math.min(4, PREFETCH_CONCURRENCY + 1)
-  }
-
-  switch (tier) {
-    case ns.TIER_EMERGENCY:
-      return Math.min(5, PREFETCH_CONCURRENCY + 2)
-    case ns.TIER_AGGRESSIVE:
-      return Math.min(4, PREFETCH_CONCURRENCY + 1)
-    case ns.TIER_NORMAL:
-      return PREFETCH_CONCURRENCY
-    case ns.TIER_MAINTENANCE:
-    case ns.TIER_IDLE:
-      return 1
-    default:
-      if (Number.isFinite(healthScore) && healthScore < 40) {
-        return PREFETCH_CONCURRENCY
-      }
-      return 1
-  }
+  if (tier === ns.TIER_EMERGENCY || tier === ns.TIER_AGGRESSIVE) return 4
+  if (tier === ns.TIER_MAINTENANCE || tier === ns.TIER_IDLE) return 1
+  return PREFETCH_CONCURRENCY
 }
 
 let activePrefetchWorkerCount = 0
