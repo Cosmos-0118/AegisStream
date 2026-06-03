@@ -314,7 +314,11 @@
           if (!bytes || bytes.byteLength === 0) return
 
           // Send to background for caching using the normalized cache key
-          const storeRes = await requestRuntime("STORE_CHUNK_REQUEST", {
+          const storeChunk =
+            typeof self.AegisPageBridge?.storeChunkFromPage === "function"
+              ? self.AegisPageBridge.storeChunkFromPage
+              : (payload) => requestRuntime("STORE_CHUNK_REQUEST", payload)
+          const storeRes = await storeChunk({
             url: cacheKey,
             contentType,
             bytes,
@@ -324,10 +328,14 @@
           })
 
           if (!storeRes?.ok) {
+            const storeError =
+              typeof self.AegisPageBridge?.formatStoreChunkError === "function"
+                ? self.AegisPageBridge.formatStoreChunkError(storeRes)
+                : storeRes?.error || "store failed"
             notifyRuntime("PREFETCH_RESULT", {
               url: nextUrl,
               success: false,
-              error: storeRes?.error ? `store failed: ${storeRes.error}` : "store failed"
+              error: `store failed: ${storeError}`
             })
             return
           }

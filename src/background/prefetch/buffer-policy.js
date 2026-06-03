@@ -28,10 +28,12 @@ function getTabBufferTier(tabId) {
 }
 
 function classifyTierFromRunway(runwaySec, healthScore = 50) {
-  if (runwaySec < constants.BUFFER_RUNWAY_EMERGENCY_SEC || healthScore < 22) {
+  const healthEmergency = healthScore < 22 && runwaySec < 20
+  const healthAggressive = healthScore < 42 && runwaySec < 25
+  if (runwaySec < constants.BUFFER_RUNWAY_EMERGENCY_SEC || healthEmergency) {
     return TIER_EMERGENCY
   }
-  if (runwaySec < constants.BUFFER_RUNWAY_AGGRESSIVE_SEC || healthScore < 42) {
+  if (runwaySec < constants.BUFFER_RUNWAY_AGGRESSIVE_SEC || healthAggressive) {
     return TIER_AGGRESSIVE
   }
   if (runwaySec < constants.BUFFER_RUNWAY_NORMAL_SEC) return TIER_NORMAL

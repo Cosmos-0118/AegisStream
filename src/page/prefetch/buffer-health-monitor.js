@@ -168,9 +168,12 @@ function bumpSeekActivity() {
 }
 
 function classifyTier(runwaySec, healthScore) {
+  // Do not mark emergency/aggressive from fill-rate noise when runway is already ample.
+  const healthEmergency = healthScore < 22 && runwaySec < 20
+  const healthAggressive = healthScore < 42 && runwaySec < Math.min(getComfortRunwaySec(), 25)
   let tier
-  if (runwaySec < 5 || healthScore < 22) tier = TIER_EMERGENCY
-  else if (runwaySec < 15 || healthScore < 42) tier = TIER_AGGRESSIVE
+  if (runwaySec < 5 || healthEmergency) tier = TIER_EMERGENCY
+  else if (runwaySec < 15 || healthAggressive) tier = TIER_AGGRESSIVE
   else if (runwaySec < 30) tier = TIER_NORMAL
   else if (runwaySec < 60) tier = TIER_MAINTENANCE
   else tier = TIER_IDLE
@@ -337,6 +340,7 @@ ns.measurePrimaryVideoRunway = () => {
 }
 ns.runwayAtPlayhead = runwayAtPlayhead
 ns.computeHealthScore = computeHealthScore
+ns.classifyTier = classifyTier
 ns.TIER_EMERGENCY = TIER_EMERGENCY
 ns.TIER_AGGRESSIVE = TIER_AGGRESSIVE
 ns.TIER_NORMAL = TIER_NORMAL

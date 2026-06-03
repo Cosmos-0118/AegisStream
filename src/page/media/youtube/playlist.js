@@ -7,6 +7,8 @@ if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("youtu
 const {
   stripHash,
   requestRuntime,
+  storeChunkFromPage,
+  formatStoreChunkError,
   notifyRuntime,
   logBridge,
   monotonicNow,
@@ -361,7 +363,7 @@ async function storeUmpStreamCapture({
       offset += chunk.byteLength
     }
 
-    void requestRuntime("STORE_CHUNK_REQUEST", {
+    void storeChunkFromPage({
       url: cacheLookupUrl,
       contentType,
       bytes: merged.buffer,
@@ -378,7 +380,7 @@ async function storeUmpStreamCapture({
           rememberKnownUmpKey(hashOnly)
         } else {
           logBridge(
-            `UMP chunk store failed (${storeRes?.error || "unknown"}): ${String(urlForLog).slice(-80)}`,
+            `UMP chunk store failed (${formatStoreChunkError(storeRes)}): ${String(urlForLog).slice(-80)}`,
             "WARN"
           )
           reportRuntimeMetric("youtube_ump_stream_outcome", {
@@ -400,8 +402,11 @@ async function storeUmpStreamCapture({
             : null
         })
       })
-      .catch(() => {
-        logBridge(`UMP chunk store failed (runtime): ${String(urlForLog).slice(-80)}`, "WARN")
+      .catch((error) => {
+        logBridge(
+          `UMP chunk store failed (${formatStoreChunkError(null, error)}): ${String(urlForLog).slice(-80)}`,
+          "WARN"
+        )
         reportRuntimeMetric("youtube_ump_stream_outcome", {
           outcome: "store_failed",
           bytes: total,
@@ -502,18 +507,18 @@ function cacheNetworkStreamInBackground({
       return
     }
 
-    const storeRes = await requestRuntime("STORE_CHUNK_REQUEST", {
+    const storeRes = await storeChunkFromPage({
       url: cacheLookupUrl,
       contentType,
       bytes: streamed.bytes,
       status: 200,
       method: storeMethod,
       hasRange: false
-    }).catch(() => null)
+    }).catch((error) => ({ ok: false, error: formatStoreChunkError(null, error) }))
 
     if (!storeRes?.ok) {
       logBridge(
-        `Network chunk store failed (${storeRes?.error || "unknown"}): ${String(urlForLog).slice(-80)}`,
+        `Network chunk store failed (${formatStoreChunkError(storeRes)}): ${String(urlForLog).slice(-80)}`,
         "WARN"
       )
     }

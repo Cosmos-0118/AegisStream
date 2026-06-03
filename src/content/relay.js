@@ -260,19 +260,22 @@ window.addEventListener("message", (event) => {
               requestId: data.requestId,
               response: runtimeError
                 ? { ok: false, error: runtimeError.message || "runtime-error" }
-                : response || { ok: false }
+                : response || { ok: false, error: "no-response" }
             },
             "*"
           )
         }
       )
-    } catch {
+    } catch (error) {
       window.postMessage(
         {
           __aegisstream: true,
           type: "STORE_CHUNK_RESPONSE",
           requestId: data.requestId,
-          response: { ok: false }
+          response: {
+            ok: false,
+            error: error?.message ? `relay-error: ${error.message}` : "relay-error"
+          }
         },
         "*"
       )

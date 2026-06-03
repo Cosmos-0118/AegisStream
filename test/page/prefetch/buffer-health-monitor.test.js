@@ -33,7 +33,7 @@ sandbox.globalThis = sandbox
 
 vm.runInContext(fs.readFileSync(srcPath, "utf8"), vm.createContext(sandbox))
 
-const { runwayAtPlayhead, computeHealthScore } = sandbox.self.AegisPageBridge
+const { runwayAtPlayhead, computeHealthScore, classifyTier } = sandbox.self.AegisPageBridge
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -86,5 +86,15 @@ assert(
 
 const comfortPaused = computeHealthScore(60, null, true, 1)
 assert(comfortPaused >= 90, "paused with comfortable runway should score well")
+
+assert(
+  classifyTier(44.9, 16) !== "emergency",
+  "ample runway should not be emergency tier from transient low health score"
+)
+assert(
+  classifyTier(41.5, 13) !== "emergency",
+  "40+ second runway should not trigger emergency from fill-rate noise"
+)
+assert(classifyTier(3, 90) === "emergency", "critically thin runway stays emergency")
 
 console.log("buffer-health-monitor.test.js: all passed")

@@ -10,6 +10,8 @@ const {
   originalFetch,
   stripHash,
   requestRuntime,
+  storeChunkFromPage,
+  formatStoreChunkError,
   resolveLookupBytes,
   logBridge,
   notifyRuntime,
@@ -216,14 +218,26 @@ function AegisXHR() {
               }
 
               if (ns.extensionEnabled !== false && ns.serveFromCache !== false) {
-                requestRuntime("STORE_CHUNK_REQUEST", {
+                void storeChunkFromPage({
                   url: cacheLookupUrl,
                   contentType: ct,
                   bytes,
                   status: 200,
                   method: _method,
                   hasRange: false
-                }).catch(() => {})
+                }).then((storeRes) => {
+                  if (storeRes?.ok || document.visibilityState !== "visible") return
+                  logBridge(
+                    `XHR chunk store failed (${formatStoreChunkError(storeRes)}): ${String(cacheLookupUrl).slice(-80)}`,
+                    "WARN"
+                  )
+                }).catch((error) => {
+                  if (document.visibilityState !== "visible") return
+                  logBridge(
+                    `XHR chunk store failed (${formatStoreChunkError(null, error)}): ${String(cacheLookupUrl).slice(-80)}`,
+                    "WARN"
+                  )
+                })
               }
             }
           }

@@ -70,6 +70,11 @@ function getRequestDetails(input, init) {
   }
 }
 
+const STORE_CHUNK_TIMEOUT_MS = 30_000
+const STORE_CHUNK_RETRY_ATTEMPTS = 2
+const STORE_CHUNK_RETRY_DELAY_MS = 80
+const inflightChunkStores = new Map()
+
 function requestRuntime(type, payload) {
   return new Promise((resolve) => {
     const requestId = nextRequestId()
@@ -86,10 +91,96 @@ function requestRuntime(type, payload) {
     setTimeout(() => {
       if (pending.has(requestId)) {
         pending.delete(requestId)
-        resolve({ ok: false, hit: false, timeout: true })
+        resolve({
+          ok: false,
+          hit: false,
+          timeout: true,
+          error: "timeout"
+        })
       }
-    }, type === "STORE_CHUNK_REQUEST" ? 12000 : type === "EXTENSION_FETCH_REQUEST" ? 65000 : 5000)
+    }, type === "STORE_CHUNK_REQUEST"
+      ? STORE_CHUNK_TIMEOUT_MS
+      : type === "EXTENSION_FETCH_REQUEST"
+        ? 65000
+        : 5000)
   })
+}
+
+function formatStoreChunkError(storeRes, caughtError) {
+  if (caughtError) {
+    const name = caughtError?.name || "Error"
+    const message = caughtError?.message || String(caughtError)
+    return `${name}: ${message}`
+  }
+  if (!storeRes) return "no-response"
+  if (storeRes.timeout) return "timeout"
+  const parts = []
+  if (storeRes.error) parts.push(String(storeRes.error))
+  if (storeRes.skipped) parts.push("skipped")
+  if (storeRes.duplicate) parts.push("duplicate")
+  return parts.length > 0 ? parts.join(",") : "unknown"
+}
+
+function isTransientStoreFailure(storeRes) {
+  if (!storeRes || storeRes.ok) return false
+  const error = formatStoreChunkError(storeRes).toLowerCase()
+  return /runtime|timeout|serialize|message port|context invalidated|no-response|unknown/.test(
+    error
+  )
+}
+
+function storeInflightKey(payload) {
+  const url = stripHash(payload?.url)
+  const byteLength =
+    typeof payload?.bytes?.byteLength === "number" ? payload.bytes.byteLength : 0
+  return `${url || ""}|${byteLength}`
+}
+
+async function recoverStoreFromCache(payload) {
+  const url = stripHash(payload?.url)
+  if (!url) return null
+  const lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
+    url,
+    method: (payload?.method || "GET").toUpperCase(),
+    hasRange: false
+  }).catch(() => null)
+  if (lookup?.ok && lookup.hit) {
+    return { ok: true, recovered: true, duplicate: true }
+  }
+  return null
+}
+
+async function storeChunkFromPage(payload) {
+  const inflightKey = storeInflightKey(payload)
+  if (inflightChunkStores.has(inflightKey)) {
+    return inflightChunkStores.get(inflightKey)
+  }
+
+  const run = (async () => {
+    let lastRes = { ok: false, error: "store-failed" }
+    for (let attempt = 0; attempt < STORE_CHUNK_RETRY_ATTEMPTS; attempt += 1) {
+      lastRes = await requestRuntime("STORE_CHUNK_REQUEST", payload)
+      if (lastRes?.ok) return lastRes
+      if (!isTransientStoreFailure(lastRes) || attempt >= STORE_CHUNK_RETRY_ATTEMPTS - 1) {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, STORE_CHUNK_RETRY_DELAY_MS * (attempt + 1)))
+    }
+    if (!lastRes?.ok && isTransientStoreFailure(lastRes)) {
+      const recovered = await recoverStoreFromCache(payload)
+      if (recovered?.ok) return recovered
+    }
+    return lastRes
+  })()
+
+  inflightChunkStores.set(inflightKey, run)
+  try {
+    return await run
+  } finally {
+    if (inflightChunkStores.get(inflightKey) === run) {
+      inflightChunkStores.delete(inflightKey)
+    }
+  }
 }
 
 function base64ToArrayBuffer(base64) {
@@ -154,6 +245,9 @@ ns.nextRequestId = nextRequestId
 ns.stripHash = stripHash
 ns.getRequestDetails = getRequestDetails
 ns.requestRuntime = requestRuntime
+ns.formatStoreChunkError = formatStoreChunkError
+ns.isTransientStoreFailure = isTransientStoreFailure
+ns.storeChunkFromPage = storeChunkFromPage
 ns.base64ToArrayBuffer = base64ToArrayBuffer
 ns.resolveLookupBytes = resolveLookupBytes
 ns.notifyRuntime = notifyRuntime

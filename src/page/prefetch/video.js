@@ -28,8 +28,6 @@ const MAX_ACTIVE_UMP_CAPTURES = 2
 ns.activeUmpCaptureCount = 0
 ns.lastUmpCaptureBackpressureLogAt = 0
 const CHUNK_OBSERVED_DEBOUNCE_MS = 2000
-const STORE_RETRY_ATTEMPTS = 2
-const STORE_RETRY_DELAY_MS = 60
 
 function isPagePrefetchAllowed() {
   if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return false
@@ -82,24 +80,11 @@ function getBufferAdjustedConcurrency() {
 
 let activePrefetchWorkerCount = 0
 
-function isTransientStoreFailure(storeRes) {
-  if (!storeRes || storeRes.ok) return false
-  const error = String(storeRes.error || "").toLowerCase()
-  if (!error) return true
-  return /runtime|timeout|serialize|message port|context invalidated|unknown/i.test(error)
-}
-
 async function storeChunkForPrefetch(payload) {
-  let lastRes = { ok: false, error: "store failed" }
-  for (let attempt = 0; attempt < STORE_RETRY_ATTEMPTS; attempt += 1) {
-    lastRes = await requestRuntime("STORE_CHUNK_REQUEST", payload)
-    if (lastRes?.ok) return lastRes
-    if (!isTransientStoreFailure(lastRes) || attempt >= STORE_RETRY_ATTEMPTS - 1) {
-      return lastRes
-    }
-    await sleep(STORE_RETRY_DELAY_MS * (attempt + 1))
+  if (typeof ns.storeChunkFromPage === "function") {
+    return ns.storeChunkFromPage(payload)
   }
-  return lastRes
+  return requestRuntime("STORE_CHUNK_REQUEST", payload)
 }
 
 function rememberKnownUmpKey(cacheKey) {
