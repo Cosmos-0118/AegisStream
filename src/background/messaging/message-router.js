@@ -264,18 +264,24 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     }
     const hitLabel = isUmpLookup ? "UMP cache HIT" : resolved.via === "alias" ? "Cache HIT via alias" : "Cache HIT"
     addLog("INFO", `${hitLabel}: ${lookupUrl.slice(-60)}`)
-    const bytesBase64 = arrayBufferToBase64(resolved.item.bytes)
-    if (!bytesBase64) {
+    const rawBytes = resolved.item.bytes
+    const byteLength =
+      rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
+    if (!byteLength) {
       addLog("ERROR", `Cache hit serialization failed: ${lookupUrl.slice(-60)}`)
       sendResponse({ ok: false, hit: false, error: "serialize-failed" })
       return
     }
+    const bytes =
+      rawBytes instanceof ArrayBuffer
+        ? rawBytes
+        : rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
     sendResponse({
       ok: true,
       hit: true,
       contentType: resolved.item.contentType,
-      bytesBase64,
-      byteLength: resolved.item.bytes.byteLength || 0
+      bytes,
+      byteLength
     })
   })().catch(() => {
     sendResponse({ ok: false, hit: false })
@@ -383,6 +389,15 @@ function registerMessageRouter() {
     case "AegisStream:GetLogs":
       sendResponse({ ok: true, logs: state.logs })
       return true
+    case "AegisStream:LivelinessPing": {
+      const tabId = sender?.tab?.id
+      void wakeBackgroundEngine()
+      if (Number.isFinite(tabId)) {
+        state.bridgeHeartbeatByTab.set(tabId, Date.now())
+      }
+      sendResponse({ ok: true })
+      return true
+    }
     case "AegisStream:BridgeReady": {
       const tabId = sender?.tab?.id
       if (tabId) {

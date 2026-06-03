@@ -83,7 +83,7 @@ ns.constants = {
   TAB_BRIDGE_PING_RETRY_MS: 200,
   BACKGROUND_INIT_DEBOUNCE_MS: 5_000,
   MAX_LOG_ENTRIES: 500,
-  MAX_CACHE_KEY_VARIANTS: 5,
+  MAX_CACHE_KEY_VARIANTS: 6,
   MAX_TTFB_SAMPLES: 240,
   UMP_HEALTH_LOG_INTERVAL_MS: 15_000,
   UMP_WARMUP_LOOKUP_LIMIT: 6,
@@ -106,9 +106,13 @@ ns.constants = {
   ANCHOR_CONFIRM_SAMPLES: 3,
   ANCHOR_MONOTONIC_STREAK_THRESHOLD: 2,
   ANCHOR_TELEPORT_JUMP_THRESHOLD: 5,
-  DOM_TELEPORT_MIN_JUMP: 10,
+  DOM_TELEPORT_MIN_JUMP: 2,
+  /** Trailing path fingerprint length for obfuscated CDN segment blobs (page vs prefetch URL alignment). */
+  MEDIA_CACHE_INVARIANT_TAIL_LEN: 56,
   DOM_TELEPORT_COOLDOWN_MS: 500,
   DOM_ANCHOR_COALESCE_MS: 40,
+  /** Keeps MV3 service worker warm during active playback (Chrome idle ~30s). */
+  WORKER_LIVELINESS_PING_MS: 10_000,
   /** Rapid timeline scrubbing: seeks closer than this apart activate the scrubbing train. */
   SCRUBBING_TRAIN_SEEK_INTERVAL_MS: 800,
   /** Keep scrubbing train active until no rapid seek for this long. */

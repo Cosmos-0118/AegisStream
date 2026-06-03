@@ -57,10 +57,16 @@ const scrubState = {
 }
 decision = evaluateAuthorityCommit(scrubState, 43, AnchorAuthority.DOM_SEEKED)
 assert(decision.allow === true, "scrubbing train allows small DOM seek")
-assert(decision.purgeQueues === true, "scrubbing train hard-purges queues")
+assert(decision.purgeQueues === false, "3-segment scrub jump should retain prefetch overlap")
 
-decision = evaluateAuthorityCommit(scrubState, 44, AnchorAuthority.DOM_SEEKED)
-assert(decision.allow === true, "scrubbing train bypasses DOM cooldown")
+decision = evaluateAuthorityCommit(scrubState, 46, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === true, "scrubbing train allows moderate DOM seek")
+assert(decision.purgeQueues === true, "6-segment scrub jump should hard-purge queues")
 assert(decision.reason === null, "no skip reason during scrubbing train")
+
+scrubState.anchorIndex = 46
+decision = evaluateAuthorityCommit(scrubState, 46, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === true, "scrubbing train bypasses DOM cooldown on repeat")
+assert(decision.purgeQueues === false, "duplicate scrub target should not purge (jump=0)")
 
 console.log("anchor-authority.test.js: all assertions passed")

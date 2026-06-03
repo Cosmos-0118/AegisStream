@@ -110,6 +110,20 @@ async function raceExtensionFetch(url, init = {}) {
   }
 }
 
+async function fetchSpeculativeGet(url, init = {}, options = {}) {
+  const priority =
+    typeof ns.resolveFetchPriority === "function"
+      ? ns.resolveFetchPriority(options)
+      : "low"
+  return fetchWithTimeout(url, {
+    ...init,
+    credentials: init.credentials || "include",
+    cache: "no-store",
+    redirect: "follow",
+    priority
+  })
+}
+
 async function fetchExtensionResponse(url, method = "GET", headers = {}, body = null, options = {}) {
   const tabId = options.tabId
   const methodUpper = String(method || "GET").toUpperCase()
@@ -135,6 +149,12 @@ async function fetchExtensionResponse(url, method = "GET", headers = {}, body = 
 
   const fetchOnce = async (targetUrl) => {
     if (methodUpper === "GET" || methodUpper === "HEAD") {
+      if (
+        typeof ns.isSpeculativeFetchSource === "function" &&
+        ns.isSpeculativeFetchSource(options.source)
+      ) {
+        return fetchSpeculativeGet(targetUrl, init, options)
+      }
       return raceExtensionFetch(targetUrl, init)
     }
     return fetchWithTimeout(targetUrl, {
@@ -216,6 +236,7 @@ async function pumpResponseBody(response, onChunk) {
 
 ns.FETCH_TIMEOUT_MS = FETCH_TIMEOUT_MS
 ns.STREAM_CHUNK_SIZE = STREAM_CHUNK_SIZE
+ns.fetchSpeculativeGet = fetchSpeculativeGet
 ns.fetchExtensionResponse = fetchExtensionResponse
 ns.pumpResponseBody = pumpResponseBody
 ns.raceExtensionFetch = raceExtensionFetch

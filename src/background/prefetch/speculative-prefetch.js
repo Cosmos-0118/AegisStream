@@ -54,7 +54,11 @@ async function fetchMediaPlaylistSegments(variantUrl) {
   const normalized = stripHash(variantUrl)
   if (!normalized) return null
   try {
-    const res = await fetch(normalized, { credentials: "include", cache: "no-store" })
+    const res = await fetch(normalized, {
+      credentials: "include",
+      cache: "no-store",
+      priority: "low"
+    })
     if (!res.ok) return null
     const text = await res.text()
     const parsed = parseHlsPlaylist(text, normalized)

@@ -83,6 +83,12 @@ function buildCacheKeyVariants(rawUrl) {
     seen.add(value)
     variants.push(value)
   }
+
+  const invariantKey =
+    typeof ns.buildMediaInvariantKey === "function" ? ns.buildMediaInvariantKey(normalizedUrl) : null
+  if (invariantKey) {
+    pushVariant(invariantKey)
+  }
   pushVariant(normalizedUrl)
 
   try {

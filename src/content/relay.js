@@ -206,14 +206,20 @@ window.addEventListener("message", (event) => {
         },
         (response) => {
           const runtimeError = chrome.runtime.lastError
+          const payload = runtimeError ? { ok: false, hit: false } : response || { ok: false, hit: false }
+          const transfer =
+            payload?.hit && payload.bytes && typeof payload.bytes.byteLength === "number"
+              ? [payload.bytes]
+              : []
           window.postMessage(
             {
               __aegisstream: true,
               type: "CACHE_LOOKUP_RESPONSE",
               requestId: data.requestId,
-              response: runtimeError ? { ok: false, hit: false } : response || { ok: false, hit: false }
+              response: payload
             },
-            "*"
+            "*",
+            transfer
           )
         }
       )
@@ -243,20 +249,13 @@ window.addEventListener("message", (event) => {
       }
 
       if (data.bytes && typeof data.bytes.byteLength === "number") {
-        const bytesBase64 = arrayBufferToBase64(data.bytes)
-        if (!bytesBase64) {
-          window.postMessage(
-            {
-              __aegisstream: true,
-              type: "STORE_CHUNK_RESPONSE",
-              requestId: data.requestId,
-              response: { ok: false, error: "serialize-failed" }
-            },
-            "*"
-          )
-          return
-        }
-        payload.bytesBase64 = bytesBase64
+        payload.bytes =
+          data.bytes instanceof ArrayBuffer
+            ? data.bytes
+            : data.bytes.buffer.slice(
+                data.bytes.byteOffset,
+                data.bytes.byteOffset + data.bytes.byteLength
+              )
       } else if (typeof data.bytesBase64 === "string") {
         payload.bytesBase64 = data.bytesBase64
       }
@@ -478,6 +477,15 @@ window.addEventListener("message", (event) => {
           eventType: data.eventType || "seeked"
         }
       })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "LIVELINESS_PING") {
+    try {
+      chrome.runtime.sendMessage({ type: "AegisStream:LivelinessPing" })
     } catch {
       // Extension context may be invalidated
     }

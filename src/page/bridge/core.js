@@ -75,10 +75,12 @@ const STORE_CHUNK_RETRY_ATTEMPTS = 2
 const STORE_CHUNK_RETRY_DELAY_MS = 80
 const inflightChunkStores = new Map()
 
-function requestRuntime(type, payload) {
+function requestRuntime(type, payload, transferables = []) {
   return new Promise((resolve) => {
     const requestId = nextRequestId()
     pending.set(requestId, resolve)
+    const transfer =
+      Array.isArray(transferables) && transferables.length > 0 ? transferables : []
     window.postMessage(
       {
         __aegisstream: true,
@@ -86,7 +88,8 @@ function requestRuntime(type, payload) {
         requestId,
         ...payload
       },
-      "*"
+      "*",
+      transfer
     )
     setTimeout(() => {
       if (pending.has(requestId)) {
@@ -136,6 +139,15 @@ function storeInflightKey(payload) {
   return `${url || ""}|${byteLength}`
 }
 
+function cloneBytesForBridge(bytes) {
+  if (!bytes || typeof bytes.byteLength !== "number") return null
+  const view =
+    bytes instanceof ArrayBuffer
+      ? new Uint8Array(bytes)
+      : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  return view.slice().buffer
+}
+
 async function recoverStoreFromCache(payload) {
   const url = stripHash(payload?.url)
   if (!url) return null
@@ -157,10 +169,25 @@ async function storeChunkFromPage(payload) {
   }
 
   const run = (async () => {
+    const bridgedBytes = cloneBytesForBridge(payload.bytes)
+    const storeBase =
+      bridgedBytes != null ? { ...payload, bytes: bridgedBytes } : { ...payload }
     let lastRes = { ok: false, error: "store-failed" }
     for (let attempt = 0; attempt < STORE_CHUNK_RETRY_ATTEMPTS; attempt += 1) {
-      lastRes = await requestRuntime("STORE_CHUNK_REQUEST", payload)
+      const storePayload = { ...storeBase }
+      const transfer = []
+      if (storePayload.bytes && typeof storePayload.bytes.byteLength === "number") {
+        const buf =
+          storePayload.bytes instanceof ArrayBuffer
+            ? storePayload.bytes
+            : storePayload.bytes.buffer
+        if (buf) transfer.push(buf)
+      }
+      lastRes = await requestRuntime("STORE_CHUNK_REQUEST", storePayload, transfer)
       if (lastRes?.ok) return lastRes
+      if (bridgedBytes != null) {
+        storeBase.bytes = cloneBytesForBridge(bridgedBytes)
+      }
       if (!isTransientStoreFailure(lastRes) || attempt >= STORE_CHUNK_RETRY_ATTEMPTS - 1) {
         break
       }

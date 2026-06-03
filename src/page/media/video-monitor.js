@@ -7,6 +7,7 @@ const { notifyRuntime, logBridge } = ns
 const TELEPORT_DEBOUNCE_MS = 40
 const SCRUB_SEEK_INTERVAL_MS = 800
 const SCRUB_IDLE_MS = 1_000
+const WORKER_LIVELINESS_PING_MS = 10_000
 
 const lastTeleportAtByVideo = new WeakMap()
 const scrubStateByVideo = new WeakMap()
@@ -129,9 +130,29 @@ function observeVideosForAnchorBridge() {
   })
 }
 
+function isAnyVideoPlaying() {
+  const videos = document.querySelectorAll("video")
+  for (const video of videos) {
+    if (video instanceof HTMLMediaElement && !video.paused && !video.ended) {
+      return true
+    }
+  }
+  return false
+}
+
+function startWorkerLivelinessBridge() {
+  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
+  setInterval(() => {
+    if (ns.extensionEnabled === false) return
+    if (!isAnyVideoPlaying()) return
+    notifyRuntime("LIVELINESS_PING", { playing: true })
+  }, WORKER_LIVELINESS_PING_MS)
+}
+
 function startVideoAnchorMonitor() {
   if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
   observeVideosForAnchorBridge()
+  startWorkerLivelinessBridge()
   const root = document.documentElement || document.body
   if (!root) return
   const observer = new MutationObserver(() => observeVideosForAnchorBridge())

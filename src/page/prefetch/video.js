@@ -426,14 +426,19 @@ async function processPrefetchUrl(url) {
   try {
   // Fetch without credentials first (most CDNs use wildcard CORS which breaks with credentials)
   // The browser will use the cache/cookies appropriate for the origin automatically
-  let res = await originalFetch(url, { cache: "no-store", signal: controller.signal })
+  let res = await originalFetch(url, {
+    cache: "no-store",
+    signal: controller.signal,
+    priority: "low"
+  })
   
   // If 403, fallback to include credentials just in case it's same-origin and requires them
   if (res.status === 403 || res.status === 401) {
      res = await originalFetch(url, {
        credentials: "include",
        cache: "no-store",
-       signal: controller.signal
+       signal: controller.signal,
+       priority: "low"
      })
   }
   requestStatus = Number(res.status || 0)

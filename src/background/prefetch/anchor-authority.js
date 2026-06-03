@@ -28,6 +28,13 @@ function shouldPurgePrefetchQueues(jump) {
   return jump >= threshold
 }
 
+/** During scrubbing train, only hard-purge when the anchor actually moves meaningfully. */
+function shouldPurgeQueuesDuringScrub(jump) {
+  if (!Number.isFinite(jump) || jump <= 0) return false
+  const minJump = Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD) || 5
+  return jump >= minJump
+}
+
 function isScrubbingTrainActive(tabState, now = Date.now()) {
   if (!tabState) return false
   return now < Number(tabState.scrubbingTrainUntil || 0)
@@ -52,7 +59,12 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
     }
 
     if (isScrubbingTrainActive(tabState, now)) {
-      return { allow: true, reason: null, jump, purgeQueues: true }
+      return {
+        allow: true,
+        reason: null,
+        jump,
+        purgeQueues: shouldPurgeQueuesDuringScrub(jump)
+      }
     }
 
     if (jump < minJump) {
@@ -99,5 +111,6 @@ ns.anchorJump = anchorJump
 ns.evaluateAuthorityCommit = evaluateAuthorityCommit
 ns.authorityLabel = authorityLabel
 ns.shouldPurgePrefetchQueues = shouldPurgePrefetchQueues
+ns.shouldPurgeQueuesDuringScrub = shouldPurgeQueuesDuringScrub
 ns.isScrubbingTrainActive = isScrubbingTrainActive
 })()

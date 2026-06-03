@@ -231,12 +231,25 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
         : null
   const jump =
     typeof previousEffective === "number" ? Math.abs(clampedTarget - previousEffective) : 0
+  if (jump === 0) {
+    const label =
+      typeof ns.authorityLabel === "function" ? ns.authorityLabel(authority) : String(authority)
+    addLog(
+      "DEBUG",
+      `Anchor authority commit skipped on tab ${tabId} (${label}, ${source}): already at index ${clampedTarget}`
+    )
+    return false
+  }
   const scrubbingTrain = isTabInScrubbingTrain(tabState)
   const timelineRestart =
     authority === ns.AnchorAuthority?.DOM_SEEKED &&
     isStaleTimelineDomReset(tabState, previousEffective, clampedTarget)
+  const scrubPurge =
+    typeof ns.shouldPurgeQueuesDuringScrub === "function"
+      ? ns.shouldPurgeQueuesDuringScrub(jump)
+      : jump >= (Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD) || 5)
   let purgeQueues = scrubbingTrain
-    ? true
+    ? scrubPurge
     : typeof ns.shouldPurgePrefetchQueues === "function"
       ? ns.shouldPurgePrefetchQueues(jump)
       : jump >= (Number(constants.TELEPORT_QUEUE_PURGE_THRESHOLD) || 20)
