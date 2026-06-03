@@ -295,6 +295,14 @@ function AegisXHR() {
       cacheLookupUrl = youtubeChunk.cacheKey
     }
 
+    if (
+      typeof ns.isLikelyCacheHitCandidate === "function" &&
+      !ns.isLikelyCacheHitCandidate(cacheLookupUrl)
+    ) {
+      originalSend(body)
+      return
+    }
+
     let settled = false
     const CACHE_LOOKUP_TIMEOUT_MS = 300
 

@@ -141,6 +141,9 @@ function registerChromeEventListeners() {
       const tabState = state.playlistByTab.get(tabId)
       if (!tabState?.segments?.length) return
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-activated" })
+      if (typeof ns.syncCacheRegistryToTab === "function") {
+        void ns.syncCacheRegistryToTab(tabId)
+      }
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
       }
@@ -160,6 +163,9 @@ function registerChromeEventListeners() {
       const tabState = state.playlistByTab.get(tabId)
       if (!tabState?.segments?.length) return
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-updated" })
+      if (typeof ns.syncCacheRegistryToTab === "function") {
+        void ns.syncCacheRegistryToTab(tabId)
+      }
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-updated")
       }

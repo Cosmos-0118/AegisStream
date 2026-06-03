@@ -70,16 +70,20 @@ function notifyBridgeReady(reason = "startup") {
 function relayExtensionFetchStreamToPage(message) {
   if (!message?.requestId) return
   if (message.type === "AegisStream:ExtensionFetchChunk") {
-    window.postMessage(
-      {
-        __aegisstream: true,
-        type: "EXTENSION_FETCH_CHUNK",
-        requestId: message.requestId,
-        index: message.index,
-        chunkBase64: message.chunkBase64
-      },
-      "*"
-    )
+    const payload = {
+      __aegisstream: true,
+      type: "EXTENSION_FETCH_CHUNK",
+      requestId: message.requestId,
+      index: message.index
+    }
+    const transfer = []
+    if (message.bytes && typeof message.bytes.byteLength === "number") {
+      payload.bytes = message.bytes
+      transfer.push(message.bytes)
+    } else if (typeof message.chunkBase64 === "string") {
+      payload.chunkBase64 = message.chunkBase64
+    }
+    window.postMessage(payload, "*", transfer)
     return
   }
   if (message.type === "AegisStream:ExtensionFetchEnd") {
@@ -126,6 +130,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       __aegisstream: true,
       type: "CANCEL_PREFETCH",
       networkGeneration: message.networkGeneration
+    }, "*")
+    sendResponse({ ok: true })
+    return true
+  }
+
+  if (message?.type === "AegisStream:CacheRegistrySync" && message.payload) {
+    window.postMessage({
+      __aegisstream: true,
+      type: "CACHE_REGISTRY_SYNC",
+      payload: message.payload
     }, "*")
     sendResponse({ ok: true })
     return true

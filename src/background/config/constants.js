@@ -109,6 +109,8 @@ ns.constants = {
   DOM_TELEPORT_MIN_JUMP: 2,
   /** Trailing path fingerprint length for obfuscated CDN segment blobs (page vs prefetch URL alignment). */
   MEDIA_CACHE_INVARIANT_TAIL_LEN: 56,
+  CACHE_REGISTRY_MAX_KEYS: 800,
+  CACHE_REGISTRY_SYNC_DEBOUNCE_MS: 150,
   DOM_TELEPORT_COOLDOWN_MS: 500,
   DOM_ANCHOR_COALESCE_MS: 40,
   /** Keeps MV3 service worker warm during active playback (Chrome idle ~30s). */

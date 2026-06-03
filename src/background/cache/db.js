@@ -308,6 +308,9 @@ async function runEvictionPass(force = false) {
         reclaimedBytes += item.byteLength
       }
       if (keysToDelete.length > 0) {
+        if (typeof ns.unregisterCacheKeys === "function") {
+          ns.unregisterCacheKeys(keysToDelete)
+        }
         await evictOldestEntries(db, keysToDelete)
         void cleanupAliasesForTargets(keysToDelete).catch(() => {})
         const guardNote =
@@ -389,7 +392,39 @@ async function cacheChunk(url, contentType, bytes) {
     await Promise.allSettled(aliasWrites)
   }
   scheduleEviction(false)
+  if (typeof ns.registerCacheKeys === "function") {
+    ns.registerCacheKeys(cacheKeys)
+  }
   return { ok: true, stored: true, duplicate: false }
+}
+
+async function listCachedChunkKeys(limit = 1200) {
+  const db = await openDb()
+  return new Promise((resolve, reject) => {
+    const keys = []
+    const tx = db.transaction(constants.STORE_CHUNKS, "readonly")
+    const store = tx.objectStore(constants.STORE_CHUNKS)
+    const request = store.openKeyCursor()
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (!cursor) {
+        db.close()
+        resolve(keys)
+        return
+      }
+      if (typeof cursor.key === "string") keys.push(cursor.key)
+      if (keys.length >= limit) {
+        db.close()
+        resolve(keys)
+        return
+      }
+      cursor.continue()
+    }
+    request.onerror = () => {
+      db.close()
+      reject(request.error)
+    }
+  })
 }
 
 async function resolveCachedChunk(url) {
@@ -416,6 +451,9 @@ async function clearCacheStores() {
   lastEvictionRunAt = 0
   await dbClear(constants.STORE_CHUNKS)
   await dbClear(constants.STORE_ALIASES)
+  if (typeof ns.clearCacheRegistry === "function") {
+    ns.clearCacheRegistry()
+  }
   await computeAdaptiveCachePolicy(true)
 }
 
@@ -428,4 +466,5 @@ ns.resolveCachedChunk = resolveCachedChunk
 ns.clearCacheStores = clearCacheStores
 ns.computeAdaptiveCachePolicy = computeAdaptiveCachePolicy
 ns.getCacheEntryCount = getCacheEntryCount
+ns.listCachedChunkKeys = listCachedChunkKeys
 })()

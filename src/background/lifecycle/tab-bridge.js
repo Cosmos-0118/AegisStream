@@ -106,6 +106,9 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
     const tabState = state.playlistByTab.get(tabId)
     if (tabState?.segments?.length) {
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: `reinject:${reason}` })
+      if (typeof ns.syncCacheRegistryToTab === "function") {
+        void ns.syncCacheRegistryToTab(tabId)
+      }
       if (
         isTabEligibleForPrefetch(tabId) &&
         tabState.hasAnchor &&
@@ -165,6 +168,9 @@ async function ensureBackgroundEngineReady() {
   engineInFlight = runBackgroundEngine()
     .then(() => {
       engineReady = true
+      if (typeof ns.rebuildCacheRegistryFromDb === "function") {
+        void ns.rebuildCacheRegistryFromDb()
+      }
     })
     .finally(() => {
       engineInFlight = null

@@ -35,6 +35,13 @@ window.addEventListener("message", (event) => {
   if (!data || data.__aegisstream !== true) return
 
   // Receive known segment URLs from background
+  if (data.type === "CACHE_REGISTRY_SYNC" && data.payload) {
+    if (typeof ns.applyCacheRegistrySync === "function") {
+      ns.applyCacheRegistrySync(data.payload)
+    }
+    return
+  }
+
   if (data.type === "KNOWN_SEGMENTS" && data.urls) {
     if (data.playbackHint && typeof data.playbackHint === "object") {
       ns.playbackManifestHint = {
@@ -91,7 +98,7 @@ window.addEventListener("message", (event) => {
 
   if (data.type === "EXTENSION_FETCH_CHUNK" && data.requestId) {
     if (typeof ns.onExtensionFetchChunk === "function") {
-      ns.onExtensionFetchChunk(data.requestId, data.chunkBase64)
+      ns.onExtensionFetchChunk(data.requestId, data.bytes ?? data.chunkBase64)
     }
     return
   }

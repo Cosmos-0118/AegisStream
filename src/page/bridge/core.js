@@ -184,7 +184,12 @@ async function storeChunkFromPage(payload) {
         if (buf) transfer.push(buf)
       }
       lastRes = await requestRuntime("STORE_CHUNK_REQUEST", storePayload, transfer)
-      if (lastRes?.ok) return lastRes
+      if (lastRes?.ok) {
+        if (typeof ns.noteLocalCacheKey === "function") {
+          ns.noteLocalCacheKey(payload.url)
+        }
+        return lastRes
+      }
       if (bridgedBytes != null) {
         storeBase.bytes = cloneBytesForBridge(bridgedBytes)
       }

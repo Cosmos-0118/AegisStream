@@ -82,13 +82,18 @@ function shouldThrottlePlaylistDiscover(url) {
   return false
 }
 
-function sendExtensionFetchChunk(tabId, requestId, index, chunkBase64) {
+function sendExtensionFetchChunk(tabId, requestId, index, bytes) {
+  const buffer =
+    bytes instanceof ArrayBuffer
+      ? bytes
+      : bytes?.buffer?.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  if (!buffer || buffer.byteLength === 0) return Promise.resolve()
   return chrome.tabs
     .sendMessage(tabId, {
       type: "AegisStream:ExtensionFetchChunk",
       requestId,
       index,
-      chunkBase64
+      bytes: buffer
     })
     .catch(() => {})
 }
@@ -144,11 +149,12 @@ function handleExtensionFetch(message, sendResponse, sender) {
       metaSent = true
 
       await pumpResponseBody(response, async (index, bytes) => {
-        const chunkBase64 = arrayBufferToBase64(
+        await sendExtensionFetchChunk(
+          tabId,
+          requestId,
+          index,
           bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
         )
-        if (!chunkBase64) return
-        await sendExtensionFetchChunk(tabId, requestId, index, chunkBase64)
       })
 
       await sendExtensionFetchEnd(tabId, requestId, { ok: true })
@@ -415,6 +421,11 @@ function registerMessageRouter() {
           if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
             maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "bridge-ready")
           }
+        }
+        if (typeof ns.syncCacheRegistryToTab === "function") {
+          void ns.syncCacheRegistryToTab(tabId)
+        } else if (typeof ns.rebuildCacheRegistryFromDb === "function") {
+          void ns.rebuildCacheRegistryFromDb()
         }
       }
       sendResponse({ ok: true, settings: state.settings })

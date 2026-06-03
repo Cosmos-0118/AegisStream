@@ -26,6 +26,7 @@ const {
   createUmpProxyResponseAndCache,
   cacheNetworkStreamInBackground,
   isLikelyChunk,
+  isLikelyCacheHitCandidate,
   maybeCapturePlaylist,
   bodyToArrayBuffer,
   rememberKnownUmpKey,
@@ -38,6 +39,16 @@ const UMP_STORE_RACE_RETRY_MS = 120
 const EXTENSION_STREAM_META_TIMEOUT_MS = 8000
 
 async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk) {
+  if (
+    typeof isLikelyCacheHitCandidate === "function" &&
+    !isLikelyCacheHitCandidate(cacheLookupUrl)
+  ) {
+    return {
+      lookup: { ok: true, hit: false, shortCircuit: true },
+      lookupBytes: null
+    }
+  }
+
   let lookup = await Promise.race([
     requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,

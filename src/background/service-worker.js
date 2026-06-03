@@ -14,6 +14,7 @@ importScripts(
   "./parsing/playlists.js",
   "./cache/guard-ring.js",
   "./cache/db.js",
+  "./cache/cache-registry.js",
   "./cache/store-queue.js",
   "./telemetry/metrics-collector.js",
   "./telemetry/seek-prediction-telemetry.js",

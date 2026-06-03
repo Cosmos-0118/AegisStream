@@ -85,14 +85,26 @@ function onExtensionFetchStreamMeta(requestId, response) {
   }
 }
 
-function onExtensionFetchChunk(requestId, chunkBase64) {
+function decodeExtensionFetchChunk(chunkInput) {
+  if (chunkInput instanceof ArrayBuffer && chunkInput.byteLength > 0) {
+    return new Uint8Array(chunkInput)
+  }
+  if (chunkInput && typeof chunkInput.byteLength === "number" && chunkInput.buffer) {
+    return new Uint8Array(chunkInput.buffer, chunkInput.byteOffset, chunkInput.byteLength)
+  }
+  if (typeof chunkInput === "string") {
+    const buffer = base64ToArrayBuffer(chunkInput)
+    if (buffer && buffer.byteLength > 0) return new Uint8Array(buffer)
+  }
+  return null
+}
+
+function onExtensionFetchChunk(requestId, chunkInput) {
   const state = streamingByRequestId.get(requestId)
   if (!state || state.settled) return
 
-  const buffer = base64ToArrayBuffer(chunkBase64)
-  if (!buffer || buffer.byteLength === 0) return
-
-  const bytes = new Uint8Array(buffer)
+  const bytes = decodeExtensionFetchChunk(chunkInput)
+  if (!bytes || bytes.byteLength === 0) return
   state.chunks.push(bytes)
   state.totalLength += bytes.byteLength
 
