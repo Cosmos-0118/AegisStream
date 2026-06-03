@@ -21,22 +21,22 @@
       {
         "id": "youtube_accelerator_rules",
         "enabled": true,
-        "path": "src/worker/background/config/dnr-rules.json"
+        "path": "src/background/config/dnr-rules.json"
       },
       {
         "id": "aegis_defuse_rules",
         "enabled": false,
-        "path": "src/worker/background/config/dnr-defuse-rules.json"
+        "path": "src/background/config/dnr-defuse-rules.json"
       },
       {
         "id": "aegis_defuse_aggressive_rules",
         "enabled": false,
-        "path": "src/worker/background/config/dnr-defuse-aggressive-rules.json"
+        "path": "src/background/config/dnr-defuse-aggressive-rules.json"
       }
     ]
   },
   "background": {
-    "service_worker": "src/worker/background.js"
+    "service_worker": "src/background/service-worker.js"
   },
   "content_scripts": [
     {
@@ -45,8 +45,8 @@
         "*://*.youtube.com/*"
       ],
       "js": [
-        "src/bridge/shared/youtube-ump-flags.js",
-        "src/content/youtube/kill-ump.js"
+        "src/page/shared/youtube-ump-flags.js",
+        "src/page/youtube/kill-ump.js"
       ],
       "run_at": "document_start",
       "world": "MAIN"
@@ -56,24 +56,23 @@
         "<all_urls>"
       ],
       "js": [
-        "src/bridge/shared/range-buffer.js",
-        "src/bridge/shared/youtube-ump-flags.js",
-        "src/bridge/page/runtime/core.js",
-        "src/content/smoother/shared.js",
-        "src/bridge/page/smoother/circuit-breaker-timing.js",
-        "src/bridge/page/smoother/asset-circuit-breaker.js",
-        "src/bridge/page/runtime/buffer-health-monitor.js",
-        "src/bridge/page/runtime/extension-fetch-client.js",
-        "src/bridge/page/runtime/prefetch-video.js",
-        "src/bridge/page/runtime/message-bridge.js",
-        "src/bridge/page/domain/youtube-playlist.js",
-        "src/bridge/page/interceptors/fetch.js",
-        "src/bridge/page/interceptors/xhr.js",
-        "src/content/smoother/hover-prefetch.js",
-        "src/content/smoother/viewport-preconnect.js",
-        "src/content/smoother/bfcache-enforcer.js",
-        "src/content/smoother/smoother-install.js",
-        "src/bridge/page/main.js"
+        "src/page/shared/range-buffer.js",
+        "src/page/shared/youtube-ump-flags.js",
+        "src/page/runtime/core.js",
+        "src/page/smoother/shared.js",
+        "src/page/smoother/circuit-breaker-timing.js",
+        "src/page/smoother/asset-circuit-breaker.js",
+        "src/page/runtime/buffer-health-monitor.js",
+        "src/page/runtime/extension-fetch-client.js",
+        "src/page/runtime/prefetch-video.js",
+        "src/page/runtime/message-bridge.js",
+        "src/page/youtube/playlist.js",
+        "src/page/interceptors/fetch.js",
+        "src/page/interceptors/xhr.js",
+        "src/page/smoother/hover-prefetch.js",
+        "src/page/smoother/viewport-preconnect.js",
+        "src/page/smoother/smoother-install.js",
+        "src/page/main.js"
       ],
       "run_at": "document_start",
       "world": "MAIN"
@@ -83,7 +82,7 @@
         "<all_urls>"
       ],
       "js": [
-        "src/content/content-relay.js",
+        "src/content/relay.js",
         "src/content/smoother/asset-tracker.js"
       ],
       "run_at": "document_start",
@@ -97,24 +96,23 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "src/bridge/shared/range-buffer.js",
-        "src/bridge/shared/youtube-ump-flags.js",
-        "src/bridge/page/main.js",
-        "src/bridge/page/runtime/core.js",
-        "src/content/smoother/shared.js",
-        "src/bridge/page/smoother/circuit-breaker-timing.js",
-        "src/bridge/page/smoother/asset-circuit-breaker.js",
-        "src/bridge/page/runtime/buffer-health-monitor.js",
-        "src/bridge/page/runtime/extension-fetch-client.js",
-        "src/bridge/page/runtime/prefetch-video.js",
-        "src/bridge/page/runtime/message-bridge.js",
-        "src/bridge/page/domain/youtube-playlist.js",
-        "src/bridge/page/interceptors/fetch.js",
-        "src/bridge/page/interceptors/xhr.js",
-        "src/content/smoother/hover-prefetch.js",
-        "src/content/smoother/viewport-preconnect.js",
-        "src/content/smoother/bfcache-enforcer.js",
-        "src/content/smoother/smoother-install.js"
+        "src/page/shared/range-buffer.js",
+        "src/page/shared/youtube-ump-flags.js",
+        "src/page/main.js",
+        "src/page/runtime/core.js",
+        "src/page/smoother/shared.js",
+        "src/page/smoother/circuit-breaker-timing.js",
+        "src/page/smoother/asset-circuit-breaker.js",
+        "src/page/runtime/buffer-health-monitor.js",
+        "src/page/runtime/extension-fetch-client.js",
+        "src/page/runtime/prefetch-video.js",
+        "src/page/runtime/message-bridge.js",
+        "src/page/youtube/playlist.js",
+        "src/page/interceptors/fetch.js",
+        "src/page/interceptors/xhr.js",
+        "src/page/smoother/hover-prefetch.js",
+        "src/page/smoother/viewport-preconnect.js",
+        "src/page/smoother/smoother-install.js"
       ],
       "matches": [
         "<all_urls>"

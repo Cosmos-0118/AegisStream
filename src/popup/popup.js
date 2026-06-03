@@ -3,9 +3,16 @@ const el = {
   prefetchEnabled: document.getElementById("prefetchEnabled"),
   serveFromCache: document.getElementById("serveFromCache"),
   prefetchWindow: document.getElementById("prefetchWindow"),
+
+  performancePane: document.getElementById("performance"),
+  pipelineStatus: document.getElementById("pipelineStatus"),
+  bfcacheEnforcerEnabled: document.getElementById("bfcacheEnforcerEnabled"),
+  documentStreamBoost: document.getElementById("documentStreamBoost"),
+  headerEarlyHints: document.getElementById("headerEarlyHints"),
   cpuShieldEnabled: document.getElementById("cpuShieldEnabled"),
   aggressiveScriptDefuserEnabled: document.getElementById("aggressiveScriptDefuserEnabled"),
-  
+  performanceControls: document.querySelectorAll("[data-performance-control]"),
+
   statHits: document.getElementById("stat-hits"),
   statMisses: document.getElementById("stat-misses"),
   statPrefetched: document.getElementById("stat-prefetched"),
@@ -199,9 +206,60 @@ function currentSettings() {
     prefetchEnabled: el.prefetchEnabled.checked,
     serveFromCache: el.serveFromCache.checked,
     prefetchWindow: Math.max(1, Math.min(20, Number(el.prefetchWindow.value) || 6)),
+    bfcacheEnforcerEnabled: el.bfcacheEnforcerEnabled.checked,
+    documentStreamBoost: el.documentStreamBoost.checked,
+    headerEarlyHints: el.headerEarlyHints.checked,
     cpuShieldEnabled: el.cpuShieldEnabled.checked,
     aggressiveScriptDefuserEnabled: el.aggressiveScriptDefuserEnabled.checked
   }
+}
+
+function syncAggressiveDefuserAvailability() {
+  const cpuOn = el.enabled.checked && el.cpuShieldEnabled.checked
+  el.aggressiveScriptDefuserEnabled.disabled = !cpuOn
+  if (!cpuOn) {
+    el.aggressiveScriptDefuserEnabled.checked = false
+  }
+}
+
+function syncPerformancePaneAvailability() {
+  const on = el.enabled.checked
+  if (el.performancePane) {
+    el.performancePane.classList.toggle("performance-disabled", !on)
+  }
+  syncAggressiveDefuserAvailability()
+  renderPipelineStatus()
+}
+
+function renderPipelineStatus() {
+  if (!el.pipelineStatus) return
+
+  if (!el.enabled.checked) {
+    el.pipelineStatus.textContent = "Page accelerator paused — enable the extension on Dashboard."
+    el.pipelineStatus.classList.remove("active")
+    return
+  }
+
+  const active = []
+  if (el.bfcacheEnforcerEnabled.checked) active.push("BFcache healer")
+  if (el.documentStreamBoost.checked) active.push("HTML stream boost")
+  if (el.headerEarlyHints.checked) active.push("Header hints")
+  if (el.cpuShieldEnabled.checked) {
+    active.push(
+      el.aggressiveScriptDefuserEnabled.checked
+        ? "CPU shield (aggressive)"
+        : "CPU shield"
+    )
+  }
+
+  if (!active.length) {
+    el.pipelineStatus.textContent = "All page accelerator pipelines are off."
+    el.pipelineStatus.classList.remove("active")
+    return
+  }
+
+  el.pipelineStatus.textContent = `Active: ${active.join(" · ")}`
+  el.pipelineStatus.classList.add("active")
 }
 
 // ---------------------------------------------------------------------------
@@ -284,22 +342,27 @@ function bindChangeHandlers() {
     }
   }
 
-  el.enabled.addEventListener("change", () => void update())
+  el.enabled.addEventListener("change", () => {
+    syncPerformancePaneAvailability()
+    void update()
+  })
   el.prefetchEnabled.addEventListener("change", () => void update())
   el.serveFromCache.addEventListener("change", () => void update())
   el.prefetchWindow.addEventListener("change", () => void update())
-  el.cpuShieldEnabled.addEventListener("change", () => {
-    if (!el.cpuShieldEnabled.checked) {
-      el.aggressiveScriptDefuserEnabled.checked = false
-    }
-    void update()
-  })
-  el.aggressiveScriptDefuserEnabled.addEventListener("change", () => {
-    if (el.aggressiveScriptDefuserEnabled.checked) {
-      el.cpuShieldEnabled.checked = true
-    }
-    void update()
-  })
+
+  for (const input of el.performanceControls) {
+    input.addEventListener("change", () => {
+      if (input === el.cpuShieldEnabled && !el.cpuShieldEnabled.checked) {
+        el.aggressiveScriptDefuserEnabled.checked = false
+      }
+      if (input === el.aggressiveScriptDefuserEnabled && el.aggressiveScriptDefuserEnabled.checked) {
+        el.cpuShieldEnabled.checked = true
+      }
+      syncAggressiveDefuserAvailability()
+      renderPipelineStatus()
+      void update()
+    })
+  }
 
   el.resetStats.addEventListener("click", async () => {
     el.resetStats.disabled = true
@@ -385,9 +448,13 @@ async function init() {
     el.prefetchEnabled.checked = !!settings.prefetchEnabled
     el.serveFromCache.checked = !!settings.serveFromCache
     el.prefetchWindow.value = String(settings.prefetchWindow || 6)
+    el.bfcacheEnforcerEnabled.checked = settings.bfcacheEnforcerEnabled !== false
+    el.documentStreamBoost.checked = settings.documentStreamBoost !== false
+    el.headerEarlyHints.checked = settings.headerEarlyHints !== false
     el.cpuShieldEnabled.checked = settings.cpuShieldEnabled !== false
     el.aggressiveScriptDefuserEnabled.checked = settings.aggressiveScriptDefuserEnabled === true
-    
+    syncPerformancePaneAvailability()
+
     renderStats(stats || EMPTY_STATS)
     setStatus("Active")
     

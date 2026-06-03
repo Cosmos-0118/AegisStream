@@ -5,7 +5,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -19,7 +19,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -33,7 +33,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -47,7 +47,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -61,7 +61,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -75,7 +75,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -89,7 +89,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -103,7 +103,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -117,7 +117,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {
@@ -131,7 +131,7 @@
     "action": {
       "type": "redirect",
       "redirect": {
-        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+        "extensionPath": "/src/background/assets/mock-tracker.js"
       }
     },
     "condition": {

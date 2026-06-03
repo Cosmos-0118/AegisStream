@@ -39,3 +39,6 @@ bin/
 # Temporary files
 tmp/
 temp/
+
+# Chrome extension local DNR ruleset cache (generated on load unpacked)
+_metadata/

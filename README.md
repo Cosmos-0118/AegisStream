@@ -8,7 +8,7 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 
 ## What works now
 
-- **Page smoother:** hover-prefetch + path-aware DNR `Link` header hints (gzip/br safe), SPA layout learning with merge, viewport preconnect, adaptive circuit breaker, optional uncompressed HTML stream fallback, CPU shield (DNR script defuse + universal deep no-op proxy at `document_start`), optional aggressive defuser toggle, BFcache enforcer.
+- **Page smoother:** hover-prefetch + path-aware DNR `Link` header hints (gzip/br safe), SPA layout learning with merge, viewport preconnect, adaptive circuit breaker, optional uncompressed HTML stream fallback, CPU shield (DNR script defuse + universal deep no-op proxy at `document_start`), optional aggressive defuser toggle, BFcache freeze-thaw healer (unload→pagehide migration + WebSocket/EventSource re-hydration), background performance coordinator syncing pipelines in parallel.
 - Detects likely HLS/DASH playlists and media chunks.
 - Parses HLS media playlists and follows master playlist variants.
 - Prefetches upcoming chunks with bounded concurrency.
@@ -27,13 +27,12 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 ## Project layout
 
 - `manifest.json` - extension declaration and permissions.
-- `src/worker/background.js` - service-worker entrypoint wiring orchestration, caching, telemetry, and extension fetch IO.
-- `src/worker/background/io/extension-fetch.js` - parallel `fetch` racing in the service worker (replaces native daemon).
-- `src/worker/background/config/dnr-rules.json` - DNR header rules for `googlevideo.com` background fetches.
-- `src/worker/background/` - background modules grouped by `config`, `state`, `domain`, `io`, and `orchestration`.
-- `src/content/` - isolated-world relay, page smoother modules (`smoother/`), and YouTube-specific main-world bootstrap scripts.
-- `src/bridge/` - page-world bridge modules split into `runtime`, `interceptors`, `domain`, and shared primitives.
-- `src/popup/popup.html` / `src/popup/popup.js` - popup UI controls and diagnostics.
+- `src/background/service-worker.js` - service-worker entrypoint wiring listeners, message routing, and tab bridge reinjection.
+- `src/background/` - service worker modules: `config`, `state`, `domain`, `io`, `orchestration`, `smoother`, `assets`.
+- `src/page/` - MAIN-world scripts: `shared`, `runtime`, `interceptors`, `youtube`, `smoother`, and `main.js` entry.
+- `src/content/` - ISOLATED-world scripts: `relay.js` and `smoother/asset-tracker.js`.
+- `src/popup/` - popup UI controls and diagnostics.
+- `test/` - unit tests mirroring `src/` layout (run with `node test/...`).
 - `docs/ROADMAP.md` - detailed build and rollout roadmap.
 - `docs/idea.md` - revised architecture direction and success criteria.
 

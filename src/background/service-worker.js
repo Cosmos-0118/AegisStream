@@ -1,22 +1,24 @@
 importScripts(
-  "./background/config/constants.js",
-  "./background/state/runtime-state.js",
-  "./background/domain/injectable-url.js",
-  "./background/domain/url-playlist-utils.js",
-  "./background/io/cache-db.js",
-  "./background/io/store-queue.js",
-  "./background/domain/activity-metrics.js",
-  "./background/domain/telemetry.js",
-  "./background/orchestration/tab-prefetch-policy.js",
-  "./background/orchestration/buffer-prefetch-policy.js",
-  "./background/orchestration/prefetch-orchestrator.js",
-  "./background/io/extension-fetch.js",
-  "./background/io/html-head-scanner.js",
-  "./background/io/stream-injector.js",
-  "./background/smoother/telemetry-defuser.js",
-  "./background/io/document-stream-hook.js",
-  "./background/smoother/layout-asset-store.js",
-  "./background/smoother/header-injector.js"
+  "./config/constants.js",
+  "./state/runtime-state.js",
+  "./domain/injectable-url.js",
+  "./domain/url-playlist-utils.js",
+  "./io/cache-db.js",
+  "./io/store-queue.js",
+  "./domain/activity-metrics.js",
+  "./domain/telemetry.js",
+  "./orchestration/tab-prefetch-policy.js",
+  "./orchestration/buffer-prefetch-policy.js",
+  "./orchestration/prefetch-orchestrator.js",
+  "./io/extension-fetch.js",
+  "./io/html-head-scanner.js",
+  "./io/stream-injector.js",
+  "./smoother/telemetry-defuser.js",
+  "./smoother/bfcache-healer-registry.js",
+  "./smoother/performance-coordinator.js",
+  "./io/document-stream-hook.js",
+  "./smoother/layout-asset-store.js",
+  "./smoother/header-injector.js"
 )
 
 const {
@@ -104,28 +106,27 @@ function shouldThrottlePlaylistDiscover(url) {
   return false
 }
 
-const ISOLATED_BRIDGE_FILES = ["src/content/content-relay.js", "src/content/smoother/asset-tracker.js"]
-const MAIN_BRIDGE_FILES = [
-  "src/bridge/shared/range-buffer.js",
-  "src/bridge/shared/youtube-ump-flags.js",
-  "src/bridge/page/runtime/core.js",
-  "src/content/smoother/shared.js",
-  "src/bridge/page/smoother/circuit-breaker-timing.js",
-  "src/bridge/page/smoother/asset-circuit-breaker.js",
-  "src/bridge/page/runtime/buffer-health-monitor.js",
-  "src/bridge/page/runtime/extension-fetch-client.js",
-  "src/bridge/page/runtime/prefetch-video.js",
-  "src/bridge/page/runtime/message-bridge.js",
-  "src/bridge/page/domain/youtube-playlist.js",
-  "src/bridge/page/interceptors/fetch.js",
-  "src/bridge/page/interceptors/xhr.js",
-  "src/content/smoother/hover-prefetch.js",
-  "src/content/smoother/viewport-preconnect.js",
-  "src/content/smoother/bfcache-enforcer.js",
-  "src/content/smoother/smoother-install.js",
-  "src/bridge/page/main.js"
+const ISOLATED_CONTENT_FILES = ["src/content/relay.js", "src/content/smoother/asset-tracker.js"]
+const MAIN_PAGE_FILES = [
+  "src/page/shared/range-buffer.js",
+  "src/page/shared/youtube-ump-flags.js",
+  "src/page/runtime/core.js",
+  "src/page/smoother/shared.js",
+  "src/page/smoother/circuit-breaker-timing.js",
+  "src/page/smoother/asset-circuit-breaker.js",
+  "src/page/runtime/buffer-health-monitor.js",
+  "src/page/runtime/extension-fetch-client.js",
+  "src/page/runtime/prefetch-video.js",
+  "src/page/runtime/message-bridge.js",
+  "src/page/youtube/playlist.js",
+  "src/page/interceptors/fetch.js",
+  "src/page/interceptors/xhr.js",
+  "src/page/smoother/hover-prefetch.js",
+  "src/page/smoother/viewport-preconnect.js",
+  "src/page/smoother/smoother-install.js",
+  "src/page/main.js"
 ]
-const YOUTUBE_MAIN_BRIDGE_FILES = ["src/content/youtube/kill-ump.js"]
+const YOUTUBE_MAIN_PAGE_FILES = ["src/page/youtube/kill-ump.js"]
 
 function isYouTubeUrl(url) {
   if (typeof url !== "string") return false
@@ -171,19 +172,19 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: false },
-      files: ISOLATED_BRIDGE_FILES,
+      files: ISOLATED_CONTENT_FILES,
       world: "ISOLATED"
     })
     if (isYouTubeUrl(tab.url)) {
       await chrome.scripting.executeScript({
         target: { tabId, allFrames: false },
-        files: YOUTUBE_MAIN_BRIDGE_FILES,
+        files: YOUTUBE_MAIN_PAGE_FILES,
         world: "MAIN"
       })
     }
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: false },
-      files: MAIN_BRIDGE_FILES,
+      files: MAIN_PAGE_FILES,
       world: "MAIN"
     })
 

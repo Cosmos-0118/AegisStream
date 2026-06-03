@@ -21,7 +21,8 @@
 
     <nav class="tabs">
       <button class="tab-btn active" data-target="dashboard">Dashboard</button>
-      <button class="tab-btn" data-target="logs">System Logs</button>
+      <button class="tab-btn" data-target="performance">Performance</button>
+      <button class="tab-btn" data-target="logs">Logs</button>
     </nav>
 
     <main class="content">
@@ -73,27 +74,6 @@
             </div>
           </div>
 
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="cpuShieldEnabled">CPU Shield (Telemetry)</label>
-              <span>Block session-replay trackers and install safe no-op globals</span>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="cpuShieldEnabled">
-              <span class="slider round"></span>
-            </label>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-info">
-              <label for="aggressiveScriptDefuserEnabled">Aggressive Script Defuser</label>
-              <span>Experimental: also defuses Mixpanel, GA, Segment, and related SDKs</span>
-            </div>
-            <label class="switch">
-              <input type="checkbox" id="aggressiveScriptDefuserEnabled">
-              <span class="slider round"></span>
-            </label>
-          </div>
         </div>
 
         <div class="card stats-card">
@@ -162,6 +142,83 @@
             <div class="progress-bar-bg">
               <div class="progress-bar-fill" id="stat-hitrate-bar" style="width: 0%;"></div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- PERFORMANCE TAB -->
+      <section id="performance" class="tab-pane">
+        <div class="card settings-card">
+          <h2>Page Accelerator</h2>
+          <p class="card-intro">
+            Smoother navigation, faster first paint, and lower main-thread work on everyday sites.
+            Requires the master extension toggle on the Dashboard.
+          </p>
+          <p class="pipeline-status" id="pipelineStatus">Checking pipeline state…</p>
+        </div>
+
+        <div class="card settings-card">
+          <h2>Instant Back Navigation</h2>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="bfcacheEnforcerEnabled">BFcache Freeze-Thaw Healer</label>
+              <span>Parks WebSockets cleanly and re-hydrates on back/forward restore</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="bfcacheEnforcerEnabled" data-performance-control>
+              <span class="slider round"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card settings-card">
+          <h2>Early Page Loading</h2>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="documentStreamBoost">HTML Stream Boost</label>
+              <span>Injects learned layout preloads into uncompressed HTML responses</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="documentStreamBoost" data-performance-control>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="headerEarlyHints">Header Early Hints</label>
+              <span>Appends compression-safe <code>Link</code> preload headers from layout cache</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="headerEarlyHints" data-performance-control>
+              <span class="slider round"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card settings-card">
+          <h2>CPU Shield</h2>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="cpuShieldEnabled">Telemetry Defuser</label>
+              <span>Blocks session-replay scripts and installs deep no-op analytics proxies</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="cpuShieldEnabled" data-performance-control>
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="setting-row setting-row-nested">
+            <div class="setting-info">
+              <label for="aggressiveScriptDefuserEnabled">
+                Aggressive Script Defuser
+                <span class="setting-badge">Experimental</span>
+              </label>
+              <span>Also defuses Mixpanel, GA, Segment, and related SDKs</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="aggressiveScriptDefuserEnabled" data-performance-control>
+              <span class="slider round"></span>
+            </label>
           </div>
         </div>
       </section>

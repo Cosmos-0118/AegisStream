@@ -20,8 +20,11 @@ function isHtmlDocumentResponse(details) {
 }
 
 function shouldBoostDocumentStream(state, url) {
-  if (!state?.settings?.enabled) return false
-  if (state.settings.documentStreamBoost === false) return false
+  if (typeof ns.shouldEnableDocumentStreamBoost === "function") {
+    if (!ns.shouldEnableDocumentStreamBoost(state)) return false
+  } else if (!state?.settings?.enabled || state.settings.documentStreamBoost === false) {
+    return false
+  }
   if (typeof ns.isSkippableDocumentUrl === "function" && ns.isSkippableDocumentUrl(url)) {
     return false
   }
@@ -62,8 +65,8 @@ function installDocumentStreamHook() {
 }
 
 async function syncPerformanceGemsFromSettings(state = ns.state) {
-  if (typeof ns.syncTelemetryDefuserFromSettings === "function") {
-    await ns.syncTelemetryDefuserFromSettings(state)
+  if (typeof ns.syncAllPerformancePipelinesFromSettings === "function") {
+    await ns.syncAllPerformancePipelinesFromSettings(state)
   }
 }
 

@@ -1,11 +1,13 @@
 /**
- * Run: node src/content/smoother/universal-mock.test.js
+ * Run: node test/page/smoother/universal-mock.test.js
  */
 "use strict"
 
 const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
+
+const srcDir = path.join(__dirname, "../../../src/page/smoother")
 
 const sandbox = {
   window: {},
@@ -14,10 +16,10 @@ const sandbox = {
 sandbox.globalThis = sandbox.window
 
 vm.runInContext(
-  fs.readFileSync(path.join(__dirname, "universal-mock-prelude-aggressive.js"), "utf8"),
+  fs.readFileSync(path.join(srcDir, "universal-mock-prelude-aggressive.js"), "utf8"),
   vm.createContext(sandbox)
 )
-vm.runInContext(fs.readFileSync(path.join(__dirname, "universal-mock.js"), "utf8"), vm.createContext(sandbox))
+vm.runInContext(fs.readFileSync(path.join(srcDir, "universal-mock.js"), "utf8"), vm.createContext(sandbox))
 
 const { window } = sandbox
 

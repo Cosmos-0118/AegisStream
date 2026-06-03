@@ -14,10 +14,6 @@ function installPageSmoother() {
   if (typeof ns.installViewportPreconnect === "function") {
     ns.installViewportPreconnect()
   }
-
-  if (typeof ns.installBfcacheEnforcer === "function") {
-    ns.installBfcacheEnforcer()
-  }
 }
 
 ns.installPageSmoother = installPageSmoother

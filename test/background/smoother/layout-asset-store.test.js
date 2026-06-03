@@ -1,11 +1,13 @@
 /**
- * Run: node src/worker/background/smoother/layout-asset-store.test.js
+ * Run: node test/background/smoother/layout-asset-store.test.js
  */
 "use strict"
 
 const fs = require("fs")
 const path = require("path")
 const vm = require("vm")
+
+const srcDir = path.join(__dirname, "../../../src/background/smoother")
 
 const store = {}
 
@@ -27,7 +29,7 @@ const sandbox = {
   }
 }
 
-vm.runInContext(fs.readFileSync(path.join(__dirname, "layout-asset-store.js"), "utf8"), vm.createContext(sandbox))
+vm.runInContext(fs.readFileSync(path.join(srcDir, "layout-asset-store.js"), "utf8"), vm.createContext(sandbox))
 const api = sandbox.self.AegisBackground
 
 function assert(condition, message) {

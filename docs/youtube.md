@@ -36,7 +36,7 @@ The extension tries to **reduce UMP usage**, then **cache and replay** whatever 
           │ postMessage                    │ chrome.runtime.sendMessage
           ▼                                ▼
 ┌──────────────────────┐      ┌────────────────────────────────────────────┐
-│  content-relay.js    │      │  background service worker                 │
+│  relay.js            │      │  background service worker                 │
 │  (ISOLATED world)    │─────▶│  cache-db, UMP warmup, telemetry           │
 └──────────────────────┘      │  extension-fetch.js (parallel fetch race)  │
                               │  dnr-rules.json (googlevideo headers)      │
@@ -58,7 +58,7 @@ Hooks include `ytcfg` setter, `yt-page-data-updated`, `EXPERIMENT_FLAGS`, `seria
 
 **Goal:** Encourage **MediaSource + byte-range or `sq`** requests so chunks have stable, parseable identifiers. This is best-effort; YouTube may still use UMP.
 
-**Source:** `src/content/youtube/kill-ump.js`
+**Source:** `src/page/youtube/kill-ump.js`
 
 ---
 
@@ -71,7 +71,7 @@ Hooks include `ytcfg` setter, `yt-page-data-updated`, `EXPERIMENT_FLAGS`, `seria
 
 ### Range / sequence parsing (`AegisRangeBuffer`)
 
-Implemented in `src/bridge/shared/range-buffer.js`, used from `src/bridge/page/domain/youtube-playlist.js`.
+Implemented in `src/page/shared/range-buffer.js`, used from `src/page/youtube/playlist.js`.
 
 Parsing order:
 
@@ -101,7 +101,7 @@ UMP `bodyHash` = first 16 hex chars of **SHA-1** of the POST body (`buildYoutube
 
 ## 3. Page bridge: `fetch` and `XHR`
 
-### `fetch` (`src/bridge/page/interceptors/fetch.js`)
+### `fetch` (`src/page/interceptors/fetch.js`)
 
 **Intercept when:**
 
@@ -122,7 +122,7 @@ UMP `bodyHash` = first 16 hex chars of **SHA-1** of the POST body (`buildYoutube
 
 **Recovery:** If no chunk was parsed but response is `206`, recover range from `Content-Range` and cache under the correct key.
 
-### `XHR` (`src/bridge/page/interceptors/xhr.js`)
+### `XHR` (`src/page/interceptors/xhr.js`)
 
 Same ideas for **GET** videoplayback:
 
@@ -170,11 +170,11 @@ AegisStream runs outbound media fetches in the **service worker** using parallel
 
 | Piece | Role |
 |-------|------|
-| `src/worker/background/io/extension-fetch.js` | `raceExtensionFetch()`, `pumpResponseBody()` (256 KB chunks) |
-| `src/worker/background/config/dnr-rules.json` | DNR rules: Origin/Referer for `googlevideo.com/videoplayback` |
-| `src/worker/background.js` | `handleExtensionFetch` — streams body to tab via `ExtensionFetchChunk` / `End` |
-| `src/content/content-relay.js` | Relays fetch request + chunk/end messages to MAIN world |
-| `src/bridge/page/runtime/extension-fetch-client.js` | `requestExtensionFetchStream()` (player) / `requestExtensionFetchBuffered()` (prefetch) |
+| `src/background/io/extension-fetch.js` | `raceExtensionFetch()`, `pumpResponseBody()` (256 KB chunks) |
+| `src/background/config/dnr-rules.json` | DNR rules: Origin/Referer for `googlevideo.com/videoplayback` |
+| `src/background/service-worker.js` | `handleExtensionFetch` — streams body to tab via `ExtensionFetchChunk` / `End` |
+| `src/content/relay.js` | Relays fetch request + chunk/end messages to MAIN world |
+| `src/page/runtime/extension-fetch-client.js` | `requestExtensionFetchStream()` (player) / `requestExtensionFetchBuffered()` (prefetch) |
 
 **Manifest:** `declarativeNetRequest` + `declarativeNetRequestWithHostAccess` (no `nativeMessaging`).
 
@@ -210,7 +210,7 @@ On extension fetch failure, the bridge falls back to **`originalFetch`** / norma
 
 ## 6. Background cache and UMP policy
 
-Chunks are stored in **IndexedDB** via `STORE_CHUNK_REQUEST` (`src/worker/background/io/cache-db.js`).
+Chunks are stored in **IndexedDB** via `STORE_CHUNK_REQUEST` (`src/background/io/cache-db.js`).
 
 **Store rules (simplified):** `GET`-oriented keys, no `hasRange` flag on stored entries, status not `206` at store time (stored as full objects keyed by synthetic URL).
 
@@ -221,7 +221,7 @@ Chunks are stored in **IndexedDB** via `STORE_CHUNK_REQUEST` (`src/worker/backgr
 
 **Popup:** shows **“Active (YouTube realtime mode)”** when there are UMP requests but zero HLS playlists detected — UMP is not “broken cache,” it is a different operating mode.
 
-Constants: `src/worker/background/config/constants.js` (`UMP_WARMUP_LOOKUP_LIMIT`, `UMP_HEALTH_LOG_INTERVAL_MS`, etc.).
+Constants: `src/background/config/constants.js` (`UMP_WARMUP_LOOKUP_LIMIT`, `UMP_HEALTH_LOG_INTERVAL_MS`, etc.).
 
 ---
 
@@ -262,15 +262,15 @@ Aggregated in popup stats and throttled health logs (`telemetry.js`).
 
 | File | Responsibility |
 |------|----------------|
-| `src/content/youtube/kill-ump.js` | YouTube experiment flag patching |
-| `src/bridge/shared/range-buffer.js` | Parse range/sq, stream ID, cache keys, heuristic prefetch |
-| `src/bridge/page/domain/youtube-playlist.js` | UMP state, proxy+cache, chunk helpers, playlist sniffing |
-| `src/bridge/page/interceptors/fetch.js` | Main intercept, extension fetch miss path, UMP streaming |
-| `src/bridge/page/interceptors/xhr.js` | GET videoplayback, XHR cache serve |
-| `src/content/content-relay.js` | Page ↔ background relay (including extension fetch) |
-| `src/worker/background/io/extension-fetch.js` | Service worker fetch + race |
-| `src/worker/background.js` | `handleExtensionFetch`, cache lookup/store |
-| `src/worker/background/config/dnr-rules.json` | YouTube googlevideo header injection |
+| `src/page/youtube/kill-ump.js` | YouTube experiment flag patching |
+| `src/page/shared/range-buffer.js` | Parse range/sq, stream ID, cache keys, heuristic prefetch |
+| `src/page/youtube/playlist.js` | UMP state, proxy+cache, chunk helpers, playlist sniffing |
+| `src/page/interceptors/fetch.js` | Main intercept, extension fetch miss path, UMP streaming |
+| `src/page/interceptors/xhr.js` | GET videoplayback, XHR cache serve |
+| `src/content/relay.js` | Page ↔ background relay (including extension fetch) |
+| `src/background/io/extension-fetch.js` | Service worker fetch + race |
+| `src/background/service-worker.js` | `handleExtensionFetch`, cache lookup/store |
+| `src/background/config/dnr-rules.json` | YouTube googlevideo header injection |
 
 ---
 

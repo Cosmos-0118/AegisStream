@@ -127,7 +127,9 @@ async function registerEarlyHints(targetUrl, assets, reason = "unknown", meta = 
 
 async function armHeaderHintsForUrl(targetUrl, reason = "unknown") {
   const state = ns.state
-  if (!state?.settings?.enabled || state.settings.headerEarlyHints === false) {
+  if (typeof ns.shouldEnableHeaderEarlyHints === "function") {
+    if (!ns.shouldEnableHeaderEarlyHints(state)) return { ok: false, error: "disabled" }
+  } else if (!state?.settings?.enabled || state.settings.headerEarlyHints === false) {
     return { ok: false, error: "disabled" }
   }
   if (isSkippableDocumentUrl(targetUrl)) {
