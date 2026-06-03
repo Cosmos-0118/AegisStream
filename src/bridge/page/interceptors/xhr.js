@@ -2,6 +2,8 @@
 var ns = (self.AegisPageBridge ||= {})
 const {
   OriginalXHR,
+  fetchWithCircuitBreaker,
+  originalFetch,
   stripHash,
   requestRuntime,
   resolveLookupBytes,
@@ -16,8 +18,52 @@ const {
   isPlaylistUrl,
   isPlaylistContentType,
   looksLikePlaylistBody,
-  relayedPlaylists
+  relayedPlaylists,
+  smoother
 } = ns
+
+const networkFetch = fetchWithCircuitBreaker || originalFetch
+
+function synthesizeXhrFromBuffer(xhr, statusCode, statusText, bytes, contentType, extraHeaders = {}) {
+  Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
+  Object.defineProperty(xhr, "statusText", { get: () => statusText, configurable: true })
+  Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
+  Object.defineProperty(xhr, "response", { get: () => bytes, configurable: true })
+  Object.defineProperty(xhr, "responseText", {
+    get: () => {
+      try {
+        return new TextDecoder().decode(bytes)
+      } catch {
+        return ""
+      }
+    },
+    configurable: true
+  })
+  Object.defineProperty(xhr, "getResponseHeader", {
+    value: (name) => {
+      const lower = name.toLowerCase()
+      if (lower === "content-type") return contentType
+      if (lower === "x-aegisstream-cache") return extraHeaders["x-aegisstream-cache"] || null
+      return extraHeaders[lower] || null
+    },
+    configurable: true,
+    writable: true
+  })
+  Object.defineProperty(xhr, "getAllResponseHeaders", {
+    value: () => {
+      let headers = `content-type: ${contentType}\r\n`
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        if (value != null) headers += `${key}: ${value}\r\n`
+      }
+      return headers
+    },
+    configurable: true,
+    writable: true
+  })
+  xhr.dispatchEvent(new Event("readystatechange"))
+  xhr.dispatchEvent(new Event("load"))
+  xhr.dispatchEvent(new Event("loadend"))
+}
 
 function AegisXHR() {
   const xhr = new OriginalXHR()
@@ -168,6 +214,29 @@ function AegisXHR() {
     const shouldIntercept = _method === "GET" && _url && (isLikelyChunk(_url) || Boolean(youtubeChunk))
     if (shouldIntercept && _url) {
       notifyChunkObserved(_url)
+    }
+
+    if (
+      !shouldIntercept &&
+      _method === "GET" &&
+      _url &&
+      smoother?.isCriticalStaticAsset?.(_url, _method) &&
+      typeof networkFetch === "function"
+    ) {
+      void networkFetch(_url, { method: "GET", credentials: "include" })
+        .then(async (response) => {
+          if (!response?.ok) {
+            originalSend(body)
+            return
+          }
+          const bytes = await response.arrayBuffer()
+          const contentType = response.headers.get("content-type") || "application/octet-stream"
+          synthesizeXhrFromBuffer(xhr, response.status, response.statusText, bytes, contentType, {
+            "x-aegisstream-cache": "NETWORK"
+          })
+        })
+        .catch(() => originalSend(body))
+      return undefined
     }
 
     // For non-chunk GETs, try cache-first

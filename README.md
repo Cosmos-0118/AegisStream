@@ -8,6 +8,7 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 
 ## What works now
 
+- **Page smoother:** hover-prefetch for same-origin navigation, viewport `preconnect`/`dns-prefetch`, and an adaptive circuit breaker for stuck `.js`/`.css`/font assets (`clamp(RTT × 12 + 400, 1.2s–8s)`, 2.5s fallback).
 - Detects likely HLS/DASH playlists and media chunks.
 - Parses HLS media playlists and follows master playlist variants.
 - Prefetches upcoming chunks with bounded concurrency.
@@ -30,7 +31,7 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 - `src/worker/background/io/extension-fetch.js` - parallel `fetch` racing in the service worker (replaces native daemon).
 - `src/worker/background/config/dnr-rules.json` - DNR header rules for `googlevideo.com` background fetches.
 - `src/worker/background/` - background modules grouped by `config`, `state`, `domain`, `io`, and `orchestration`.
-- `src/content/` - isolated-world relay logic and YouTube-specific main-world bootstrap scripts.
+- `src/content/` - isolated-world relay, page smoother modules (`smoother/`), and YouTube-specific main-world bootstrap scripts.
 - `src/bridge/` - page-world bridge modules split into `runtime`, `interceptors`, `domain`, and shared primitives.
 - `src/popup/popup.html` / `src/popup/popup.js` - popup UI controls and diagnostics.
 - `docs/ROADMAP.md` - detailed build and rollout roadmap.

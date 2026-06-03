@@ -2,6 +2,7 @@
 var ns = (self.AegisPageBridge ||= {})
 const {
   originalFetch,
+  fetchWithCircuitBreaker,
   getRequestDetails,
   requestRuntime,
   requestExtensionFetchStream,
@@ -27,6 +28,7 @@ const {
   knownUmpCacheKeys
 } = ns
 
+const networkFetch = fetchWithCircuitBreaker || originalFetch
 const UMP_STORE_RACE_RETRY_MS = 120
 
 async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk) {
@@ -80,7 +82,7 @@ async function aegisFetch(input, init) {
   const requestStartedAt = monotonicNow()
 
   if (method === "POST" && isYoutubeInternalApiUrl(url)) {
-    const apiResponse = await originalFetch(input, init)
+    const apiResponse = await networkFetch(input, init)
     return patchYoutubeInternalApiResponse(apiResponse)
   }
 
@@ -126,7 +128,7 @@ async function aegisFetch(input, init) {
 
   // For non-chunk GETs, let them through but watch for playlist responses
   if (!shouldIntercept || (hasRange && !youtubeChunk)) {
-    const networkResponse = await originalFetch(input, init)
+    const networkResponse = await networkFetch(input, init)
 
     // Check if the response is a playlist we should capture
     if (url && networkResponse.ok && !youtubeChunk) {
@@ -229,11 +231,11 @@ async function aegisFetch(input, init) {
         `Extension fetch failed (${streamErr?.message || "unknown"}), falling back`,
         "WARN"
       )
-      networkResponse = await originalFetch(input, init)
+      networkResponse = await networkFetch(input, init)
     }
   } catch (e) {
     logBridge(`Extension fetch error (${e.message}), falling back`, "WARN")
-    networkResponse = await originalFetch(input, init)
+    networkResponse = await networkFetch(input, init)
   }
   if (youtubeChunk?.type !== "ump") {
     reportRuntimeMetric("request_first_byte", {

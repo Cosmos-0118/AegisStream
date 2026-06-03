@@ -61,6 +61,9 @@ const MAIN_BRIDGE_FILES = [
   "src/bridge/shared/range-buffer.js",
   "src/bridge/shared/youtube-ump-flags.js",
   "src/bridge/page/runtime/core.js",
+  "src/content/smoother/shared.js",
+  "src/bridge/page/smoother/circuit-breaker-timing.js",
+  "src/bridge/page/smoother/asset-circuit-breaker.js",
   "src/bridge/page/runtime/buffer-health-monitor.js",
   "src/bridge/page/runtime/extension-fetch-client.js",
   "src/bridge/page/runtime/prefetch-video.js",
@@ -68,6 +71,9 @@ const MAIN_BRIDGE_FILES = [
   "src/bridge/page/domain/youtube-playlist.js",
   "src/bridge/page/interceptors/fetch.js",
   "src/bridge/page/interceptors/xhr.js",
+  "src/content/smoother/hover-prefetch.js",
+  "src/content/smoother/viewport-preconnect.js",
+  "src/content/smoother/smoother-install.js",
   "src/bridge/page/main.js"
 ]
 const YOUTUBE_MAIN_BRIDGE_FILES = ["src/content/youtube/kill-ump.js"]

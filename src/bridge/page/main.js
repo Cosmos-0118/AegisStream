@@ -9,7 +9,7 @@ if (
   return
 }
 ns.__bridgeInstalled = true
-const { logBridge, installFetchInterceptor, installXhrInterceptor } = ns
+const { logBridge, installFetchInterceptor, installXhrInterceptor, installPageSmoother } = ns
 
 if (window.__aegisKillUmpStatus) {
   logBridge(`[Kill UMP] ${window.__aegisKillUmpStatus}`, "INFO")
@@ -19,4 +19,7 @@ logBridge("AegisStream page-bridge successfully injected into MAIN world")
 
 installFetchInterceptor()
 installXhrInterceptor()
+if (typeof installPageSmoother === "function") {
+  installPageSmoother()
+}
 })()

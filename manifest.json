@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AegisStream",
-  "version": "0.2.0",
-  "description": "Adaptive anti-buffering extension with proactive segment prefetching.",
+  "version": "0.3.0",
+  "description": "Adaptive media and web-page acceleration with proactive prefetching and smoother navigation.",
   "permissions": [
     "storage",
     "webRequest",
@@ -49,6 +49,9 @@
         "src/bridge/shared/range-buffer.js",
         "src/bridge/shared/youtube-ump-flags.js",
         "src/bridge/page/runtime/core.js",
+        "src/content/smoother/shared.js",
+        "src/bridge/page/smoother/circuit-breaker-timing.js",
+        "src/bridge/page/smoother/asset-circuit-breaker.js",
         "src/bridge/page/runtime/buffer-health-monitor.js",
         "src/bridge/page/runtime/extension-fetch-client.js",
         "src/bridge/page/runtime/prefetch-video.js",
@@ -56,6 +59,9 @@
         "src/bridge/page/domain/youtube-playlist.js",
         "src/bridge/page/interceptors/fetch.js",
         "src/bridge/page/interceptors/xhr.js",
+        "src/content/smoother/hover-prefetch.js",
+        "src/content/smoother/viewport-preconnect.js",
+        "src/content/smoother/smoother-install.js",
         "src/bridge/page/main.js"
       ],
       "run_at": "document_start",
@@ -83,13 +89,19 @@
         "src/bridge/shared/youtube-ump-flags.js",
         "src/bridge/page/main.js",
         "src/bridge/page/runtime/core.js",
+        "src/content/smoother/shared.js",
+        "src/bridge/page/smoother/circuit-breaker-timing.js",
+        "src/bridge/page/smoother/asset-circuit-breaker.js",
         "src/bridge/page/runtime/buffer-health-monitor.js",
         "src/bridge/page/runtime/extension-fetch-client.js",
         "src/bridge/page/runtime/prefetch-video.js",
         "src/bridge/page/runtime/message-bridge.js",
         "src/bridge/page/domain/youtube-playlist.js",
         "src/bridge/page/interceptors/fetch.js",
-        "src/bridge/page/interceptors/xhr.js"
+        "src/bridge/page/interceptors/xhr.js",
+        "src/content/smoother/hover-prefetch.js",
+        "src/content/smoother/viewport-preconnect.js",
+        "src/content/smoother/smoother-install.js"
       ],
       "matches": [
         "<all_urls>"
