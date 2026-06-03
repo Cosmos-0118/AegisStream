@@ -58,6 +58,7 @@
       "js": [
         "src/page/shared/execution-guard.js",
         "src/page/shared/manifest-mapper.js",
+        "src/page/shared/site-policy.js",
         "src/page/shared/range-buffer.js",
         "src/page/shared/youtube-ump-flags.js",
         "src/page/bridge/core.js",
@@ -101,6 +102,7 @@
       "resources": [
         "src/page/shared/execution-guard.js",
         "src/page/shared/manifest-mapper.js",
+        "src/page/shared/site-policy.js",
         "src/page/shared/range-buffer.js",
         "src/page/shared/youtube-ump-flags.js",
         "src/page/main.js",

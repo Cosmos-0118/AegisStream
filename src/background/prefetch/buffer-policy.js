@@ -80,6 +80,9 @@ function updateTabBufferHealth(tabId, payload) {
 }
 
 function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
+  if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) {
+    return 0
+  }
   const tier = getTabBufferTier(tabId)
   if (!tier) return baseWindow
 

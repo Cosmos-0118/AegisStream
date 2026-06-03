@@ -519,6 +519,9 @@ function ensurePrefetchWorkers() {
 }
 
 async function prefetchSegmentsFromPage(urls) {
+  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+    return
+  }
   const unique = []
   const seen = new Set()
   for (const url of urls) {

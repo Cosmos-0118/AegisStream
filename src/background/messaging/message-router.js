@@ -26,7 +26,9 @@ const {
   handleChunkObserved,
   isTabInRapidSeek,
   syncKnownSegmentsToPage,
-  requestPrefetchForTab,
+  maybeRequestPrefetchForTab,
+  noteTabPageUrl,
+  noteTwitchAuthFromUrl,
   updatePrefetchOutcome,
   computeAdaptiveCachePolicy,
   syncPerformanceGemsFromSettings,
@@ -100,11 +102,13 @@ function handleExtensionFetch(message, sendResponse, sender) {
     let metaSent = false
     try {
       const bodyBytes = extractMessageBytes(message)
+      noteTwitchAuthFromUrl(tabId, message.url)
       const response = await fetchExtensionResponse(
         message.url,
         message.method || "GET",
         message.headers || {},
-        bodyBytes
+        bodyBytes,
+        { tabId }
       )
 
       sendResponse({
@@ -312,6 +316,7 @@ function registerMessageRouter() {
     case "AegisStream:BridgeReady": {
       const tabId = sender?.tab?.id
       if (tabId) {
+        if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
         const now = Date.now()
         const lastHeartbeat = Number(state.bridgeHeartbeatByTab.get(tabId) || 0)
         state.bridgeHeartbeatByTab.set(tabId, now)
@@ -323,7 +328,7 @@ function registerMessageRouter() {
         if (tabState?.segments?.length) {
           syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
           if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-            requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "bridge-ready")
+            maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "bridge-ready")
           }
         }
       }
@@ -362,6 +367,8 @@ function registerMessageRouter() {
         await clearCacheStores()
         state.playlistByTab.clear()
         state.bridgeHeartbeatByTab.clear()
+        state.tabPageHostByTab?.clear()
+        state.twitchSessionByTab?.clear()
         state.tabAnchorJumps.clear()
         for (const pending of state.pendingPrefetchByTab.values()) {
           if (pending?.timerId) clearTimeout(pending.timerId)
@@ -382,6 +389,7 @@ function registerMessageRouter() {
       return true
     case "AegisStream:PlaylistDiscovered": {
       const tabId = sender?.tab?.id
+      if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
       if (tabId && message.url && !shouldThrottlePlaylistDiscover(message.url)) {
         addLog("DEBUG", `Playlist URL discovered in DOM: ${message.url.slice(-80)}`)
         void parseAndPrefetchFromPlaylist(tabId, message.url)
@@ -391,6 +399,7 @@ function registerMessageRouter() {
     }
     case "AegisStream:PlaylistContent": {
       const tabId = sender?.tab?.id
+      if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
       if (tabId && message.url && message.text) {
         addLog(
           "INFO",

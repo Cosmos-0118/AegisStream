@@ -19,6 +19,9 @@ const {
   resolveBufferAdjustedPrefetchWindow,
   resolveBufferAdjustedGlobalCap,
   getTabBufferTier,
+  isReactivePrefetchTab,
+  isTwitchMediaUrl,
+  noteTabPageUrl,
   getManifestUrlSignature,
   buildManifestSequenceIndex,
   resolveSegmentIndexInManifest
@@ -198,7 +201,16 @@ function getAnchorJumpCount(tabId) {
   return compacted.length
 }
 
+function maybeRequestPrefetchForTab(tabId, segments, startIndex, source) {
+  if (isReactivePrefetchTab(tabId)) {
+    addLog("DEBUG", `Reactive media mode: forward prefetch disabled (${source}, tab ${tabId})`)
+    return
+  }
+  requestPrefetchForTab(tabId, segments, startIndex, source)
+}
+
 function resolveEffectivePrefetchWindow(tabId) {
+  if (isReactivePrefetchTab(tabId)) return 0
   const baseWindow = Math.max(1, Number(state.settings.prefetchWindow) || 1)
   const jumps = getAnchorJumpCount(tabId)
   let windowSize = baseWindow
@@ -602,6 +614,13 @@ function syncKnownSegmentsToPage(tabId, segments, options = {}) {
 async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
   const normalizedPlaylistUrl = stripHash(playlistUrl)
   if (!normalizedPlaylistUrl) return
+  if (isReactivePrefetchTab(tabId) || isTwitchMediaUrl(normalizedPlaylistUrl)) {
+    addLog(
+      "DEBUG",
+      `Skipping background playlist fetch on Twitch reactive tab ${tabId}: ${normalizedPlaylistUrl.slice(-80)}`
+    )
+    return
+  }
 
   const inflightKey = `${tabId}|${normalizedPlaylistUrl}|${depth}`
   if (playlistFetchInFlight.has(inflightKey)) return
@@ -652,7 +671,7 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
       syncKnownSegmentsToPage(tabId, tabState.segments)
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Playlist refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
-        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "playlist-refresh")
+        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "playlist-refresh")
       } else {
         addLog("INFO", "Awaiting player segment request to anchor HLS prefetch (JIT mode)")
       }
@@ -674,7 +693,7 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
     syncKnownSegmentsToPage(tabId, tabState.segments)
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `DASH playlist refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
-      requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "playlist-refresh")
+      maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "playlist-refresh")
     } else {
       addLog("INFO", "Awaiting player segment request to anchor DASH prefetch (JIT mode)")
     }
@@ -688,6 +707,7 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
 
 async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = null) {
   if (!text || !tabId) return
+  if (pageUrl) noteTabPageUrl(tabId, pageUrl)
   const normalizedUrl = stripHash(playlistUrl) || playlistUrl
   try {
     const isHls = /\.m3u8($|\?)/i.test(normalizedUrl) || text.trimStart().startsWith("#EXTM3U")
@@ -719,7 +739,7 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
       syncKnownSegmentsToPage(tabId, tabState.segments)
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Captured HLS refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
-        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "captured-playlist")
+        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "captured-playlist")
       } else {
         const startSeconds = extractStartSecondsFromPageUrl(pageUrl)
         if (startSeconds !== null) {
@@ -744,7 +764,7 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
     syncKnownSegmentsToPage(tabId, tabState.segments)
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `Captured DASH refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
-      requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "captured-playlist")
+      maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "captured-playlist")
     } else {
       addLog("INFO", "Awaiting player segment request to anchor captured DASH prefetch (JIT mode)")
     }
@@ -803,7 +823,7 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
     !isTabInAnchorCooldown(tabState) &&
     !isTabInRapidSeek(tabState)
   ) {
-    requestPrefetchForTab(tabId, tabState.segments, chunkIndex + 1, "chunk-observed")
+    maybeRequestPrefetchForTab(tabId, tabState.segments, chunkIndex + 1, "chunk-observed")
   }
 }
 
@@ -820,6 +840,7 @@ ns.observeChunkFromWebRequest = observeChunkFromWebRequest
 ns.isTabInRapidSeek = isTabInRapidSeek
 ns.schedulePrefetch = schedulePrefetch
 ns.requestPrefetchForTab = requestPrefetchForTab
+ns.maybeRequestPrefetchForTab = maybeRequestPrefetchForTab
 ns.syncKnownSegmentsToPage = syncKnownSegmentsToPage
 ns.updatePrefetchOutcome = updatePrefetchOutcome
 })()

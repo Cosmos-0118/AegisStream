@@ -7,7 +7,8 @@ const {
   isScriptInjectionAllowedUrl,
   isRestrictedInjectionError,
   syncKnownSegmentsToPage,
-  requestPrefetchForTab,
+  maybeRequestPrefetchForTab,
+  noteTabPageUrl,
   isTabEligibleForPrefetch,
   installDocumentStreamHook,
   loadSettings,
@@ -90,6 +91,7 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
     return false
   }
   if (!isScriptInjectionAllowedUrl(tab?.url)) return false
+  if (tab?.url) noteTabPageUrl(tabId, tab.url)
 
   if (await pingTabBridge(tabId)) {
     state.bridgeHeartbeatByTab.set(tabId, now)
@@ -109,7 +111,7 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
         tabState.hasAnchor &&
         typeof tabState.anchorIndex === "number"
       ) {
-        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, `resume:${reason}`)
+        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, `resume:${reason}`)
       }
     }
     return true

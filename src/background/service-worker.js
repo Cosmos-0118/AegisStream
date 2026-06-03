@@ -6,6 +6,8 @@ importScripts(
   "./media/cache-keys.js",
   "./media/manifest-mapper.js",
   "./media/url-classifiers.js",
+  "./media/site-policy.js",
+  "./media/twitch-session.js",
   "./parsing/playlists.js",
   "./cache/db.js",
   "./cache/store-queue.js",

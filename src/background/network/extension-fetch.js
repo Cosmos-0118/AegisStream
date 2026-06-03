@@ -72,9 +72,17 @@ async function raceExtensionFetch(url, init = {}) {
   }
 }
 
-async function fetchExtensionResponse(url, method = "GET", headers = {}, body = null) {
+async function fetchExtensionResponse(url, method = "GET", headers = {}, body = null, options = {}) {
+  const tabId = options.tabId
   const methodUpper = String(method || "GET").toUpperCase()
-  const requestHeaders = sanitizeRequestHeaders(headers)
+  let fetchUrl = url
+  if (typeof ns.applyTwitchSessionToUrl === "function" && Number.isFinite(tabId)) {
+    fetchUrl = ns.applyTwitchSessionToUrl(tabId, fetchUrl)
+  }
+  const requestHeaders =
+    typeof ns.mergeTwitchRequestHeaders === "function"
+      ? ns.mergeTwitchRequestHeaders(fetchUrl, sanitizeRequestHeaders(headers), tabId)
+      : sanitizeRequestHeaders(headers)
   const init = {
     method: methodUpper,
     headers: requestHeaders
@@ -84,16 +92,33 @@ async function fetchExtensionResponse(url, method = "GET", headers = {}, body = 
     init.body = body
   }
 
-  if (methodUpper === "GET" || methodUpper === "HEAD") {
-    return raceExtensionFetch(url, init)
+  const fetchOnce = async (targetUrl) => {
+    if (methodUpper === "GET" || methodUpper === "HEAD") {
+      return raceExtensionFetch(targetUrl, init)
+    }
+    return fetchWithTimeout(targetUrl, {
+      ...init,
+      credentials: "include",
+      cache: "no-store",
+      redirect: "follow"
+    })
   }
 
-  const response = await fetchWithTimeout(url, {
-    ...init,
-    credentials: "include",
-    cache: "no-store",
-    redirect: "follow"
-  })
+  let response = await fetchOnce(fetchUrl)
+  if (
+    !response.ok &&
+    (response.status === 401 || response.status === 403) &&
+    Number.isFinite(tabId) &&
+    typeof ns.applyTwitchSessionToUrl === "function" &&
+    typeof ns.isTwitchMediaUrl === "function" &&
+    ns.isTwitchMediaUrl(url)
+  ) {
+    const retryUrl = ns.applyTwitchSessionToUrl(tabId, url)
+    if (retryUrl !== fetchUrl) {
+      response = await fetchOnce(retryUrl)
+    }
+  }
+
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }

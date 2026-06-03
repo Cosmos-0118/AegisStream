@@ -17,6 +17,8 @@ function isLikelyChunkUrl(url) {
   if (/googlevideo\.com\/videoplayback\b/i.test(url)) return true
   if (/\bakamaihd\.net\b.*\b(media|seg)\b/i.test(url)) return true
   if (/\bcloudfront\.net\b.*\.(ts|m4s)($|\?)/i.test(url)) return true
+  if (/\bttvnw\.net\b/i.test(url)) return true
+  if (/\bjtvnw\.net\b/i.test(url)) return true
   return false
 }
 

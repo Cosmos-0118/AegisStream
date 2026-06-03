@@ -8,10 +8,12 @@ const {
   isLikelyChunkUrl,
   pruneRuntimeState,
   observeChunkFromWebRequest,
+  noteTwitchAuthFromUrl,
+  noteTabPageUrl,
   refreshActivePrefetchTab,
   setActivePrefetchTab,
   syncKnownSegmentsToPage,
-  requestPrefetchForTab,
+  maybeRequestPrefetchForTab,
   isScriptInjectionAllowedUrl,
   isSkippableHeaderHintUrl,
   armHeaderHintsForUrl,
@@ -29,6 +31,7 @@ function registerChromeEventListeners() {
       pruneRuntimeState()
       const url = stripHash(details.url)
       if (!url) return
+      noteTwitchAuthFromUrl(details.tabId, url)
       if (isPlaylistUrl(url)) {
         addLog("INFO", `Playlist request detected via webRequest: ${url.slice(-80)}`)
         return
@@ -76,6 +79,8 @@ function registerChromeEventListeners() {
     }
     state.playlistByTab.delete(tabId)
     state.bridgeHeartbeatByTab.delete(tabId)
+    state.tabPageHostByTab?.delete(tabId)
+    state.twitchSessionByTab?.delete(tabId)
     state.tabAnchorJumps.delete(tabId)
     const pending = state.pendingPrefetchByTab.get(tabId)
     if (pending?.timerId) clearTimeout(pending.timerId)
@@ -114,13 +119,14 @@ function registerChromeEventListeners() {
       if (!tabState?.segments?.length) return
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-activated" })
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
+        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
       }
     })
   })
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.url) {
+      noteTabPageUrl(tabId, changeInfo.url)
       state.bridgeHeartbeatByTab.delete(tabId)
     }
     if (changeInfo.status !== "complete") return
@@ -132,7 +138,7 @@ function registerChromeEventListeners() {
       if (!tabState?.segments?.length) return
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-updated" })
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-        requestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-updated")
+        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-updated")
       }
     })
   })

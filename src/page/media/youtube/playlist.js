@@ -546,6 +546,8 @@ function isLikelyChunk(url) {
   if (/\b(segment|frag|chunk|Fragments)\b/i.test(url)) return true
   if (/googlevideo\.com\/videoplayback\b/i.test(url)) return true
   if (/akamaihd\.net\b.*\b(media|seg)\b/i.test(url)) return true
+  if (/\bttvnw\.net\b/i.test(url)) return true
+  if (/\bjtvnw\.net\b/i.test(url)) return true
   return false
 }
 

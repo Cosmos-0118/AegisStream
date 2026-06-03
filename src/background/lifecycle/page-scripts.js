@@ -12,6 +12,7 @@ ns.ISOLATED_CONTENT_FILES = [
 ns.MAIN_PAGE_SCRIPT_FILES = [
   "src/page/shared/execution-guard.js",
   "src/page/shared/manifest-mapper.js",
+  "src/page/shared/site-policy.js",
   "src/page/shared/range-buffer.js",
   "src/page/shared/youtube-ump-flags.js",
   "src/page/bridge/core.js",

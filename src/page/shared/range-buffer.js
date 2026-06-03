@@ -244,6 +244,9 @@
 
     // Triggered by page-bridge when a network response finishes
     triggerHeuristicPrefetch(originalUrl, headers, notifyRuntime, requestRuntime) {
+      if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+        return
+      }
       const tier = self.AegisPageBridge?.bufferTier
       if (tier === "idle") {
         return
