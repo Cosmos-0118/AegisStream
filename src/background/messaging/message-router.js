@@ -93,6 +93,8 @@ function sendExtensionFetchEnd(tabId, requestId, payload) {
     .catch(() => {})
 }
 
+const activeFetchControllers = new Map()
+
 function handleExtensionFetch(message, sendResponse, sender) {
   const tabId = sender?.tab?.id
   const requestId = message.requestId
@@ -104,6 +106,9 @@ function handleExtensionFetch(message, sendResponse, sender) {
     }
 
     let metaSent = false
+    const controller = new AbortController()
+    activeFetchControllers.set(requestId, controller)
+    
     try {
       const bodyBytes = extractMessageBytes(message)
       noteTwitchAuthFromUrl(tabId, message.url)
@@ -112,7 +117,7 @@ function handleExtensionFetch(message, sendResponse, sender) {
         message.method || "GET",
         message.headers || {},
         bodyBytes,
-        { tabId }
+        { tabId, signal: controller.signal }
       )
 
       sendResponse({
@@ -133,14 +138,28 @@ function handleExtensionFetch(message, sendResponse, sender) {
 
       await sendExtensionFetchEnd(tabId, requestId, { ok: true })
     } catch (err) {
+      if (err?.name === "AbortError") {
+        // Silently handle aborts
+        return
+      }
       const msg = err?.message || "extension fetch failed"
       if (!metaSent) {
         sendResponse({ ok: false, error: msg })
         return
       }
       await sendExtensionFetchEnd(tabId, requestId, { ok: false, error: msg })
+    } finally {
+      activeFetchControllers.delete(requestId)
     }
   })()
+}
+
+function handleExtensionFetchAbort(message) {
+  const controller = activeFetchControllers.get(message.requestId)
+  if (controller) {
+    controller.abort()
+    activeFetchControllers.delete(message.requestId)
+  }
 }
 
 function handleCacheLookup(message, sendResponse, tabId = null) {
@@ -288,6 +307,9 @@ function registerMessageRouter() {
     case "AegisStream:ExtensionFetch":
       handleExtensionFetch(message, sendResponse, sender)
       return true
+    case "AegisStream:ExtensionFetchAbort":
+      handleExtensionFetchAbort(message)
+      return false
     case "AegisStream:GetSettings":
       ;(async () => {
         const stats = await buildDisplayStats()
@@ -386,6 +408,7 @@ function registerMessageRouter() {
         state.playlistByTab.clear()
         state.bridgeHeartbeatByTab.clear()
         state.tabPageHostByTab?.clear()
+        state.tabPageUrlFingerprintByTab?.clear()
         state.twitchSessionByTab?.clear()
         state.tabAnchorJumps.clear()
         for (const pending of state.pendingPrefetchByTab.values()) {

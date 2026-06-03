@@ -75,6 +75,11 @@ function parseHlsPlaylist(text, playlistUrl) {
     pendingDuration = null
   }
 
+  let totalDuration = 0
+  for (const duration of segmentDurations) {
+    if (Number.isFinite(duration) && duration > 0) totalDuration += duration
+  }
+
   if (variants.length > 0 && segments.length === 0) {
     return {
       kind: "master",
@@ -82,7 +87,8 @@ function parseHlsPlaylist(text, playlistUrl) {
       segments: [],
       isLive: false,
       segmentDurations: [],
-      mediaSequence: null
+      mediaSequence: null,
+      totalDuration: null
     }
   }
 
@@ -92,7 +98,8 @@ function parseHlsPlaylist(text, playlistUrl) {
     segments,
     isLive: !hasEndList,
     segmentDurations,
-    mediaSequence: Number.isFinite(mediaSequence) ? mediaSequence : null
+    mediaSequence: Number.isFinite(mediaSequence) ? mediaSequence : null,
+    totalDuration: totalDuration > 0 ? totalDuration : null
   }
 }
 

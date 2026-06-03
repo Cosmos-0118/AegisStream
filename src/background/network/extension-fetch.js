@@ -52,6 +52,8 @@ async function raceExtensionFetch(url, init = {}) {
 
   const pathA = runPath("include", "high", controllerA)
   const pathB = runPath("omit", "low", controllerB)
+  pathA.catch(() => {})
+  pathB.catch(() => {})
 
   try {
     const winner = await Promise.race([pathA, pathB])
@@ -86,6 +88,9 @@ async function fetchExtensionResponse(url, method = "GET", headers = {}, body = 
   const init = {
     method: methodUpper,
     headers: requestHeaders
+  }
+  if (options.signal) {
+    init.signal = options.signal
   }
 
   if (body && methodUpper !== "GET" && methodUpper !== "HEAD") {

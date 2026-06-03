@@ -86,6 +86,12 @@ function noteTabPageUrl(tabId, pageUrl) {
     if (!host) return
     if (!state.tabPageHostByTab) state.tabPageHostByTab = new Map()
     state.tabPageHostByTab.set(tabId, host)
+    const fingerprint =
+      typeof ns.getPageUrlFingerprint === "function" ? ns.getPageUrlFingerprint(pageUrl) : null
+    if (fingerprint) {
+      if (!state.tabPageUrlFingerprintByTab) state.tabPageUrlFingerprintByTab = new Map()
+      state.tabPageUrlFingerprintByTab.set(tabId, fingerprint)
+    }
   } catch {
     // ignore
   }
@@ -96,6 +102,11 @@ function getTabPageHost(tabId) {
   return state.tabPageHostByTab?.get(tabId) || null
 }
 
+function getTabPageUrlFingerprint(tabId) {
+  if (!Number.isFinite(tabId) || tabId < 0) return null
+  return state.tabPageUrlFingerprintByTab?.get(tabId) || null
+}
+
 function isReactivePrefetchTab(tabId) {
   const host = getTabPageHost(tabId)
   return host ? isTwitchPageHost(host) : false
@@ -103,11 +114,19 @@ function isReactivePrefetchTab(tabId) {
 
 function pruneTabPageHosts() {
   const map = state.tabPageHostByTab
-  if (!map || map.size <= 200) return
+  const fpMap = state.tabPageUrlFingerprintByTab
+  if ((!map || map.size <= 200) && (!fpMap || fpMap.size <= 200)) return
   const keep = new Set(state.playlistByTab.keys())
   if (state.activePrefetchTabId != null) keep.add(state.activePrefetchTabId)
-  for (const tabId of map.keys()) {
-    if (!keep.has(tabId)) map.delete(tabId)
+  if (map) {
+    for (const tabId of map.keys()) {
+      if (!keep.has(tabId)) map.delete(tabId)
+    }
+  }
+  if (fpMap) {
+    for (const tabId of fpMap.keys()) {
+      if (!keep.has(tabId)) fpMap.delete(tabId)
+    }
   }
 }
 
@@ -123,6 +142,7 @@ ns.isTwitchMediaHost = isTwitchMediaHost
 ns.isTwitchMediaUrl = isTwitchMediaUrl
 ns.noteTabPageUrl = noteTabPageUrl
 ns.getTabPageHost = getTabPageHost
+ns.getTabPageUrlFingerprint = getTabPageUrlFingerprint
 ns.isReactivePrefetchTab = isReactivePrefetchTab
 ns.pruneTabPageHosts = pruneTabPageHosts
 })()

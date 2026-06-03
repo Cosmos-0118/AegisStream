@@ -85,6 +85,7 @@ function registerChromeEventListeners() {
     state.playlistByTab.delete(tabId)
     state.bridgeHeartbeatByTab.delete(tabId)
     state.tabPageHostByTab?.delete(tabId)
+    state.tabPageUrlFingerprintByTab?.delete(tabId)
     state.twitchSessionByTab?.delete(tabId)
     state.tabAnchorJumps.delete(tabId)
     const pending = state.pendingPrefetchByTab.get(tabId)

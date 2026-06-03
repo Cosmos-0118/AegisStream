@@ -325,6 +325,18 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "EXTENSION_FETCH_ABORT") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:ExtensionFetchAbort",
+        requestId: data.requestId
+      })
+    } catch {
+      // Ignored
+    }
+    return
+  }
+
   // Relay playlist URL discoveries from page-bridge
   if (data.type === "PLAYLIST_DISCOVERED") {
     try {

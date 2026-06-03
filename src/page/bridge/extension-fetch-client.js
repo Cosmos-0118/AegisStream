@@ -175,6 +175,14 @@ function requestExtensionFetchStream(payload) {
     },
     cancel() {
       settleStreamError(requestId, "aborted")
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "EXTENSION_FETCH_ABORT",
+          requestId
+        },
+        "*"
+      )
     }
   })
 

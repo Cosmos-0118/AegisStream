@@ -24,8 +24,11 @@ const {
   isReactivePrefetchTab,
   isTwitchMediaUrl,
   noteTabPageUrl,
+  getTabPageUrlFingerprint,
   getManifestUrlSignature,
   buildManifestSequenceIndex,
+  buildPlaylistFingerprint,
+  comparePlaylistFingerprints,
   resolveSegmentIndexInManifest
 } = ns
 
@@ -562,6 +565,25 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   const previous = state.playlistByTab.get(tabId)
   const { signatures: manifestSignatures, signatureToIndex } =
     buildManifestSequenceIndex(normalizedSegments)
+  const mediaPlaylistPath =
+    meta.mediaPlaylistPath ||
+    (meta.mediaPlaylistUrl ? getManifestUrlSignature(meta.mediaPlaylistUrl) : null) ||
+    (previous?.mediaPlaylistUrl ? getManifestUrlSignature(previous.mediaPlaylistUrl) : null)
+  const pageUrlForFingerprint =
+    meta.pageUrl || getTabPageUrlFingerprint(tabId) || null
+  const playlistFingerprint = buildPlaylistFingerprint({
+    segments: normalizedSegments,
+    mediaPlaylistPath,
+    mediaSequence: meta.mediaSequence,
+    totalDuration: meta.totalDuration,
+    pageUrl: pageUrlForFingerprint
+  })
+  const fingerprintDelta = comparePlaylistFingerprints(
+    previous?.playlistFingerprint,
+    playlistFingerprint
+  )
+  const contentChangedByFingerprint = fingerprintDelta.contentChanged
+
   const structureChanged =
     !previous?.segments ||
     previous.segments.length !== normalizedSegments.length ||
@@ -572,18 +594,34 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     !previous?.segments ||
     previous.segments.length !== normalizedSegments.length ||
     normalizedSegments.some((url, i) => url !== previous.segments[i])
-  const tokensRefreshed = urlsChanged && !structureChanged
-  const playlistChanged = structureChanged
+  const tokensRefreshed = urlsChanged && !structureChanged && !contentChangedByFingerprint
+  const playlistChanged = structureChanged || contentChangedByFingerprint
+  const episodeChangedByFingerprint =
+    urlsChanged && !structureChanged && contentChangedByFingerprint
   const segmentCountChanged =
     !previous?.segments || previous.segments.length !== normalizedSegments.length
   const qualityVariantSwitch =
-    urlsChanged && !segmentCountChanged && structureChanged
+    urlsChanged && !segmentCountChanged && structureChanged && !contentChangedByFingerprint
 
   if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0) {
     clearPrefetchTrackingForUrls(previous.segments)
-    if (qualityVariantSwitch) {
+    if (qualityVariantSwitch || episodeChangedByFingerprint) {
       state.tabAnchorJumps.delete(tabId)
     }
+  }
+
+  if (episodeChangedByFingerprint) {
+    const reason = fingerprintDelta.pageChanged
+      ? "page-url"
+      : fingerprintDelta.durationChanged
+        ? "duration"
+        : fingerprintDelta.endpointsChanged
+          ? "segment-endpoints"
+          : "media-playlist"
+    addLog(
+      "INFO",
+      `New playback detected via playlist fingerprint (${reason}, tab ${tabId}) — not treating as signed-URL refresh`
+    )
   }
 
   let hasAnchor = false
@@ -592,6 +630,7 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   let lastScheduledFromIndex = -1
 
   if (
+    !episodeChangedByFingerprint &&
     previous?.hasAnchor &&
     typeof previous.anchorIndex === "number" &&
     Array.isArray(previous.segments) &&
@@ -611,6 +650,7 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   }
 
   if (
+    !episodeChangedByFingerprint &&
     !hasAnchor &&
     previous?.hasAnchor &&
     typeof previous.anchorIndex === "number" &&
@@ -627,25 +667,23 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   }
 
   if (
+    !episodeChangedByFingerprint &&
     !hasAnchor &&
     previous?.hasAnchor &&
     typeof previous.anchorIndex === "number" &&
     previous.isLive !== true &&
-    urlsChanged
+    urlsChanged &&
+    !structureChanged
   ) {
-    const previousCount = previous.segments?.length || 0
-    const countDelta = Math.abs(normalizedSegments.length - previousCount)
-    if (previousCount === normalizedSegments.length || countDelta <= 8) {
-      hasAnchor = true
-      anchorIndex = Math.min(
-        Math.max(0, previous.anchorIndex),
-        normalizedSegments.length - 1
-      )
-      anchorRetainedByRefresh = true
-    }
+    hasAnchor = true
+    anchorIndex = Math.min(
+      Math.max(0, previous.anchorIndex),
+      normalizedSegments.length - 1
+    )
+    anchorRetainedByRefresh = true
   }
 
-  if (!hasAnchor && urlsChanged) {
+  if (!episodeChangedByFingerprint && !hasAnchor && urlsChanged) {
     if (
       typeof previous?.lastAnchorMediaSequenceBeforeRefresh === "number" &&
       typeof meta.mediaSequence === "number"
@@ -657,8 +695,9 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
         anchorRetainedByRefresh = true
       }
     } else if (
+      !episodeChangedByFingerprint &&
       typeof previous?.lastAnchorBeforeRefresh === "number" &&
-      previous.segments?.length === normalizedSegments.length
+      !structureChanged
     ) {
       hasAnchor = true
       anchorIndex = Math.min(
@@ -729,10 +768,15 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     anchorRetainedByRefresh:
       anchorRetainedByRefresh || previous?.anchorRetainedByRefresh === true,
     prefetchFailureWindow: previous?.prefetchFailureWindow || null,
+    playlistFingerprint,
     recentAnchorChanges:
-      qualityVariantSwitch || segmentCountChanged ? [] : previous?.recentAnchorChanges || [],
+      qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint
+        ? []
+        : previous?.recentAnchorChanges || [],
     rapidSeekUntil:
-      qualityVariantSwitch || segmentCountChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
+      qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint
+        ? 0
+        : Number(previous?.rapidSeekUntil || 0),
     lastQualityVariantSwitchAt: qualityVariantSwitch
       ? Date.now()
       : Number(previous?.lastQualityVariantSwitchAt || 0),
@@ -791,7 +835,7 @@ function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex)
   const playlistGrace =
     now - Number(tabState.playlistRefreshedAt || 0) < constants.PLAYLIST_ROTATION_GRACE_MS
   const rotationGrace = now < Number(tabState.anchorRotationGraceUntil || 0)
-  const retained = tabState.anchorRetainedByRefresh === true
+  const retained = tabState.anchorRetainedByRefresh === true && playlistGrace
 
   return playlistGrace || rotationGrace || retained
 }
@@ -1353,7 +1397,9 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
       bumpActivity("playlistsDetected", 1)
       const tabState = upsertPlaylistState(tabId, normalizeSegments(parsed.segments), {
         isLive: parsed.isLive === true,
-        mediaSequence: parsed.mediaSequence
+        mediaSequence: parsed.mediaSequence,
+        totalDuration: parsed.totalDuration,
+        mediaPlaylistUrl: normalizedPlaylistUrl
       })
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedPlaylistUrl.slice(-60)}`)
@@ -1441,7 +1487,10 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
       }
       const tabState = upsertPlaylistState(tabId, normalizedSegments, {
         isLive: parsed.isLive === true,
-        mediaSequence: parsed.mediaSequence
+        mediaSequence: parsed.mediaSequence,
+        totalDuration: parsed.totalDuration,
+        mediaPlaylistUrl: normalizedUrl,
+        pageUrl
       })
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 usable segments: ${normalizedUrl.slice(-60)}`)

@@ -37,6 +37,7 @@ function createState() {
     stats: constants.createInitialStats(),
     activePrefetchTabId: null,
     tabPageHostByTab: new Map(),
+    tabPageUrlFingerprintByTab: new Map(),
     twitchSessionByTab: new Map()
   }
 }
