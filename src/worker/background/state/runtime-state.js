@@ -75,6 +75,7 @@ function sanitizeSettings(candidate = {}) {
     documentStreamBoost: candidate.documentStreamBoost !== false,
     headerEarlyHints: candidate.headerEarlyHints !== false,
     cpuShieldEnabled: candidate.cpuShieldEnabled !== false,
+    aggressiveScriptDefuserEnabled: candidate.aggressiveScriptDefuserEnabled === true,
     bfcacheEnforcerEnabled: candidate.bfcacheEnforcerEnabled !== false
   }
   state.cachePolicy.maxEntries = sanitized.maxEntries

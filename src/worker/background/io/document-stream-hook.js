@@ -1,8 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
 
-const DEFUSE_RULESET_ID = "aegis_defuse_rules"
-
 function getHeaderValue(headers, name) {
   if (!Array.isArray(headers)) return ""
   const target = name.toLowerCase()
@@ -63,36 +61,12 @@ function installDocumentStreamHook() {
   )
 }
 
-async function syncCpuShieldRuleset(enabled) {
-  if (typeof chrome.declarativeNetRequest?.updateEnabledRulesets !== "function") return
-  try {
-    if (enabled) {
-      await chrome.declarativeNetRequest.updateEnabledRulesets({
-        enableRulesetIds: [DEFUSE_RULESET_ID],
-        disableRulesetIds: []
-      })
-    } else {
-      await chrome.declarativeNetRequest.updateEnabledRulesets({
-        enableRulesetIds: [],
-        disableRulesetIds: [DEFUSE_RULESET_ID]
-      })
-    }
-  } catch (e) {
-    if (typeof ns.addLog === "function") {
-      ns.addLog("WARN", `CPU shield ruleset sync failed: ${e.message}`)
-    }
+async function syncPerformanceGemsFromSettings(state = ns.state) {
+  if (typeof ns.syncTelemetryDefuserFromSettings === "function") {
+    await ns.syncTelemetryDefuserFromSettings(state)
   }
 }
 
-function shouldEnableCpuShield(state) {
-  return state?.settings?.enabled !== false && state?.settings?.cpuShieldEnabled !== false
-}
-
-async function syncPerformanceGemsFromSettings(state = ns.state) {
-  await syncCpuShieldRuleset(shouldEnableCpuShield(state))
-}
-
-ns.DEFUSE_RULESET_ID = DEFUSE_RULESET_ID
 ns.installDocumentStreamHook = installDocumentStreamHook
 ns.syncPerformanceGemsFromSettings = syncPerformanceGemsFromSettings
 })()

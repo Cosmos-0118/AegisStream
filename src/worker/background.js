@@ -13,6 +13,7 @@ importScripts(
   "./background/io/extension-fetch.js",
   "./background/io/html-head-scanner.js",
   "./background/io/stream-injector.js",
+  "./background/smoother/telemetry-defuser.js",
   "./background/io/document-stream-hook.js",
   "./background/smoother/layout-asset-store.js",
   "./background/smoother/header-injector.js"

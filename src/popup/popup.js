@@ -3,6 +3,8 @@ const el = {
   prefetchEnabled: document.getElementById("prefetchEnabled"),
   serveFromCache: document.getElementById("serveFromCache"),
   prefetchWindow: document.getElementById("prefetchWindow"),
+  cpuShieldEnabled: document.getElementById("cpuShieldEnabled"),
+  aggressiveScriptDefuserEnabled: document.getElementById("aggressiveScriptDefuserEnabled"),
   
   statHits: document.getElementById("stat-hits"),
   statMisses: document.getElementById("stat-misses"),
@@ -196,7 +198,9 @@ function currentSettings() {
     enabled: el.enabled.checked,
     prefetchEnabled: el.prefetchEnabled.checked,
     serveFromCache: el.serveFromCache.checked,
-    prefetchWindow: Math.max(1, Math.min(20, Number(el.prefetchWindow.value) || 6))
+    prefetchWindow: Math.max(1, Math.min(20, Number(el.prefetchWindow.value) || 6)),
+    cpuShieldEnabled: el.cpuShieldEnabled.checked,
+    aggressiveScriptDefuserEnabled: el.aggressiveScriptDefuserEnabled.checked
   }
 }
 
@@ -284,6 +288,18 @@ function bindChangeHandlers() {
   el.prefetchEnabled.addEventListener("change", () => void update())
   el.serveFromCache.addEventListener("change", () => void update())
   el.prefetchWindow.addEventListener("change", () => void update())
+  el.cpuShieldEnabled.addEventListener("change", () => {
+    if (!el.cpuShieldEnabled.checked) {
+      el.aggressiveScriptDefuserEnabled.checked = false
+    }
+    void update()
+  })
+  el.aggressiveScriptDefuserEnabled.addEventListener("change", () => {
+    if (el.aggressiveScriptDefuserEnabled.checked) {
+      el.cpuShieldEnabled.checked = true
+    }
+    void update()
+  })
 
   el.resetStats.addEventListener("click", async () => {
     el.resetStats.disabled = true
@@ -369,6 +385,8 @@ async function init() {
     el.prefetchEnabled.checked = !!settings.prefetchEnabled
     el.serveFromCache.checked = !!settings.serveFromCache
     el.prefetchWindow.value = String(settings.prefetchWindow || 6)
+    el.cpuShieldEnabled.checked = settings.cpuShieldEnabled !== false
+    el.aggressiveScriptDefuserEnabled.checked = settings.aggressiveScriptDefuserEnabled === true
     
     renderStats(stats || EMPTY_STATS)
     setStatus("Active")

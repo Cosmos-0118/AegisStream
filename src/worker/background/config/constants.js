@@ -112,6 +112,7 @@ ns.constants = {
     documentStreamBoost: true,
     headerEarlyHints: true,
     cpuShieldEnabled: true,
+    aggressiveScriptDefuserEnabled: false,
     bfcacheEnforcerEnabled: true
   },
   createInitialStats() {

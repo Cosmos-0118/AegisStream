@@ -27,6 +27,11 @@
         "id": "aegis_defuse_rules",
         "enabled": false,
         "path": "src/worker/background/config/dnr-defuse-rules.json"
+      },
+      {
+        "id": "aegis_defuse_aggressive_rules",
+        "enabled": false,
+        "path": "src/worker/background/config/dnr-defuse-aggressive-rules.json"
       }
     ]
   },
