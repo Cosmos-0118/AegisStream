@@ -165,7 +165,11 @@ async function buildDisplayStats() {
         ? ns.getWorkerLifecycleSnapshot().workerRestartReason
         : state.workerLifecycle?.lastReason || null,
     activityWindowMs: WINDOW_MS,
-    activityWindowLabel: "Last 5 min"
+    activityWindowLabel: "Last 5 min",
+    speculative:
+      typeof ns.getSpeculativeTelemetrySummary === "function"
+        ? ns.getSpeculativeTelemetrySummary()
+        : null
   }
 }
 

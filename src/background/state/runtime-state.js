@@ -52,7 +52,8 @@ function createState() {
     activePrefetchTabId: null,
     tabPageHostByTab: new Map(),
     tabPageUrlFingerprintByTab: new Map(),
-    twitchSessionByTab: new Map()
+    twitchSessionByTab: new Map(),
+    speculativeAdaptiveMode: "full"
   }
 }
 
@@ -93,7 +94,8 @@ function sanitizeSettings(candidate = {}) {
     headerEarlyHints: candidate.headerEarlyHints !== false,
     cpuShieldEnabled: candidate.cpuShieldEnabled !== false,
     aggressiveScriptDefuserEnabled: candidate.aggressiveScriptDefuserEnabled === true,
-    bfcacheEnforcerEnabled: candidate.bfcacheEnforcerEnabled !== false
+    bfcacheEnforcerEnabled: candidate.bfcacheEnforcerEnabled !== false,
+    speculativePrefetchEnabled: candidate.speculativePrefetchEnabled !== false
   }
   state.cachePolicy.maxEntries = sanitized.maxEntries
   if (!Number.isFinite(state.cachePolicy.maxBytes) || state.cachePolicy.maxBytes < constants.CACHE_MIN_BYTES) {
@@ -115,6 +117,9 @@ function resetStats() {
   state.telemetry.lastUmpHealthLogAt = 0
   if (typeof ns.resetActivityMetrics === "function") {
     ns.resetActivityMetrics()
+  }
+  if (typeof ns.resetSpeculativeTelemetry === "function") {
+    ns.resetSpeculativeTelemetry()
   }
   if (typeof ns.resetExtensionFetchMetrics === "function") {
     ns.resetExtensionFetchMetrics()

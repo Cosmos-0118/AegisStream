@@ -230,6 +230,13 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       rememberUmpLookupKey(lookupUrl)
       maybeLogUmpHealthSummary()
     }
+    if (typeof ns.recordSpeculativeUsed === "function") {
+      ns.recordSpeculativeUsed(
+        lookupUrl,
+        resolved.item.bytes?.byteLength || 0,
+        tabId
+      )
+    }
     const hitLabel = isUmpLookup ? "UMP cache HIT" : resolved.via === "alias" ? "Cache HIT via alias" : "Cache HIT"
     addLog("INFO", `${hitLabel}: ${lookupUrl.slice(-60)}`)
     const bytesBase64 = arrayBufferToBase64(resolved.item.bytes)
@@ -474,6 +481,21 @@ function registerMessageRouter() {
       sendResponse({ ok: true })
       return true
     }
+    case "AegisStream:SpeculativeRegister": {
+      if (typeof ns.registerSpeculativePrefetch === "function" && message.url) {
+        ns.registerSpeculativePrefetch({
+          url: message.url,
+          tabId: sender?.tab?.id,
+          source: message.source || "cross-itag",
+          fromItag: message.fromItag || null,
+          toItag: message.toItag || null,
+          fromRung: message.fromRung || null,
+          toRung: message.toRung || null
+        })
+      }
+      sendResponse({ ok: true })
+      return true
+    }
     case "AegisStream:PrefetchResult":
       ;(async () => {
         const tabId = sender?.tab?.id
@@ -491,6 +513,12 @@ function registerMessageRouter() {
         if (message.success) {
           updatePrefetchOutcome(message.url, true, "unknown", { tabId })
           bumpActivity("prefetched", 1)
+          if (typeof ns.recordSpeculativeCompleted === "function") {
+            ns.recordSpeculativeCompleted(message.url, message.size, true)
+          }
+          if (message.source === "cross-itag") {
+            bumpActivity("youtubeCrossItagPrefetch", 1)
+          }
           const sizeKB = message.size ? `(${(message.size / 1024).toFixed(1)} KB)` : ""
           addLog("INFO", `Prefetched ${sizeKB}: ${(message.url || "").slice(-80)}`)
           sendResponse({ ok: true })
@@ -511,6 +539,9 @@ function registerMessageRouter() {
         const transient =
           message.transient === true ||
           /tab-hidden|tab-not-active|runtime|timeout|serialize|message port/i.test(errorText)
+        if (typeof ns.recordSpeculativeCompleted === "function") {
+          ns.recordSpeculativeCompleted(message.url, 0, false)
+        }
         const outcome = updatePrefetchOutcome(message.url, false, errorText, { transient })
         if (Number.isFinite(tabId)) {
           noteTabPrefetchFailure(tabId, errorText, {

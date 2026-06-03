@@ -395,7 +395,25 @@ window.addEventListener("message", (event) => {
         error: data.error,
         transient: data.transient === true,
         authFailure: data.authFailure === true,
-        skipped: data.skipped || null
+        skipped: data.skipped || null,
+        source: data.source || null
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "SPECULATIVE_REGISTER" && data.url) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:SpeculativeRegister",
+        url: data.url,
+        source: data.source || "cross-itag",
+        fromItag: data.fromItag || null,
+        toItag: data.toItag || null,
+        fromRung: data.fromRung || null,
+        toRung: data.toRung || null
       })
     } catch {
       // Extension context may be invalidated

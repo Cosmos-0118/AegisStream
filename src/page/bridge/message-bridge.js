@@ -8,6 +8,7 @@ function applyRuntimeSettings(settings) {
   if (!settings || typeof settings !== "object") return
   ns.extensionEnabled = settings.enabled !== false
   ns.prefetchEnabled = settings.prefetchEnabled !== false
+  ns.speculativePrefetchEnabled = settings.speculativePrefetchEnabled !== false
   ns.serveFromCache = settings.serveFromCache !== false
   const targetRunway = Number(settings.bufferTargetRunwaySec)
   ns.bufferTargetRunwaySec =

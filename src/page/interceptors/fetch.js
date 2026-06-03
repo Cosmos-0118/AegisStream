@@ -128,6 +128,7 @@ async function aegisFetchInner(input, init) {
   let youtubeChunk = null
   const isYoutubePlayback = isYoutubeVideoPlaybackUrl(url)
   if (isYoutubePlayback) {
+    globalThis.AegisYoutubeCrossItag?.recordTemplate?.(url)
     youtubeChunk = buildYoutubeChunkState(url, requestHeaders)
     if (!youtubeChunk && method === "POST") {
       youtubeChunk = await buildYoutubeUmpState(url, input, init)
@@ -214,6 +215,7 @@ async function aegisFetchInner(input, init) {
         "content-type": lookup.contentType || "application/octet-stream",
         "x-aegisstream-cache": "HIT"
       })
+      globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
       if (
         youtubeChunk?.type === "bytes" &&
         Number.isFinite(youtubeChunk.start)

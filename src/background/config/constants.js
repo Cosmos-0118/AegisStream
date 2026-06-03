@@ -28,7 +28,15 @@ ns.constants = {
   PREFETCH_TAB_BURST_THRESHOLD: 8,
   PREFETCH_BURST_WINDOW_CAP: 8,
   PREFETCH_LOG_THROTTLE_MS: 5_000,
-  MAX_MASTER_VARIANTS_TO_SCAN: 3,
+  MAX_MASTER_VARIANTS_TO_SCAN: 6,
+  SPECULATIVE_MIN_RUNWAY_SEC: 15,
+  SPECULATIVE_MATRIX_MAX_RUNGS: 6,
+  SPECULATIVE_SEGMENTS_AHEAD: 2,
+  SPECULATIVE_MAX_URLS_PER_CYCLE: 10,
+  SPECULATIVE_CYCLE_MIN_MS: 2_000,
+  SPECULATIVE_MIN_SAMPLES_FOR_ADAPTIVE: 20,
+  SPECULATIVE_HIT_RATE_DISABLE_PCT: 5,
+  SPECULATIVE_HIT_RATE_FULL_PCT: 40,
   PREFETCH_FAILURE_COOLDOWN_MS: 15_000,
   MANIFEST_REFRESH_DEBOUNCE_MS: 4_000,
   MANIFEST_REFRESH_TIMEOUT_MS: 20_000,
@@ -142,7 +150,8 @@ ns.constants = {
     headerEarlyHints: true,
     cpuShieldEnabled: true,
     aggressiveScriptDefuserEnabled: false,
-    bfcacheEnforcerEnabled: true
+    bfcacheEnforcerEnabled: true,
+    speculativePrefetchEnabled: true
   },
   createInitialStats() {
     return {
@@ -180,7 +189,20 @@ ns.constants = {
       extensionFetchCompleted: 0,
       extensionFetchAborted: 0,
       extensionFetchFailed: 0,
-      playlistFingerprintNewPlayback: 0
+      playlistFingerprintNewPlayback: 0,
+      speculativeMatrixBuilt: 0,
+      speculativePrefetchScheduled: 0,
+      speculativePrefetchStarted: 0,
+      speculativePrefetchCompleted: 0,
+      speculativePrefetchUsed: 0,
+      speculativePrefetchWasted: 0,
+      speculativePrefetchExpired: 0,
+      speculativeBytesDownloaded: 0,
+      speculativeBytesConsumed: 0,
+      speculativeBytesWasted: 0,
+      speculativeQualitySwitchHits: 0,
+      speculativeCrossItagUsed: 0,
+      youtubeCrossItagPrefetch: 0
     }
   }
 }

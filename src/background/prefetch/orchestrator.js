@@ -628,6 +628,25 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
 
   if (
     !episodeChangedByFingerprint &&
+    qualityVariantSwitch &&
+    previous?.playlistMatrix?.rows?.length &&
+    typeof previous.anchorIndex === "number" &&
+    typeof ns.resolveMatrixAnchorIndex === "function"
+  ) {
+    const matrixIdx = ns.resolveMatrixAnchorIndex(
+      previous.playlistMatrix,
+      previous.anchorIndex,
+      normalizedSegments.length
+    )
+    if (typeof matrixIdx === "number" && matrixIdx >= 0) {
+      hasAnchor = true
+      anchorIndex = matrixIdx
+    }
+  }
+
+  if (
+    !episodeChangedByFingerprint &&
+    !hasAnchor &&
     previous?.hasAnchor &&
     typeof previous.anchorIndex === "number" &&
     Array.isArray(previous.segments) &&
@@ -722,9 +741,10 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   }
 
   if (qualityVariantSwitch) {
+    const matrixNote = previous?.playlistMatrix?.rows?.length ? " (matrix O(1) anchor)" : ""
     addLog(
       "INFO",
-      `HLS quality variant switch on tab ${tabId} — cleared stale prefetch tracking and resuming from anchor ${anchorIndex ?? "?"}`
+      `HLS quality variant switch on tab ${tabId}${matrixNote} — cleared stale prefetch tracking and resuming from anchor ${anchorIndex ?? "?"}`
     )
   }
 
@@ -810,7 +830,25 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     lastAnchorMediaSequenceBeforeRefresh:
       typeof previous?.lastAnchorMediaSequenceBeforeRefresh === "number"
         ? previous.lastAnchorMediaSequenceBeforeRefresh
-        : null
+        : null,
+    playlistMatrix: meta.playlistMatrix || previous?.playlistMatrix || null,
+    masterPlaylistUrl: meta.masterPlaylistUrl || previous?.masterPlaylistUrl || null,
+    activeRungLabel: meta.activeRungLabel || previous?.activeRungLabel || null,
+    matrixBuiltAt: Number(meta.matrixBuiltAt || previous?.matrixBuiltAt || 0),
+    lastSpeculativePrefetchAt: Number(previous?.lastSpeculativePrefetchAt || 0),
+    lastQualitySwitchAt: qualityVariantSwitch
+      ? Date.now()
+      : Number(previous?.lastQualitySwitchAt || 0),
+    lastQualitySwitchFromRung: qualityVariantSwitch
+      ? previous?.activeRungLabel || null
+      : previous?.lastQualitySwitchFromRung || null
+  }
+  if (
+    meta.mediaPlaylistUrl &&
+    tabState.playlistMatrix &&
+    typeof ns.applyMatrixToTabState === "function"
+  ) {
+    ns.applyMatrixToTabState(tabState, meta.mediaPlaylistUrl)
   }
   state.playlistByTab.set(tabId, tabState)
   return tabState
@@ -1244,6 +1282,10 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   if (uncached.length > batch.length) {
     schedulePrefetchCapRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule")
   }
+
+  if (typeof ns.maybeScheduleSpeculativePrefetch === "function") {
+    ns.maybeScheduleSpeculativePrefetch(tabId)
+  }
 }
 
 function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor", options = {}) {
@@ -1401,10 +1443,9 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
       if (parsed.kind === "master") {
         bumpActivity("playlistsDetected", 1)
         if (depth >= 1) return
-        const variants = parsed.variants.slice(0, constants.MAX_MASTER_VARIANTS_TO_SCAN)
-        await Promise.all(
-          variants.map((variantUrl) => parseAndPrefetchFromPlaylist(tabId, variantUrl, depth + 1))
-        )
+        if (typeof ns.ingestMasterPlaylist === "function") {
+          await ns.ingestMasterPlaylist(tabId, normalizedPlaylistUrl, parsed.variants)
+        }
         return
       }
       bumpActivity("playlistsDetected", 1)
@@ -1480,7 +1521,14 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
       )
       if (parsed.kind === "master") {
         bumpActivity("playlistsDetected", 1)
-        addLog("INFO", `Master playlist with ${parsed.variants.length} variants — waiting for page to load variant playlists`)
+        if (typeof ns.ingestMasterPlaylist === "function") {
+          await ns.ingestMasterPlaylist(tabId, normalizedUrl, parsed.variants)
+        } else {
+          addLog(
+            "INFO",
+            `Master playlist with ${parsed.variants.length} variants — waiting for page to load variant playlists`
+          )
+        }
         return
       }
       bumpActivity("playlistsDetected", 1)
@@ -1652,6 +1700,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   ) {
     maybeRequestPrefetchForTab(tabId, tabState.segments, chunkIndex + 1, "chunk-observed")
   }
+  if (typeof ns.maybeScheduleSpeculativePrefetch === "function") {
+    ns.maybeScheduleSpeculativePrefetch(tabId)
+  }
 }
 
 function observeChunkFromWebRequest(tabId, chunkUrl) {
@@ -1676,6 +1727,7 @@ ns.noteManifestRefreshFailed = noteManifestRefreshFailed
 ns.transitionTabRefreshState = transitionRefreshState
 ns.getTabRefreshState = (tabId) => state.playlistByTab.get(tabId)?.refreshState || REFRESH_STATE_HEALTHY
 ns.formatTabStateLabel = (tabState) => formatTabStateLabel(tabState)
+ns.delegatePrefetchToPage = delegatePrefetchToPage
 ns.REFRESH_STATE_HEALTHY = REFRESH_STATE_HEALTHY
 ns.REFRESH_STATE_REFRESHING = REFRESH_STATE_REFRESHING
 ns.REFRESH_STATE_RECOVERING = REFRESH_STATE_RECOVERING

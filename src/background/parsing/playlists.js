@@ -18,6 +18,7 @@ function parseHlsPlaylist(text, playlistUrl) {
   const variants = []
   const segments = []
   let waitingForVariantUri = false
+  let pendingVariantMeta = null
   let hasEndList = false
   const segmentDurations = []
   let pendingDuration = null
@@ -43,6 +44,12 @@ function parseHlsPlaylist(text, playlistUrl) {
     }
     if (line.startsWith("#EXT-X-STREAM-INF")) {
       waitingForVariantUri = true
+      const bwMatch = line.match(/BANDWIDTH=(\d+)/i)
+      const resMatch = line.match(/RESOLUTION=(\d+x\d+)/i)
+      pendingVariantMeta = {
+        bandwidth: bwMatch?.[1] ? Number(bwMatch[1]) : 0,
+        resolution: resMatch?.[1] || null
+      }
       continue
     }
     if (line.startsWith("#EXT-X-I-FRAME-STREAM-INF")) {
@@ -64,8 +71,22 @@ function parseHlsPlaylist(text, playlistUrl) {
       continue
     }
     if (waitingForVariantUri) {
-      variants.push(absolute)
+      const meta = pendingVariantMeta || { bandwidth: 0, resolution: null }
+      const label =
+        meta.resolution ||
+        (meta.bandwidth >= 1_000_000
+          ? `${Math.round(meta.bandwidth / 1_000_000)}M`
+          : meta.bandwidth > 0
+            ? `${Math.round(meta.bandwidth / 1000)}k`
+            : `variant-${variants.length + 1}`)
+      variants.push({
+        url: absolute,
+        bandwidth: meta.bandwidth,
+        resolution: meta.resolution,
+        label
+      })
       waitingForVariantUri = false
+      pendingVariantMeta = null
       continue
     }
     segments.push(absolute)
@@ -81,9 +102,21 @@ function parseHlsPlaylist(text, playlistUrl) {
   }
 
   if (variants.length > 0 && segments.length === 0) {
+    const uniqueVariants = []
+    const seenUrls = new Set()
+    for (const entry of variants) {
+      const url = typeof entry === "string" ? entry : entry?.url
+      if (!url || seenUrls.has(url)) continue
+      seenUrls.add(url)
+      uniqueVariants.push(
+        typeof entry === "string"
+          ? { url: entry, bandwidth: 0, resolution: null, label: `variant-${uniqueVariants.length + 1}` }
+          : entry
+      )
+    }
     return {
       kind: "master",
-      variants: Array.from(new Set(variants)),
+      variants: uniqueVariants,
       segments: [],
       isLive: false,
       segmentDurations: [],

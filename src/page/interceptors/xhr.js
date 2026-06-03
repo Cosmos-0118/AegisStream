@@ -131,6 +131,7 @@ function AegisXHR() {
 
     let youtubeChunk = null
     if (isYoutubeVideoPlaybackUrl(_url)) {
+      globalThis.AegisYoutubeCrossItag?.recordTemplate?.(_url)
       youtubeChunk = buildYoutubeChunkState(_url, requestRangeHeaders)
       if (youtubeChunk?.type === "bytes") {
         logBridge(
@@ -214,6 +215,10 @@ function AegisXHR() {
                   prefetchHeaders,
                   notifyRuntime,
                   requestRuntime
+                )
+                globalThis.AegisYoutubeCrossItag?.maybeSpeculateFromPlayback?.(
+                  _url,
+                  responseYoutubeChunk
                 )
               }
 
@@ -349,10 +354,15 @@ function AegisXHR() {
           },
           configurable: true
         })
+        const instantHdr =
+          globalThis.AegisCacheResponseHeaders?.buildInstantCacheHeaderRecord?.(
+            lookup.contentType || "application/octet-stream"
+          ) || {}
         Object.defineProperty(xhr, "getResponseHeader", {
           value: (name) => {
             const lower = name.toLowerCase()
             if (lower === "content-type") return lookup.contentType || "application/octet-stream"
+            if (instantHdr[lower] != null) return instantHdr[lower]
             if (lower === "x-aegisstream-cache") return "HIT"
             if (lower === "content-range" && is206) {
               const actualEnd = Number.isFinite(youtubeChunk.end)

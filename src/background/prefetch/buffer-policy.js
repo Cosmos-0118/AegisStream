@@ -95,6 +95,14 @@ function updateTabBufferHealth(tabId, payload) {
       )
     }
   }
+
+  if (
+    Number.isFinite(runwaySec) &&
+    runwaySec >= constants.SPECULATIVE_MIN_RUNWAY_SEC &&
+    typeof ns.maybeScheduleSpeculativePrefetch === "function"
+  ) {
+    ns.maybeScheduleSpeculativePrefetch(tabId)
+  }
 }
 
 function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {

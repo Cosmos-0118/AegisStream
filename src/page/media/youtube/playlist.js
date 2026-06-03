@@ -535,6 +535,7 @@ function cacheNetworkStreamInBackground({
         notifyRuntime,
         requestRuntime
       )
+      globalThis.AegisYoutubeCrossItag?.maybeSpeculateFromPlayback?.(sourceUrl, youtubeChunk)
     }
   })().catch((error) => {
     const message = error?.message || "unknown"

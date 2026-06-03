@@ -55,6 +55,17 @@
           
           <div class="setting-row">
             <div class="setting-info">
+              <label for="speculativePrefetchEnabled">Speculative Multi-Rung Prefetch</label>
+              <span>Preload adjacent quality rungs when buffer runway is high</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="speculativePrefetchEnabled">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          
+          <div class="setting-row">
+            <div class="setting-info">
               <label for="serveFromCache">Serve From Cache</label>
               <span>Intercept and serve cached responses</span>
             </div>
@@ -131,6 +142,31 @@
             <div class="health-box">
               <span class="health-value" id="stat-stalls">0 / 0.0s</span>
               <span class="health-label">Stalls</span>
+            </div>
+          </div>
+
+          <div class="speculative-panel">
+            <div class="speculative-header">
+              <span class="speculative-title">Speculative prefetch</span>
+              <span class="speculative-mode" id="stat-spec-mode">full</span>
+            </div>
+            <div class="health-grid speculative-grid">
+              <div class="health-box">
+                <span class="health-value" id="stat-spec-hit">—</span>
+                <span class="health-label">Bytes hit rate</span>
+              </div>
+              <div class="health-box">
+                <span class="health-value" id="stat-spec-used">0/0</span>
+                <span class="health-label">Used / completed</span>
+              </div>
+              <div class="health-box">
+                <span class="health-value" id="stat-spec-mb">0 / 0 MB</span>
+                <span class="health-label">Consumed / downloaded</span>
+              </div>
+              <div class="health-box">
+                <span class="health-value" id="stat-spec-switch">0</span>
+                <span class="health-label">Switch hits</span>
+              </div>
             </div>
           </div>
           

@@ -1,6 +1,7 @@
 const el = {
   enabled: document.getElementById("enabled"),
   prefetchEnabled: document.getElementById("prefetchEnabled"),
+  speculativePrefetchEnabled: document.getElementById("speculativePrefetchEnabled"),
   serveFromCache: document.getElementById("serveFromCache"),
   prefetchWindow: document.getElementById("prefetchWindow"),
 
@@ -23,6 +24,11 @@ const el = {
   statWarmups: document.getElementById("stat-warmups"),
   statTtfb: document.getElementById("stat-ttfb"),
   statStalls: document.getElementById("stat-stalls"),
+  statSpecMode: document.getElementById("stat-spec-mode"),
+  statSpecHit: document.getElementById("stat-spec-hit"),
+  statSpecUsed: document.getElementById("stat-spec-used"),
+  statSpecMb: document.getElementById("stat-spec-mb"),
+  statSpecSwitch: document.getElementById("stat-spec-switch"),
   statHitrate: document.getElementById("stat-hitrate"),
   statHitrateBar: document.getElementById("stat-hitrate-bar"),
   
@@ -180,6 +186,26 @@ function renderStats(stats) {
   } else if (el.globalStatusText.textContent.startsWith("Active (YouTube")) {
     setStatus("Active")
   }
+
+  const spec = safeStats.speculative
+  if (spec && el.statSpecMode) {
+    el.statSpecMode.textContent = spec.adaptiveMode || "—"
+    const bytesHit =
+      spec.bytesHitRatePercent != null ? `${spec.bytesHitRatePercent}%` : "—"
+    el.statSpecHit.textContent = bytesHit
+    el.statSpecUsed.textContent = `${spec.used || 0}/${spec.completed || 0}`
+    const downMb = ((spec.bytesDownloaded || 0) / (1024 * 1024)).toFixed(1)
+    const useMb = ((spec.bytesConsumed || 0) / (1024 * 1024)).toFixed(1)
+    el.statSpecMb.textContent = `${useMb} / ${downMb} MB`
+    el.statSpecSwitch.textContent = String(spec.qualitySwitchHits || 0)
+    if (spec.adaptiveMode === "minimal") {
+      el.statSpecMode.style.color = "var(--warning)"
+    } else if (spec.adaptiveMode === "full") {
+      el.statSpecMode.style.color = "var(--success)"
+    } else {
+      el.statSpecMode.style.color = "var(--text-muted)"
+    }
+  }
 }
 
 function setStatus(text, isError = false) {
@@ -204,6 +230,9 @@ function currentSettings() {
   return {
     enabled: el.enabled.checked,
     prefetchEnabled: el.prefetchEnabled.checked,
+    speculativePrefetchEnabled: el.speculativePrefetchEnabled
+      ? el.speculativePrefetchEnabled.checked
+      : true,
     serveFromCache: el.serveFromCache.checked,
     prefetchWindow: Math.max(1, Math.min(20, Number(el.prefetchWindow.value) || 6)),
     bfcacheEnforcerEnabled: el.bfcacheEnforcerEnabled.checked,
@@ -446,6 +475,9 @@ async function init() {
     const { settings, stats } = res
     el.enabled.checked = !!settings.enabled
     el.prefetchEnabled.checked = !!settings.prefetchEnabled
+    if (el.speculativePrefetchEnabled) {
+      el.speculativePrefetchEnabled.checked = settings.speculativePrefetchEnabled !== false
+    }
     el.serveFromCache.checked = !!settings.serveFromCache
     el.prefetchWindow.value = String(settings.prefetchWindow || 6)
     el.bfcacheEnforcerEnabled.checked = settings.bfcacheEnforcerEnabled !== false
