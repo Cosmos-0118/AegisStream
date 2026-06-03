@@ -209,6 +209,22 @@ function copyArrayBuffer(bytes) {
   return null
 }
 
+/** Stay under chrome.runtime.sendMessage size limits (base64 expands ~4/3). */
+const MAX_RELAY_STORE_BYTES = 16 * 1024 * 1024
+
+/**
+ * TypedArrays often arrive in the service worker as plain objects (wire=[object Object]).
+ * Base64 is slower but survives structured clone reliably.
+ */
+function storeBytesForExtensionMessage(bytes) {
+  const copied = copyArrayBuffer(bytes)
+  if (!copied || copied.byteLength <= 0) return null
+  if (copied.byteLength > MAX_RELAY_STORE_BYTES) return { error: "relay-oversized-bytes" }
+  const bytesBase64 = arrayBufferToBase64(copied)
+  if (!bytesBase64) return null
+  return { bytesBase64 }
+}
+
 function arrayBufferToBase64(buffer) {
   if (!buffer || typeof buffer.byteLength !== "number") return null
   const bytes = new Uint8Array(buffer)
@@ -271,6 +287,42 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "INFLIGHT_PREFETCH_QUERY") {
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "AegisStream:InflightPrefetchQuery",
+          url: data.url
+        },
+        (response) => {
+          const runtimeError = chrome.runtime.lastError
+          window.postMessage(
+            {
+              __aegisstream: true,
+              type: "INFLIGHT_PREFETCH_QUERY_RESPONSE",
+              requestId: data.requestId,
+              response: runtimeError
+                ? { ok: false, inflight: false, error: runtimeError.message || "runtime-error" }
+                : response || { ok: false, inflight: false }
+            },
+            "*"
+          )
+        }
+      )
+    } catch {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "INFLIGHT_PREFETCH_QUERY_RESPONSE",
+          requestId: data.requestId,
+          response: { ok: false, inflight: false, error: "relay-error" }
+        },
+        "*"
+      )
+    }
+    return
+  }
+
   if (data.type === "STORE_CHUNK_REQUEST") {
     try {
       const payload = {
@@ -283,23 +335,27 @@ window.addEventListener("message", (event) => {
         captureSource: data.captureSource
       }
 
-      const copied = copyArrayBuffer(data.bytes)
-      if (copied) {
-        payload.bytes = copied
-      } else if (typeof data.bytesBase64 === "string") {
-        payload.bytesBase64 = data.bytesBase64
-      } else {
+      const encoded =
+        storeBytesForExtensionMessage(data.bytes) ||
+        (typeof data.bytesBase64 === "string" && data.bytesBase64.length > 0
+          ? { bytesBase64: data.bytesBase64 }
+          : null)
+      if (!encoded || encoded.error) {
         window.postMessage(
           {
             __aegisstream: true,
             type: "STORE_CHUNK_RESPONSE",
             requestId: data.requestId,
-            response: { ok: false, error: "relay-missing-bytes" }
+            response: {
+              ok: false,
+              error: encoded?.error || "relay-missing-bytes"
+            }
           },
           "*"
         )
         return
       }
+      payload.bytesBase64 = encoded.bytesBase64
 
       chrome.runtime.sendMessage(
         payload,

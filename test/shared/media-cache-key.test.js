@@ -15,7 +15,7 @@ sandbox.globalThis = sandbox
 vm.runInContext(fs.readFileSync(constantsPath, "utf8"), vm.createContext(sandbox))
 vm.runInContext(fs.readFileSync(mediaKeyPath, "utf8"), vm.createContext(sandbox))
 
-const { buildMediaInvariantKey } = sandbox.self.AegisBackground
+const { buildMediaInvariantKey, resolvePrefetchCoalesceKey } = sandbox.self.AegisBackground
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -36,5 +36,15 @@ assert(pageKey.startsWith(`aegis|blob|${host}|`), "invariant key should include 
 
 const hlsKey = buildMediaInvariantKey("https://cdn.example.com/live/720p/segment_0045.ts")
 assert(hlsKey === "aegis|hls|cdn.example.com|720p/segment_0045.ts", "standard HLS tail key")
+
+const tokenA = resolvePrefetchCoalesceKey(`https://${host}/v1/segment/${pagePath}?token=A`)
+const tokenB = resolvePrefetchCoalesceKey(`https://${host}/v1/segment/${pagePath}?token=B`)
+assert(tokenA === tokenB, "signed query rotation must share coalesce key")
+assert(tokenA === pageKey, "coalesce key should match invariant cache key")
+
+assert(
+  resolvePrefetchCoalesceKey("range|yt|abc|0-1023") === "range|yt|abc|0-1023",
+  "canonical range keys pass through"
+)
 
 console.log("media-cache-key.test.js: all assertions passed")

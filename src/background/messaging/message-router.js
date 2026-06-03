@@ -9,6 +9,8 @@ const {
   stripHash,
   isUmpCacheKey,
   extractMessageBytes,
+  describeStoreMessageWire,
+  formatCrcTelemetry,
   arrayBufferToBase64,
   cacheChunk,
   resolveCachedChunk,
@@ -248,6 +250,15 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     }
 
     recordCacheServeHit(lookupUrl)
+    if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
+      const tabState = state.playlistByTab.get(tabId)
+      if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
+        const index = ns.resolveSegmentIndexInManifest(lookupUrl, tabState)
+        if (typeof index === "number") {
+          ns.recordTimelineHeat(tabId, index, 0.5)
+        }
+      }
+    }
     if (isUmpLookup) {
       if (typeof ns.recordStreamMetric === "function") {
         ns.recordStreamMetric("ump", "hits", 1)
@@ -269,7 +280,6 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       )
     }
     const hitLabel = isUmpLookup ? "UMP cache HIT" : resolved.via === "alias" ? "Cache HIT via alias" : "Cache HIT"
-    addLog("INFO", `${hitLabel}: ${lookupUrl.slice(-60)}`)
     const rawBytes = resolved.item.bytes
     const byteLength =
       rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
@@ -282,6 +292,11 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       rawBytes instanceof ArrayBuffer
         ? rawBytes
         : rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
+    const crcTag = typeof formatCrcTelemetry === "function" ? formatCrcTelemetry(bytes) : ""
+    addLog(
+      "INFO",
+      `${hitLabel}: ${lookupUrl.slice(-60)} (${byteLength} bytes${crcTag ? `, ${crcTag}` : ""})`
+    )
     sendResponse({
       ok: true,
       hit: true,
@@ -294,6 +309,24 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
   })
 }
 
+function handleInflightPrefetchQuery(message, sendResponse, tabId) {
+  const normalized =
+    typeof ns.resolvePrefetchCoalesceKey === "function"
+      ? ns.resolvePrefetchCoalesceKey(message.url)
+      : stripHash(message.url)
+  if (!normalized || !Number.isFinite(tabId)) {
+    sendResponse({ ok: false, inflight: false })
+    return
+  }
+  const inflight = state.inflightPrefetches.get(normalized)
+  const ttlMs = Number(constants.PREFETCH_INFLIGHT_TTL_MS) || 12_000
+  const active =
+    Boolean(inflight) &&
+    inflight.tabId === tabId &&
+    Date.now() - Number(inflight.startedAt || 0) < ttlMs
+  sendResponse({ ok: true, inflight: active })
+}
+
 function handleStoreChunk(message, sendResponse) {
   ;(async () => {
     if (!state.settings.enabled) {
@@ -304,6 +337,9 @@ function handleStoreChunk(message, sendResponse) {
     const hasRange = Boolean(message.hasRange)
     const status = Number(message.status || 0)
     const storeUrl = stripHash(message.url)
+    const captureSource =
+      typeof message.captureSource === "string" ? message.captureSource : "unknown"
+    const wireType = describeStoreMessageWire(message)
     const bytes = extractMessageBytes(message)
     if (method !== "GET" || hasRange || status === 206) {
       sendResponse({ ok: true, skipped: true })
@@ -311,15 +347,18 @@ function handleStoreChunk(message, sendResponse) {
     }
     const byteLength = bytes && typeof bytes.byteLength === "number" ? bytes.byteLength : -1
     if (!storeUrl || !bytes || byteLength <= 0) {
-      const captureSource =
-        typeof message.captureSource === "string" ? message.captureSource : "unknown"
       addLog(
         "WARN",
-        `StoreChunk rejected (invalid payload): url=${Boolean(storeUrl)} bytes=${byteLength >= 0 ? byteLength : "none"} method=${method} range=${hasRange} status=${status} hadBase64=${typeof message.bytesBase64 === "string"} source=${captureSource}`
+        `StoreChunk rejected (invalid payload): source=${captureSource} wire=${wireType} bytes=${byteLength >= 0 ? byteLength : "none"} url=${Boolean(storeUrl)} method=${method} range=${hasRange} status=${status} hadBase64=${typeof message.bytesBase64 === "string"}`
       )
       sendResponse({ ok: false, skipped: true, error: "invalid-payload" })
       return
     }
+    const storeCrcTag = typeof formatCrcTelemetry === "function" ? formatCrcTelemetry(bytes) : ""
+    addLog(
+      "INFO",
+      `StoreChunk accepted: source=${captureSource}, wire=${wireType}, persist=ArrayBuffer, bytes=${byteLength}${storeCrcTag ? `, ${storeCrcTag}` : ""}`
+    )
     const storeResult = await enqueueStoreWrite(() =>
       cacheChunk(storeUrl, message.contentType, bytes)
     )
@@ -342,11 +381,9 @@ function handleStoreChunk(message, sendResponse) {
       maybeLogUmpHealthSummary()
     }
     void refreshCacheEntryCount(true).catch(() => {})
-    const captureSource =
-      typeof message.captureSource === "string" ? message.captureSource : "unknown"
     addLog(
       "INFO",
-      `Cached chunk from page (${(bytes.byteLength / 1024).toFixed(1)} KB, ${captureSource}): ${storeUrl.slice(-60)}`
+      `Cached chunk from page (${(bytes.byteLength / 1024).toFixed(1)} KB, ${captureSource}, ${wireType}): ${storeUrl.slice(-60)}`
     )
     sendResponse({ ok: true })
   })().catch((e) => {
@@ -473,6 +510,9 @@ function registerMessageRouter() {
     }
     case "AegisStream:CacheLookup":
       handleCacheLookup(message, sendResponse, sender?.tab?.id)
+      return true
+    case "AegisStream:InflightPrefetchQuery":
+      handleInflightPrefetchQuery(message, sendResponse, sender?.tab?.id)
       return true
     case "AegisStream:StoreChunk":
       handleStoreChunk(message, sendResponse)

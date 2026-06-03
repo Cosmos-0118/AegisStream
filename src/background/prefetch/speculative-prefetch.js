@@ -131,6 +131,13 @@ function collectSpeculativeRungUrls(tabId, tabState) {
   if (!tabState?.playlistMatrix?.rows?.length) return []
   if (typeof tabState.anchorIndex !== "number" || tabState.anchorIndex < 0) return []
 
+  const congestion =
+    tabState.congestionDirectives ||
+    (typeof ns.computeCongestionDirectivesForTab === "function"
+      ? ns.computeCongestionDirectivesForTab(tabId)
+      : null)
+  if (congestion && congestion.speculativeAllowed !== true) return []
+
   const runway = Number(tabState.bufferRunwaySec)
   if (!Number.isFinite(runway) || runway < constants.SPECULATIVE_MIN_RUNWAY_SEC) return []
 
@@ -161,7 +168,12 @@ function collectSpeculativeRungUrls(tabId, tabState) {
   if (!adjacent.length) return []
 
   const urls = []
-  const ahead = Math.max(1, Number(limits.segmentsAhead) || 1)
+  let ahead = Math.max(1, Number(limits.segmentsAhead) || 1)
+  if (congestion) {
+    const congestionAhead = Number(congestion.speculativeSegmentsAhead) || 0
+    ahead = Math.min(ahead, congestionAhead)
+    if (!ahead) return []
+  }
   for (let offset = 1; offset <= ahead; offset += 1) {
     const index = tabState.anchorIndex + offset
     for (const label of adjacent) {

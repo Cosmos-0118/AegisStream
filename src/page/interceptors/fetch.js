@@ -206,6 +206,106 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk
   return { lookup, lookupBytes }
 }
 
+function buildChunkResponseFromBytes(lookupBytes, lookup, youtubeChunk) {
+  const headers = new Headers({
+    "content-type": lookup?.contentType || "application/octet-stream",
+    "x-aegisstream-cache": lookup?.fromCache ? "HIT" : "COLLAPSED"
+  })
+  globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
+  if (youtubeChunk?.type === "bytes" && Number.isFinite(youtubeChunk.start)) {
+    const actualEnd = Number.isFinite(youtubeChunk.end)
+      ? youtubeChunk.end
+      : youtubeChunk.start + lookupBytes.byteLength - 1
+    headers.set("content-range", `bytes ${youtubeChunk.start}-${actualEnd}/*`)
+    return new Response(lookupBytes, { status: 206, headers })
+  }
+  return new Response(lookupBytes, { status: 200, headers })
+}
+
+async function shouldAttemptRequestCollapse(url, cacheLookupUrl) {
+  if (
+    typeof ns.isNetworkFetchInflight === "function" &&
+    ns.isNetworkFetchInflight(url, cacheLookupUrl)
+  ) {
+    return true
+  }
+  try {
+    const query = await requestRuntime("INFLIGHT_PREFETCH_QUERY", {
+      url: cacheLookupUrl || url
+    })
+    return query?.inflight === true
+  } catch {
+    return false
+  }
+}
+
+async function tryCollapseOntoInflightPrefetch({
+  url,
+  cacheLookupUrl,
+  cacheLookupMethod,
+  youtubeChunk,
+  requestStartedAt
+}) {
+  if (typeof ns.awaitCollapsedNetworkDelivery !== "function") return null
+  if (!(await shouldAttemptRequestCollapse(url, cacheLookupUrl))) return null
+
+  logBridge(
+    `Request collapse: awaiting in-flight prefetch for ${String(cacheLookupUrl || url).slice(-48)}`,
+    "DEBUG"
+  )
+  reportRuntimeMetric("request_collapse_attempt", {
+    transport: "fetch",
+    streamType: youtubeChunk?.type || "generic"
+  })
+
+  const collapsed = await ns.awaitCollapsedNetworkDelivery(
+    url,
+    cacheLookupUrl,
+    async () => {
+      const { lookup, lookupBytes } = await lookupCachedChunk(
+        cacheLookupUrl,
+        cacheLookupMethod,
+        youtubeChunk
+      )
+      if (lookup?.ok && lookup.hit && lookupBytes) {
+        return {
+          ok: true,
+          bytes: lookupBytes,
+          contentType: lookup.contentType,
+          status: youtubeChunk?.type === "bytes" ? 206 : 200,
+          fromCache: true
+        }
+      }
+      return { ok: false }
+    },
+    {
+      timeoutMs:
+        typeof ns.resolveCollapseWaitTimeoutMs === "function"
+          ? ns.resolveCollapseWaitTimeoutMs()
+          : 8_000,
+      pollMs: 60
+    }
+  )
+
+  if (!collapsed?.ok || !collapsed.bytes) return null
+
+  const savedBytes =
+    collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
+      ? collapsed.bytes.byteLength
+      : 0
+  reportRuntimeMetric("request_collapse_hit", {
+    transport: "fetch",
+    streamType: youtubeChunk?.type || "generic",
+    latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt)),
+    fromCache: collapsed.fromCache === true,
+    savedBytes
+  })
+  if (youtubeChunk?.type === "ump") {
+    rememberKnownUmpKey(cacheLookupUrl)
+  }
+  return buildChunkResponseFromBytes(collapsed.bytes, collapsed, youtubeChunk)
+}
+
 async function aegisFetch(input, init) {
   try {
     return await aegisFetchInner(input, init)
@@ -357,6 +457,27 @@ async function aegisFetchInner(input, init) {
     }
   } catch {
     // Fall through to network
+  }
+
+  try {
+    const collapsedResponse = await tryCollapseOntoInflightPrefetch({
+      url,
+      cacheLookupUrl,
+      cacheLookupMethod,
+      youtubeChunk,
+      requestStartedAt
+    })
+    if (collapsedResponse) {
+      reportRuntimeMetric("request_first_byte", {
+        source: "collapse",
+        transport: "fetch",
+        streamType: youtubeChunk?.type || "generic",
+        latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+      })
+      return collapsedResponse
+    }
+  } catch {
+    // Fall through to extension/native fetch
   }
 
   let networkResponse

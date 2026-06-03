@@ -410,13 +410,25 @@ function notifyPrefetchWorkers() {
 }
 
 async function processPrefetchUrl(url) {
+  const key =
+    typeof ns.resolvePrefetchCoalesceKey === "function"
+      ? ns.resolvePrefetchCoalesceKey(url)
+      : stripHash(url)
+  const runWork = () => processPrefetchUrlWork(url)
+  if (typeof ns.beginCoalescedNetworkFetch === "function" && key) {
+    return ns.beginCoalescedNetworkFetch(key, runWork)
+  }
+  return runWork()
+}
+
+async function processPrefetchUrlWork(url) {
   if (!isPagePrefetchAllowed()) {
     emitPrefetchSkipped(url, "tab-hidden", { transient: true })
-    return
+    return { ok: false, skipped: "tab-hidden" }
   }
   if (!isUrlGenerationCurrent(url)) {
     emitPrefetchSkipped(url, "generation-stale")
-    return
+    return { ok: false, skipped: "generation-stale" }
   }
 
   const controller = new AbortController()
@@ -449,7 +461,7 @@ async function processPrefetchUrl(url) {
     contentType = res.headers.get("content-type") || "application/octet-stream"
     bytes = await res.arrayBuffer()
   } else {
-    if (controller.signal.aborted) return
+    if (controller.signal.aborted) return { ok: false, aborted: true }
     const extensionFallback = await fetchPrefetchBytesWithExtension(url)
     if (!extensionFallback.ok) {
       const authFailure = requestStatus === 403 || requestStatus === 401
@@ -483,7 +495,7 @@ async function processPrefetchUrl(url) {
           authFailure,
           rateLimit
       })
-      return
+      return { ok: false }
     }
     bytes = extensionFallback.bytes
     contentType = extensionFallback.contentType
@@ -497,7 +509,7 @@ async function processPrefetchUrl(url) {
       errorMessage: "empty response",
       errorName: "EmptyResponse"
     })
-    return
+    return { ok: false }
   }
 
   const bytesForStore =
@@ -511,7 +523,7 @@ async function processPrefetchUrl(url) {
       errorMessage: "invalid-bytes-for-store",
       errorName: "StoreError"
     })
-    return
+    return { ok: false }
   }
 
   // Send bytes to background for caching
@@ -534,12 +546,12 @@ async function processPrefetchUrl(url) {
       errorName: "StoreError",
       transient: isTransientStoreFailure(storeRes)
     })
-    return
+    return { ok: false }
   }
 
   if (!isUrlGenerationCurrent(url)) {
     emitPrefetchSkipped(url, "generation-stale")
-    return
+    return { ok: false, skipped: "generation-stale" }
   }
 
   notifyRuntime("PREFETCH_RESULT", {
@@ -548,10 +560,16 @@ async function processPrefetchUrl(url) {
     size: bytes.byteLength,
     networkGeneration: pageNetworkGeneration
   })
+  return {
+    ok: true,
+    bytes,
+    contentType,
+    status: requestStatus || 200
+  }
   } catch (e) {
     if (e?.name === "AbortError" || controller.signal.aborted) {
       emitPrefetchSkipped(url, "aborted")
-      return
+      return { ok: false, aborted: true }
     }
     throw e
   } finally {

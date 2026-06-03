@@ -32,7 +32,14 @@ const {
 
 const networkFetch = fetchWithCircuitBreaker || originalFetch
 
+/** Stay below chrome.runtime.sendMessage structured-clone limits (~64MiB). */
+const MAX_XHR_CAPTURE_BYTES = 32 * 1024 * 1024
+
 let syncResponseTapInstalled = false
+
+function exceedsSafeIpcCaptureSize(byteLength) {
+  return Number.isFinite(byteLength) && byteLength > MAX_XHR_CAPTURE_BYTES
+}
 
 function resetXhrCaptureState(xhr) {
   xhr.__aegisChunkCaptured = false
@@ -41,7 +48,12 @@ function resetXhrCaptureState(xhr) {
 
 function bytesFromXhrRawResponse(xhr, rawResponse) {
   if (rawResponse instanceof ArrayBuffer && rawResponse.byteLength > 0) {
-    return rawResponse.slice(0)
+    if (exceedsSafeIpcCaptureSize(rawResponse.byteLength)) return null
+    const copied =
+      typeof copyArrayBufferForBridge === "function"
+        ? copyArrayBufferForBridge(rawResponse)
+        : rawResponse.slice(0)
+    return copied || null
   }
   if (
     xhr.responseType === "arraybuffer" &&
@@ -50,11 +62,15 @@ function bytesFromXhrRawResponse(xhr, rawResponse) {
     rawResponse.byteLength > 0 &&
     rawResponse.buffer instanceof ArrayBuffer
   ) {
+    if (exceedsSafeIpcCaptureSize(rawResponse.byteLength)) return null
     try {
-      return rawResponse.buffer.slice(
+      const window = rawResponse.buffer.slice(
         rawResponse.byteOffset,
         rawResponse.byteOffset + rawResponse.byteLength
       )
+      return typeof copyArrayBufferForBridge === "function"
+        ? copyArrayBufferForBridge(window) || window
+        : window
     } catch {
       return null
     }
@@ -102,7 +118,19 @@ function captureXhrResponseSync(xhr, rawResponse) {
   if (!(status === 200 || (status === 206 && youtubeChunk?.type === "bytes"))) return
 
   const bytes = bytesFromXhrRawResponse(xhr, rawResponse)
-  if (!bytes) return
+  if (!bytes) {
+    if (
+      rawResponse instanceof ArrayBuffer &&
+      exceedsSafeIpcCaptureSize(rawResponse.byteLength)
+    ) {
+      xhr.__aegisChunkCaptured = true
+      logBridge(
+        `XHR sync capture dropped rogue buffer (${rawResponse.byteLength} bytes exceeds safe IPC limits)`,
+        "WARN"
+      )
+    }
+    return
+  }
 
   xhr.__aegisChunkCaptured = true
 
@@ -157,6 +185,120 @@ function installSyncXhrResponseTap() {
     enumerable: true
   })
   syncResponseTapInstalled = true
+}
+
+function applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, cacheHeader = "HIT") {
+  xhr.__aegisServedFromCache = true
+  const is206 =
+    youtubeChunk?.type === "bytes" && Number.isFinite(youtubeChunk.start)
+  const statusCode = is206 ? 206 : 200
+  Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
+  Object.defineProperty(xhr, "statusText", {
+    get: () => (is206 ? "Partial Content" : "OK"),
+    configurable: true
+  })
+  Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
+  Object.defineProperty(xhr, "response", { get: () => lookupBytes, configurable: true })
+  Object.defineProperty(xhr, "responseText", {
+    get: () => {
+      try {
+        return new TextDecoder().decode(lookupBytes)
+      } catch {
+        return ""
+      }
+    },
+    configurable: true
+  })
+  const instantHdr =
+    globalThis.AegisCacheResponseHeaders?.buildInstantCacheHeaderRecord?.(
+      lookup?.contentType || "application/octet-stream"
+    ) || {}
+  Object.defineProperty(xhr, "getResponseHeader", {
+    value: (name) => {
+      const lower = name.toLowerCase()
+      if (lower === "content-type") return lookup?.contentType || "application/octet-stream"
+      if (instantHdr[lower] != null) return instantHdr[lower]
+      if (lower === "x-aegisstream-cache") return cacheHeader
+      if (lower === "content-range" && is206) {
+        const actualEnd = Number.isFinite(youtubeChunk.end)
+          ? youtubeChunk.end
+          : youtubeChunk.start + lookupBytes.byteLength - 1
+        return `bytes ${youtubeChunk.start}-${actualEnd}/*`
+      }
+      return null
+    },
+    configurable: true,
+    writable: true
+  })
+  Object.defineProperty(xhr, "getAllResponseHeaders", {
+    value: () => {
+      let headers = `content-type: ${lookup?.contentType || "application/octet-stream"}\r\nx-aegisstream-cache: ${cacheHeader}\r\n`
+      if (is206) {
+        const actualEnd = Number.isFinite(youtubeChunk.end)
+          ? youtubeChunk.end
+          : youtubeChunk.start + lookupBytes.byteLength - 1
+        headers += `content-range: bytes ${youtubeChunk.start}-${actualEnd}/*\r\n`
+      }
+      return headers
+    },
+    configurable: true,
+    writable: true
+  })
+  xhr.dispatchEvent(new Event("readystatechange"))
+  xhr.dispatchEvent(new Event("load"))
+  xhr.dispatchEvent(new Event("loadend"))
+}
+
+async function tryCollapseXhrOntoInflightPrefetch(_url, cacheLookupUrl, youtubeChunk) {
+  if (typeof ns.awaitCollapsedNetworkDelivery !== "function") return null
+  const pageInflight =
+    typeof ns.isNetworkFetchInflight === "function" &&
+    ns.isNetworkFetchInflight(_url, cacheLookupUrl)
+  let backgroundInflight = false
+  try {
+    const query = await requestRuntime("INFLIGHT_PREFETCH_QUERY", {
+      url: cacheLookupUrl || _url
+    })
+    backgroundInflight = query?.inflight === true
+  } catch {
+    backgroundInflight = false
+  }
+  if (!pageInflight && !backgroundInflight) return null
+
+  logBridge(
+    `Request collapse (XHR): awaiting in-flight prefetch for ${String(cacheLookupUrl || _url).slice(-48)}`,
+    "DEBUG"
+  )
+  ns.reportRuntimeMetric("request_collapse_attempt", { transport: "xhr" })
+
+  return ns.awaitCollapsedNetworkDelivery(
+    _url,
+    cacheLookupUrl,
+    async () => {
+      const lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
+        url: cacheLookupUrl,
+        method: "GET",
+        hasRange: false
+      })
+      const lookupBytes = resolveLookupBytes(lookup)
+      if (lookup?.ok && lookup.hit && lookupBytes) {
+        return {
+          ok: true,
+          bytes: lookupBytes,
+          contentType: lookup.contentType,
+          fromCache: true
+        }
+      }
+      return { ok: false }
+    },
+    {
+      timeoutMs:
+        typeof ns.resolveCollapseWaitTimeoutMs === "function"
+          ? ns.resolveCollapseWaitTimeoutMs()
+          : 8_000,
+      pollMs: 60
+    }
+  )
 }
 
 function synthesizeXhrFromBuffer(xhr, statusCode, statusText, bytes, contentType, extraHeaders = {}) {
@@ -336,7 +478,7 @@ function AegisXHR() {
             } else if (typeof xhr.response === "string") {
               byteLength = new TextEncoder().encode(xhr.response).byteLength
             }
-            if (byteLength > 0) {
+            if (byteLength > 0 && !exceedsSafeIpcCaptureSize(byteLength)) {
               let cacheLookupUrl = _url
 
               if (responseYoutubeChunk) {
@@ -374,6 +516,13 @@ function AegisXHR() {
                     ? copyArrayBufferForBridge(bytes)
                     : null
                 if (!bytesForStore) {
+                  return
+                }
+                if (exceedsSafeIpcCaptureSize(bytesForStore.byteLength)) {
+                  logBridge(
+                    `XHR load capture dropped rogue buffer (${bytesForStore.byteLength} bytes exceeds safe IPC limits)`,
+                    "WARN"
+                  )
                   return
                 }
                 void storeChunkFromPage({
@@ -500,68 +649,42 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
-        xhr.__aegisServedFromCache = true
-        // Synthesize a successful XHR response from cache
-        const is206 =
-          youtubeChunk?.type === "bytes" &&
-          Number.isFinite(youtubeChunk.start)
-        const statusCode = is206 ? 206 : 200
-        
-        Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
-        Object.defineProperty(xhr, "statusText", { get: () => is206 ? "Partial Content" : "OK", configurable: true })
-        Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
-        Object.defineProperty(xhr, "response", { get: () => lookupBytes, configurable: true })
-        Object.defineProperty(xhr, "responseText", {
-          get: () => {
-            try { return new TextDecoder().decode(lookupBytes) } catch { return "" }
-          },
-          configurable: true
-        })
-        const instantHdr =
-          globalThis.AegisCacheResponseHeaders?.buildInstantCacheHeaderRecord?.(
-            lookup.contentType || "application/octet-stream"
-          ) || {}
-        Object.defineProperty(xhr, "getResponseHeader", {
-          value: (name) => {
-            const lower = name.toLowerCase()
-            if (lower === "content-type") return lookup.contentType || "application/octet-stream"
-            if (instantHdr[lower] != null) return instantHdr[lower]
-            if (lower === "x-aegisstream-cache") return "HIT"
-            if (lower === "content-range" && is206) {
-              const actualEnd = Number.isFinite(youtubeChunk.end)
-                ? youtubeChunk.end
-                : youtubeChunk.start + lookupBytes.byteLength - 1
-              return `bytes ${youtubeChunk.start}-${actualEnd}/*`
-            }
-            return null
-          },
-          configurable: true,
-          writable: true
-        })
-        Object.defineProperty(xhr, "getAllResponseHeaders", {
-          value: () => {
-            let headers = `content-type: ${lookup.contentType || "application/octet-stream"}\r\nx-aegisstream-cache: HIT\r\n`
-            if (is206) {
-              const actualEnd = Number.isFinite(youtubeChunk.end)
-                ? youtubeChunk.end
-                : youtubeChunk.start + lookupBytes.byteLength - 1
-              headers += `content-range: bytes ${youtubeChunk.start}-${actualEnd}/*\r\n`
-            }
-            return headers
-          },
-          configurable: true,
-          writable: true
-        })
-
-        // Dispatch events
-        xhr.dispatchEvent(new Event("readystatechange"))
-        xhr.dispatchEvent(new Event("load"))
-        xhr.dispatchEvent(new Event("loadend"))
+        applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, "HIT")
         return
       }
 
       settled = true
-      originalSend(body)
+      void (async () => {
+        try {
+          const collapsed = await tryCollapseXhrOntoInflightPrefetch(
+            _url,
+            cacheLookupUrl,
+            youtubeChunk
+          )
+          if (collapsed?.ok && collapsed.bytes) {
+            const savedBytes =
+              collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
+                ? collapsed.bytes.byteLength
+                : 0
+            ns.reportRuntimeMetric("request_collapse_hit", {
+              transport: "xhr",
+              fromCache: collapsed.fromCache === true,
+              savedBytes
+            })
+            applyXhrCachedPayload(
+              xhr,
+              collapsed.bytes,
+              collapsed,
+              youtubeChunk,
+              collapsed.fromCache ? "HIT" : "COLLAPSED"
+            )
+            return
+          }
+        } catch {
+          // Fall through to native request
+        }
+        originalSend(body)
+      })()
     }).catch(() => {
       clearTimeout(timeoutId)
       if (settled) return

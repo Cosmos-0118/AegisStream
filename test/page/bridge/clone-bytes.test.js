@@ -29,17 +29,21 @@ const copy = cloneBytesForBridge(original)
 assert(copy && copy.byteLength === 4, "clone should preserve length")
 
 let postMessageTransfer = undefined
-const priorPostMessage = sandbox.window.postMessage
+let storeOutboundBytes = null
 sandbox.window.postMessage = (payload, _target, transfer) => {
   postMessageTransfer = transfer
+  if (payload?.type === "STORE_CHUNK_REQUEST") {
+    storeOutboundBytes = payload.bytes
+  }
 }
 
 const pending = sandbox.globalThis.AegisPageBridge.pending
-const reqId = "test-store"
-pending.set(reqId, () => {})
+pending.set("noop", () => {})
 
 requestRuntime("STORE_CHUNK_REQUEST", { url: "https://example.com/a.ts", bytes: original })
 assert(Array.isArray(postMessageTransfer) && postMessageTransfer.length === 0, "store must not transfer")
 assert(original.byteLength === 4, "source buffer must stay attached after store request")
+assert(storeOutboundBytes instanceof Uint8Array, "store lane must send Uint8Array for extension IPC")
+assert(storeOutboundBytes.byteLength === 4, "transport view must preserve byte length")
 
 console.log("clone-bytes.test.js: all assertions passed")

@@ -63,7 +63,8 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
         allow: true,
         reason: null,
         jump,
-        purgeQueues: shouldPurgeQueuesDuringScrub(jump)
+        // Every scrub step must hard-purge so in-flight prefetch slots stay near the playhead.
+        purgeQueues: jump > 0
       }
     }
 

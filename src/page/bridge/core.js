@@ -168,12 +168,12 @@ function requestRuntime(type, payload, transferables = [], options = {}) {
 
     let outbound = payload
     if (type === "STORE_CHUNK_REQUEST" && payload?.bytes) {
-      const copied = cloneBytesForBridge(payload.bytes)
-      if (!copied) {
+      const transportBytes = wrapBytesForExtensionTransport(payload.bytes)
+      if (!transportBytes) {
         resolve({ ok: false, error: "invalid-bytes" })
         return
       }
-      outbound = { ...payload, bytes: copied }
+      outbound = { ...payload, bytes: transportBytes }
     }
     const requestId = nextRequestId()
     const trackStoreRequest = type === "STORE_CHUNK_REQUEST"
@@ -294,6 +294,13 @@ function cloneBytesForBridge(bytes) {
       ? new Uint8Array(bytes)
       : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   return view.slice().buffer
+}
+
+/** TypedArray wrapper so chrome.runtime.sendMessage preserves binary across the extension IPC boundary. */
+function wrapBytesForExtensionTransport(bytes) {
+  const copied = cloneBytesForBridge(bytes)
+  if (!copied) return null
+  return new Uint8Array(copied)
 }
 
 async function recoverStoreFromCache(payload) {
@@ -482,6 +489,7 @@ ns.formatStoreChunkError = formatStoreChunkError
 ns.isTransientStoreFailure = isTransientStoreFailure
 ns.cloneBytesForBridge = cloneBytesForBridge
 ns.copyArrayBufferForBridge = cloneBytesForBridge
+ns.wrapBytesForExtensionTransport = wrapBytesForExtensionTransport
 ns.normalizeCaptureSource = normalizeCaptureSource
 ns.storeChunkFromPage = storeChunkFromPage
 ns.cancelInflightChunkStores = cancelInflightChunkStores

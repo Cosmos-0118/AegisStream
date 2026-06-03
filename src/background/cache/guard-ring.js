@@ -64,7 +64,7 @@ function scoreEvictionCandidate(item, protectedSet) {
   if (!item?.url) return Number.POSITIVE_INFINITY
   if (isUrlGuardRingProtected(item.url, protectedSet)) return Number.POSITIVE_INFINITY
 
-  let bestDistance = -1
+  let bestEvictionPriority = -1
   for (const tabState of state.playlistByTab.values()) {
     if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue
     const index = resolveSegmentIndexInManifest(item.url, tabState)
@@ -73,10 +73,26 @@ function scoreEvictionCandidate(item, protectedSet) {
       index < tabState.anchorIndex
         ? tabState.anchorIndex - index + 1000
         : index - tabState.anchorIndex
-    if (distance > bestDistance) bestDistance = distance
+    const heat =
+      typeof ns.getTimelineHeatForIndex === "function"
+        ? ns.getTimelineHeatForIndex(tabState, index)
+        : 0
+    const survival =
+      typeof ns.computeTimelineSurvivalScore === "function"
+        ? ns.computeTimelineSurvivalScore(distance, heat)
+        : distance
+    if (
+      typeof ns.isTimelineHeatProtected === "function" &&
+      ns.isTimelineHeatProtected(survival, heat)
+    ) {
+      return Number.NEGATIVE_INFINITY
+    }
+    const heatBias = Number(constants.TIMELINE_HEAT_WEIGHT_HISTORICAL) || 4
+    const evictionPriority = distance - heat * heatBias
+    if (evictionPriority > bestEvictionPriority) bestEvictionPriority = evictionPriority
   }
 
-  return bestDistance < 0 ? 0 : bestDistance
+  return bestEvictionPriority < 0 ? 0 : bestEvictionPriority
 }
 
 function sortEvictionCandidates(items, protectedSet) {

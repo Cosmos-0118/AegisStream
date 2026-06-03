@@ -244,12 +244,8 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
   const timelineRestart =
     authority === ns.AnchorAuthority?.DOM_SEEKED &&
     isStaleTimelineDomReset(tabState, previousEffective, clampedTarget)
-  const scrubPurge =
-    typeof ns.shouldPurgeQueuesDuringScrub === "function"
-      ? ns.shouldPurgeQueuesDuringScrub(jump)
-      : jump >= (Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD) || 5)
   let purgeQueues = scrubbingTrain
-    ? scrubPurge
+    ? true
     : typeof ns.shouldPurgePrefetchQueues === "function"
       ? ns.shouldPurgePrefetchQueues(jump)
       : jump >= (Number(constants.TELEPORT_QUEUE_PURGE_THRESHOLD) || 20)
@@ -302,6 +298,9 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
     ns.recordAnchorCommit(authority, {
       teleport: purgeQueues ? "hard" : "soft"
     })
+  }
+  if (typeof ns.recordTimelineHeat === "function") {
+    ns.recordTimelineHeat(tabId, clampedTarget, 1)
   }
 
   if (purgeQueues) {
@@ -614,6 +613,9 @@ function pruneRuntimeState() {
 }
 
 function normalizePrefetchUrl(url) {
+  if (typeof ns.resolvePrefetchCoalesceKey === "function") {
+    return ns.resolvePrefetchCoalesceKey(url)
+  }
   return stripHash(url)
 }
 
@@ -1884,7 +1886,11 @@ function resolveEffectivePrefetchWindow(tabId) {
   if (isInRefreshRecovery(tabState)) {
     windowSize = Math.min(windowSize, constants.REFRESH_RECOVERY_MAX_CHUNKS)
   }
-  return resolveBufferAdjustedPrefetchWindow(tabId, windowSize)
+  windowSize = resolveBufferAdjustedPrefetchWindow(tabId, windowSize)
+  if (typeof ns.applyCongestionPrefetchRadius === "function") {
+    windowSize = ns.applyCongestionPrefetchRadius(tabId, windowSize)
+  }
+  return windowSize
 }
 
 function shouldSkipDuplicateSchedule(tabState, startIndex, now, force) {
@@ -2107,6 +2113,10 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   const now = Date.now()
   const clampedStartIndex = Math.max(0, Math.min(startIndex, normalized.length))
 
+  if (typeof ns.computeCongestionDirectivesForTab === "function") {
+    ns.computeCongestionDirectivesForTab(tabId)
+  }
+
   if (shouldSkipDuplicateSchedule(tabState, clampedStartIndex, now, force)) {
     return
   }
@@ -2181,8 +2191,16 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     }
   }
 
-  const globalCap = resolveBufferAdjustedGlobalCap(tabId)
+  const globalCap =
+    typeof ns.resolveCongestionGlobalCap === "function"
+      ? ns.resolveCongestionGlobalCap(tabId)
+      : resolveBufferAdjustedGlobalCap(tabId)
   const globalInflight = countGlobalInflightPrefetches()
+  const congestion =
+    tabState.congestionDirectives ||
+    (typeof ns.computeCongestionDirectivesForTab === "function"
+      ? ns.computeCongestionDirectivesForTab(tabId)
+      : null)
   const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
   const panicActive = typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
   const churnOrTeleport =
@@ -2201,9 +2219,10 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
     if (shouldLogSkip) {
       const retryDelay = tabState.prefetchCapRetryDelayMs || computeCapRetryDelayMs(1)
+      const tierLabel = congestion?.activeTierName || "unknown"
       addLog(
         "INFO",
-        `Prefetch queued (cap ${globalInflight}/${globalCap}) — retry #${tabState.prefetchCapRetryAttempts || 1} on tab ${tabId} in ${retryDelay}ms`
+        `Prefetch queued (cap ${globalInflight}/${globalCap}, tier=${tierLabel}) — retry #${tabState.prefetchCapRetryAttempts || 1} on tab ${tabId} in ${retryDelay}ms`
       )
       tabState.lastSkipLogAt = now
     }

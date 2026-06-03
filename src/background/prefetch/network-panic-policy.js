@@ -36,7 +36,8 @@ function buildSettingsPayloadForTabs() {
     networkPanicActive: panic,
     bufferTargetRunwaySec: panic
       ? constants.PANIC_TARGET_RUNWAY_SEC
-      : constants.BUFFER_TARGET_RUNWAY_SEC
+      : constants.BUFFER_TARGET_RUNWAY_SEC,
+    networkFirstByteP95Ms: Number(state.stats?.networkFirstByteP95Ms) || 0
   }
 }
 

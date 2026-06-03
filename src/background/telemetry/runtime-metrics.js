@@ -163,6 +163,10 @@ function maybeLogUmpHealthSummary(force = false) {
       ? ns.formatExtensionFetchMetricsLine()
       : ""
   const chunkStoreLine = formatChunkStoreTelemetryLine()
+  const congestionLine =
+    typeof ns.formatCongestionTelemetryLineGlobal === "function"
+      ? ns.formatCongestionTelemetryLineGlobal()
+      : ""
   const workerLifecycle =
     typeof ns.getWorkerLifecycleSnapshot === "function"
       ? ns.getWorkerLifecycleSnapshot()
@@ -182,7 +186,7 @@ function maybeLogUmpHealthSummary(force = false) {
     const hitRate = effective > 0 ? Math.round((ump.hits / effective) * 100) : 0
     addLog(
       "INFO",
-      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
     )
     return
   }
@@ -207,7 +211,7 @@ function maybeLogUmpHealthSummary(force = false) {
       : ""
   addLog(
     "INFO",
-    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
   if (typeof ns.maybeLogSeekPredictionSummary === "function") {
     ns.maybeLogSeekPredictionSummary(force)
@@ -324,6 +328,34 @@ function handleRuntimeMetric(message, sender) {
     ) {
       const line = formatChunkStoreTelemetryLine()
       if (line) addLog("INFO", `Chunk store telemetry — ${line}`)
+    }
+    return
+  }
+
+  if (metricType === "request_collapse_hit") {
+    if (!state.telemetry.requestCollapse) {
+      state.telemetry.requestCollapse = {
+        hits: 0,
+        savedFetches: 0,
+        savedBytes: 0
+      }
+    }
+    const bucket = state.telemetry.requestCollapse
+    bucket.hits += 1
+    bucket.savedFetches += 1
+    const savedBytes = Number(message.savedBytes)
+    if (Number.isFinite(savedBytes) && savedBytes > 0) {
+      bucket.savedBytes += savedBytes
+    }
+    if (
+      bucket.hits % 25 === 0 &&
+      shouldEmitThrottledLog("request_collapse_roi", 15_000)
+    ) {
+      const savedMb = (bucket.savedBytes / (1024 * 1024)).toFixed(1)
+      addLog(
+        "INFO",
+        `Request collapse ROI — collapse_hits=${bucket.hits}, saved_fetches=${bucket.savedFetches}, saved_MB=${savedMb}`
+      )
     }
     return
   }

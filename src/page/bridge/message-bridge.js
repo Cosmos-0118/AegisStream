@@ -14,6 +14,9 @@ function applyRuntimeSettings(settings) {
   ns.bufferTargetRunwaySec =
     Number.isFinite(targetRunway) && targetRunway > 0 ? targetRunway : 60
   ns.networkPanicActive = settings.networkPanicActive === true
+  const netP95 = Number(settings.networkFirstByteP95Ms)
+  ns.networkFirstByteP95Ms =
+    Number.isFinite(netP95) && netP95 > 0 ? netP95 : 0
   if (ns.networkPanicActive) {
     ns.logBridge?.(
       `Network panic mode active — target buffer runway ${ns.bufferTargetRunwaySec}s`,

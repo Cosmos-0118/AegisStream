@@ -67,7 +67,24 @@
     return null
   }
 
+  function isCanonicalCoalesceKey(value) {
+    return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
+  }
+
+  /**
+   * Stable identity for prefetch/collapse — ignores volatile query tokens when possible.
+   */
+  function resolvePrefetchCoalesceKey(rawUrl) {
+    const normalized = stripHash(rawUrl)
+    if (!normalized) return null
+    if (isCanonicalCoalesceKey(normalized)) return normalized
+    const invariant = buildMediaInvariantKey(normalized)
+    return invariant || normalized
+  }
+
   ns.buildMediaInvariantKey = buildMediaInvariantKey
   ns.isObfuscatedBlobSegment = isObfuscatedBlobSegment
   ns.extractInvariantBlobTail = extractInvariantBlobTail
+  ns.isCanonicalCoalesceKey = isCanonicalCoalesceKey
+  ns.resolvePrefetchCoalesceKey = resolvePrefetchCoalesceKey
 })()
