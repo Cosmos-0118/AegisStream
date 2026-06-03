@@ -35,6 +35,7 @@ const {
 
 const networkFetch = fetchWithCircuitBreaker || originalFetch
 const UMP_STORE_RACE_RETRY_MS = 120
+const EXTENSION_STREAM_META_TIMEOUT_MS = 8000
 
 async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk) {
   let lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
@@ -83,6 +84,15 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk
 }
 
 async function aegisFetch(input, init) {
+  try {
+    return await aegisFetchInner(input, init)
+  } catch (e) {
+    logBridge(`aegisFetch critical error (${e?.message || "unknown"}), bypassing to native fetch`, "ERROR")
+    return originalFetch(input, init)
+  }
+}
+
+async function aegisFetchInner(input, init) {
   const { url, method, hasRange, requestHeaders } = getRequestDetails(input, init)
   const requestStartedAt = monotonicNow()
 
@@ -243,7 +253,12 @@ async function aegisFetch(input, init) {
     })
 
     try {
-      const extensionMeta = await meta
+      const extensionMeta = await Promise.race([
+        meta,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("extension-stream-meta-timeout")), EXTENSION_STREAM_META_TIMEOUT_MS)
+        )
+      ])
       networkResponse = new Response(stream, {
         status: extensionMeta.statusCode,
         statusText: extensionMeta.statusCode === 206 ? "Partial Content" : "OK",
@@ -251,10 +266,11 @@ async function aegisFetch(input, init) {
       })
     } catch (streamErr) {
       logBridge(
-        `Extension fetch failed (${streamErr?.message || "unknown"}), falling back`,
+        `Extension fetch failed (${streamErr?.message || "unknown"}), falling back to native fetch`,
         "WARN"
       )
-      networkResponse = await networkFetch(input, init)
+      try { stream.cancel().catch(() => {}) } catch {}
+      networkResponse = await originalFetch(input, init)
     }
   } catch (e) {
     logBridge(`Extension fetch error (${e.message}), falling back`, "WARN")

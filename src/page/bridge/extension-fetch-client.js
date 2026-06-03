@@ -6,7 +6,8 @@ if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("exten
 
 const { nextRequestId, base64ToArrayBuffer } = ns
 
-const EXTENSION_FETCH_TIMEOUT_MS = 65_000
+const EXTENSION_FETCH_TIMEOUT_MS = 15_000
+const EXTENSION_STREAM_IDLE_TTL_MS = 10_000
 const streamingByRequestId = new Map()
 
 function postFetchRequest(payload) {
@@ -44,7 +45,8 @@ function getOrCreateStreamState(requestId) {
     streamController: null,
     streamReady: null,
     resolveBuffered: null,
-    rejectBuffered: null
+    rejectBuffered: null,
+    createdAt: Date.now()
   }
   streamingByRequestId.set(requestId, state)
   return state
@@ -55,6 +57,10 @@ function settleStreamError(requestId, error) {
   if (!state || state.settled) return
   state.settled = true
   streamingByRequestId.delete(requestId)
+  // Settle the streamReady (meta) promise so fetch interceptor never hangs
+  if (state.streamReady) {
+    state.streamReady({ ok: false, error: error || "extension fetch failed" })
+  }
   if (state.streamController) {
     try {
       state.streamController.error(new Error(error || "extension fetch failed"))
@@ -208,6 +214,22 @@ function requestExtensionFetchStream(payload) {
 function isExtensionFetchInFlight(requestId) {
   return streamingByRequestId.has(requestId)
 }
+
+// Periodically sweep orphaned streams that never received any data
+function sweepOrphanedStreams() {
+  const now = Date.now()
+  for (const [requestId, state] of streamingByRequestId.entries()) {
+    if (state.settled) {
+      streamingByRequestId.delete(requestId)
+      continue
+    }
+    const createdAt = Number(state.createdAt || 0)
+    if (createdAt > 0 && now - createdAt > EXTENSION_STREAM_IDLE_TTL_MS && state.totalLength === 0) {
+      settleStreamError(requestId, "orphaned-stream-timeout")
+    }
+  }
+}
+setInterval(sweepOrphanedStreams, 5000)
 
 const legacyRequestRuntime = ns.requestRuntime
 if (typeof legacyRequestRuntime === "function") {

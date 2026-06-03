@@ -276,13 +276,35 @@ function AegisXHR() {
       cacheLookupUrl = youtubeChunk.cacheKey
     }
 
-    requestRuntime("CACHE_LOOKUP_REQUEST", {
+    let settled = false
+    const CACHE_LOOKUP_TIMEOUT_MS = 3000
+
+    const lookupPromise = requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,
       method: _method,
       hasRange: false
-    }).then((lookup) => {
+    })
+
+    // Hard timeout: if cache lookup doesn't resolve in time, send the
+    // original request so the player is never left hanging.
+    const timeoutId = setTimeout(() => {
+      if (settled) return
+      settled = true
+      originalSend(body)
+    }, CACHE_LOOKUP_TIMEOUT_MS)
+
+    // If the player aborts while we're waiting for cache, clean up.
+    xhr.addEventListener("abort", () => {
+      settled = true
+      clearTimeout(timeoutId)
+    }, { once: true })
+
+    lookupPromise.then((lookup) => {
+      clearTimeout(timeoutId)
+      if (settled) return
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
+        settled = true
         // Synthesize a successful XHR response from cache
         const is206 =
           youtubeChunk?.type === "bytes" &&
@@ -337,8 +359,12 @@ function AegisXHR() {
         return
       }
 
+      settled = true
       originalSend(body)
     }).catch(() => {
+      clearTimeout(timeoutId)
+      if (settled) return
+      settled = true
       originalSend(body)
     })
 
