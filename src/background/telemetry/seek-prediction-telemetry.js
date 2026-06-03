@@ -14,6 +14,7 @@ const SUMMARY_LOG_INTERVAL_MS = 30_000
 
 const pendingByTab = new Map()
 const errorSamples = []
+const gaussianScores = []
 let lastSummaryLogAt = 0
 let resolvedCount = 0
 let hitWithin3Count = 0
@@ -29,10 +30,29 @@ function computePercentile(values, percentile) {
   return sorted[idx]
 }
 
+function gaussianAccuracyScore(distance) {
+  const sigma = Number(ns.constants?.SEEK_PREDICTION_GAUSSIAN_SIGMA) || 2
+  const safeSigma = Math.max(0.5, sigma)
+  return Math.exp(-(distance * distance) / (2 * safeSigma * safeSigma))
+}
+
+function blendConfidence(instantScore) {
+  const alpha = Number(ns.constants?.SEEK_PREDICTION_CONFIDENCE_EMA_ALPHA) || 0.15
+  const blend = resolvedCount < 8 ? Math.max(alpha, 0.35) : alpha
+  penalizedConfidence = penalizedConfidence * (1 - blend) + instantScore * blend
+  penalizedConfidence = Math.min(1, Math.max(0, penalizedConfidence))
+}
+
 function recordSeekPrediction(tabId, payload) {
   if (!Number.isFinite(tabId) || !payload) return
   const predictedIndex = Number(payload.predictedIndex)
   if (!Number.isFinite(predictedIndex)) return
+
+  const source = payload.source || "seek-prediction"
+  const ephemeral =
+    payload.ephemeral === true ||
+    source === "seek-prediction-scrub-suppressed" ||
+    source === "seek-prediction-scrub-observe"
 
   const entry = {
     predictedIndex: Math.round(predictedIndex),
@@ -40,19 +60,49 @@ function recordSeekPrediction(tabId, payload) {
     previousIndex:
       typeof payload.previousIndex === "number" ? payload.previousIndex : null,
     teleport: payload.teleport === true,
-    source: payload.source || "seek-prediction",
-    at: Date.now()
+    source,
+    at: Date.now(),
+    frozen: false
   }
-  pendingByTab.set(tabId, entry)
+  if (!ephemeral) {
+    pendingByTab.set(tabId, entry)
+  }
   bumpActivity("seekPredictions", 1)
 
   const timeLabel = Number.isFinite(entry.currentTimeSec)
     ? `${entry.currentTimeSec.toFixed(1)}s`
     : "n/a"
+  const sourceLabel =
+    entry.source === "seek-prediction-scrub-suppressed" ||
+    entry.source === "seek-prediction-scrub-observe"
+      ? ", passenger=true"
+      : ""
   addLog(
     "INFO",
-    `Seek prediction on tab ${tabId}: time=${timeLabel}, estimatedIndex=${entry.predictedIndex}${entry.teleport ? ", teleportEligible=true" : ""}`
+    `Seek prediction on tab ${tabId}: time=${timeLabel}, estimatedIndex=${entry.predictedIndex}${entry.teleport ? ", teleportEligible=true" : ""}${sourceLabel}`
   )
+}
+
+function evictSeekPredictionPending(tabId, reason = "evicted") {
+  if (!Number.isFinite(tabId)) return false
+  if (!pendingByTab.has(tabId)) return false
+  pendingByTab.delete(tabId)
+  if (reason === "paused") {
+    bumpActivity("seekPredictionPausedEvicted", 1)
+  } else if (reason === "scrub") {
+    bumpActivity("seekPredictionScrubEvicted", 1)
+  } else if (reason === "expired") {
+    bumpActivity("seekPredictionExpired", 1)
+  }
+  return true
+}
+
+function invalidateSeekPredictionsForScrub(tabId) {
+  return evictSeekPredictionPending(tabId, "scrub")
+}
+
+function notePlayerPausedForSeekPrediction(tabId) {
+  evictSeekPredictionPending(tabId, "paused")
 }
 
 function resolveSeekPredictionActual(tabId, actualIndex, options = {}) {
@@ -61,9 +111,14 @@ function resolveSeekPredictionActual(tabId, actualIndex, options = {}) {
   if (!pending) return null
 
   const now = Date.now()
-  if (now - pending.at > RESOLVE_WINDOW_MS) {
+  if (pending.frozen === true) {
     pendingByTab.delete(tabId)
-    bumpActivity("seekPredictionExpired", 1)
+    bumpActivity("seekPredictionPausedEvicted", 1)
+    return null
+  }
+
+  if (now - pending.at > RESOLVE_WINDOW_MS) {
+    evictSeekPredictionPending(tabId, "expired")
     return null
   }
 
@@ -71,40 +126,53 @@ function resolveSeekPredictionActual(tabId, actualIndex, options = {}) {
   const predicted = pending.predictedIndex
   const error = Math.abs(actual - predicted)
   const signedError = actual - predicted
+  const accuracyScore = gaussianAccuracyScore(error)
 
   pendingByTab.delete(tabId)
   errorSamples.push(error)
+  gaussianScores.push(accuracyScore)
   if (errorSamples.length > MAX_ERROR_SAMPLES) {
     errorSamples.splice(0, errorSamples.length - MAX_ERROR_SAMPLES)
+  }
+  if (gaussianScores.length > MAX_ERROR_SAMPLES) {
+    gaussianScores.splice(0, gaussianScores.length - MAX_ERROR_SAMPLES)
   }
 
   resolvedCount += 1
   if (error <= 3) hitWithin3Count += 1
-  const lambda = Number(ns.constants?.SEEK_PREDICTION_OUTLIER_LAMBDA) || 0.02
-  const outlierPenalty = Math.exp(-lambda * error * error)
-  const instantScore = (error <= 3 ? 1 : 0) * outlierPenalty
-  const blend = resolvedCount < 8 ? 0.35 : 0.2
-  penalizedConfidence = penalizedConfidence * (1 - blend) + instantScore * blend
+  blendConfidence(accuracyScore)
   bumpActivity("seekPredictionResolved", 1)
   if (error <= 3) bumpActivity("seekPredictionWithin3", 1)
   if (error <= 1) bumpActivity("seekPredictionWithin1", 1)
 
   const source = options.source || "player-segment"
+  const logLevel = accuracyScore >= 0.3 ? "INFO" : "WARN"
   addLog(
-    error <= 3 ? "INFO" : "WARN",
-    `Seek prediction resolved (${source}, tab ${tabId}): prediction=${predicted}, actual=${actual}, error=${error}${signedError !== 0 ? ` (${signedError > 0 ? "+" : ""}${signedError})` : ""}`
+    logLevel,
+    `Seek prediction resolved (${source}, tab ${tabId}): prediction=${predicted}, actual=${actual}, error=${error}${signedError !== 0 ? ` (${signedError > 0 ? "+" : ""}${signedError})` : ""}, gaussian=${accuracyScore.toFixed(2)}`
   )
 
   maybeLogSeekPredictionSummary(false)
 
-  return { predicted, actual, error, signedError, currentTimeSec: pending.currentTimeSec }
+  return {
+    predicted,
+    actual,
+    error,
+    signedError,
+    accuracyScore,
+    currentTimeSec: pending.currentTimeSec
+  }
 }
 
 function getPredictionConfidence() {
   const minSamples = Math.max(4, Number(ns.constants?.SEEK_PREDICTION_MIN_SAMPLES) || 8)
   if (resolvedCount < minSamples) return 0.5
   const linear = hitWithin3Count / resolvedCount
-  const blended = Math.min(linear, penalizedConfidence)
+  const gaussianMean =
+    gaussianScores.length > 0
+      ? gaussianScores.reduce((acc, value) => acc + value, 0) / gaussianScores.length
+      : linear
+  const blended = Math.min(linear, penalizedConfidence, gaussianMean)
   return Math.round(blended * 1000) / 1000
 }
 
@@ -173,6 +241,7 @@ function maybeLogSeekPredictionSummary(force = false) {
 function resetSeekPredictionTelemetry() {
   pendingByTab.clear()
   errorSamples.length = 0
+  gaussianScores.length = 0
   lastSummaryLogAt = 0
   resolvedCount = 0
   hitWithin3Count = 0
@@ -181,6 +250,9 @@ function resetSeekPredictionTelemetry() {
 
 ns.recordSeekPrediction = recordSeekPrediction
 ns.resolveSeekPredictionActual = resolveSeekPredictionActual
+ns.evictSeekPredictionPending = evictSeekPredictionPending
+ns.invalidateSeekPredictionsForScrub = invalidateSeekPredictionsForScrub
+ns.notePlayerPausedForSeekPrediction = notePlayerPausedForSeekPrediction
 ns.getSeekPredictionSummary = getSeekPredictionSummary
 ns.getPredictionConfidence = getPredictionConfidence
 ns.getPredictionHitRate = getPredictionHitRate

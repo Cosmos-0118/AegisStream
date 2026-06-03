@@ -585,10 +585,212 @@ function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", op
   }
 }
 
-function handleSeekPrediction(tabId, currentTimeSec) {
+function applyUnifiedSeekPassengerLock(tabState, isScrubbing) {
+  if (!tabState || isScrubbing !== true) return
+  const now = Date.now()
+  const idleMs = Number(constants.SCRUBBING_TRAIN_IDLE_MS) || 1_000
+  const passengerMs = Number(constants.UNIFIED_SEEK_PASSENGER_MS) || 800
+  tabState.scrubbingTrainUntil = now + idleMs
+  tabState.unifiedSeekPassengerUntil = now + passengerMs
+  tabState.lastScrubSeekAt = now
+  markSeekChurnAggressive(tabState)
+}
+
+function clearSeekPassengerLock(tabState) {
+  if (!tabState) return
+  tabState.scrubbingTrainUntil = 0
+  tabState.unifiedSeekPassengerUntil = 0
+}
+
+function isLowRunwayForStallOverride(tabState) {
+  if (!tabState) return false
+  const runway = Number(tabState.bufferRunwaySec)
+  const threshold = Number(constants.SEEK_PASSENGER_STALL_RUNWAY_SEC) ?? 2
+  if (Number.isFinite(runway)) return runway <= threshold
+  return tabState.bufferTier === "emergency" || tabState.bufferTier === "aggressive"
+}
+
+function maybeBreakPassengerLockForStallRecovery(tabId, tabState, options = {}) {
+  if (!tabState) return false
+  const now = Date.now()
+  const releaseWindow = Number(constants.SEEK_RELEASE_STALL_OVERRIDE_MS) || 3_000
+  const recentRelease =
+    options.isRelease === true ||
+    (Number(tabState.lastSeekReleaseAt || 0) > 0 &&
+      now - Number(tabState.lastSeekReleaseAt) < releaseWindow)
+  const inPassenger =
+    typeof ns.isSeekPredictionPassengerPhase === "function" &&
+    ns.isSeekPredictionPassengerPhase(tabState)
+  if (!inPassenger && options.force !== true) return false
+  if (!recentRelease && options.stall !== true && options.force !== true) return false
+  if (!isLowRunwayForStallOverride(tabState) && options.force !== true) return false
+
+  clearSeekPassengerLock(tabState)
+  addLog(
+    "INFO",
+    `Seek passenger lock released on tab ${tabId} (${options.reason || "stall-override"}) — macro predictor may drive recovery`
+  )
+  return true
+}
+
+function handleUnifiedSeekState(tabId, rawPayload = {}) {
+  if (!Number.isFinite(tabId)) return
+  const payload =
+    typeof ns.normalizeUnifiedSeekPayload === "function"
+      ? ns.normalizeUnifiedSeekPayload(rawPayload)
+      : rawPayload
+  if (!payload) return
+
+  let tabState = state.playlistByTab.get(tabId)
+  if (!tabState) {
+    tabState = { segments: [], updatedAt: Date.now() }
+    state.playlistByTab.set(tabId, tabState)
+  }
+
+  const now = Date.now()
+  const isScrubbing = payload.isScrubbing === true
+  const scrubTrainEnded = payload.scrubTrainEnded === true
+
+  if (isScrubbing) {
+    const wasActive = isTabInScrubbingTrain(tabState)
+    applyUnifiedSeekPassengerLock(tabState, true)
+    if (!wasActive) {
+      if (typeof ns.invalidateSeekPredictionsForScrub === "function") {
+        ns.invalidateSeekPredictionsForScrub(tabId)
+      }
+      addLog("DEBUG", `Scrubbing train active on tab ${tabId} — DOM guardrails suspended`)
+    }
+  } else if (scrubTrainEnded) {
+    const wasActive = isTabInScrubbingTrain(tabState) || Number(tabState.unifiedSeekPassengerUntil || 0) > now
+    clearSeekPassengerLock(tabState)
+    if (wasActive) {
+      addLog("DEBUG", `Scrubbing train ended on tab ${tabId}`)
+      if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+        triggerScrubSnapBackBurst(tabId, tabState, tabState.anchorIndex)
+      }
+    }
+  }
+
+  const currentTimeSec = Number(payload.timeSec)
+  if (!Number.isFinite(currentTimeSec)) return
+
+  if (payload.isRelease === true) {
+    tabState.lastSeekReleaseAt = now
+  }
+
+  if (!tabState.segments?.length) {
+    if (
+      payload.isRelease === true &&
+      maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
+        isRelease: true,
+        reason: "release-no-playlist"
+      })
+    ) {
+      return
+    }
+    return
+  }
+
+  let estimatedIndex = Number(payload.estimatedIndex)
+  if (!Number.isFinite(estimatedIndex)) {
+    estimatedIndex = estimateManifestIndexFromTime(currentTimeSec, tabState.segmentDurations, {
+      totalDurationSec: tabState.playlistFingerprint?.totalDuration,
+      segmentCount: tabState.segments.length,
+      fallbackSegmentDurationSec: 4
+    })
+  }
+  if (typeof estimatedIndex !== "number") return
+
+  const passengerPhase =
+    isScrubbing ||
+    (typeof ns.isSeekPredictionPassengerPhase === "function" &&
+      ns.isSeekPredictionPassengerPhase(tabState))
+
+  tabState.predictedAnchorIndex = estimatedIndex
+  tabState.predictedAnchorAt = now
+
+  if (passengerPhase) {
+    if (typeof ns.recordSeekPrediction === "function") {
+      ns.recordSeekPrediction(tabId, {
+        predictedIndex: estimatedIndex,
+        currentTimeSec,
+        previousIndex: tabState.hasAnchor ? tabState.anchorIndex : null,
+        teleport: false,
+        source: "seek-prediction-scrub-observe"
+      })
+    }
+    const predictedVelocityIndex = Number(payload.velocityPredictedIndex)
+    const velocitySegPerSec = Number(payload.velocitySegPerSec)
+    if (Number.isFinite(predictedVelocityIndex) && Number.isFinite(velocitySegPerSec)) {
+      handleScrubVelocityPrefetch(tabId, {
+        predictedIndex: predictedVelocityIndex,
+        velocitySegPerSec,
+        currentIndex:
+          typeof payload.currentIndex === "number" ? payload.currentIndex : estimatedIndex
+      })
+    }
+    if (payload.isRelease === true) {
+      const brokeLock = maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
+        isRelease: true,
+        reason: "release-low-runway"
+      })
+      if (brokeLock) {
+        handleSeekPrediction(tabId, currentTimeSec, {
+          fromUnified: true,
+          stallOverride: true
+        })
+      }
+    }
+    return
+  }
+
+  if (payload.isRelease === true) {
+    const brokeLock = maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
+      isRelease: true,
+      reason: "release-low-runway"
+    })
+    if (brokeLock) {
+      handleSeekPrediction(tabId, currentTimeSec, {
+        fromUnified: true,
+        stallOverride: true
+      })
+    }
+    return
+  }
+
+  handleSeekPrediction(tabId, currentTimeSec, { fromUnified: true })
+}
+
+function handleSeekPrediction(tabId, currentTimeSec, options = {}) {
   if (!Number.isFinite(tabId)) return
   const tabState = state.playlistByTab.get(tabId)
   if (!tabState?.segments?.length) return
+
+  if (
+    typeof ns.isSeekPredictionPassengerPhase === "function" &&
+    ns.isSeekPredictionPassengerPhase(tabState)
+  ) {
+    const estimatedIndex = estimateManifestIndexFromTime(
+      currentTimeSec,
+      tabState.segmentDurations,
+      {
+        totalDurationSec: tabState.playlistFingerprint?.totalDuration,
+        segmentCount: tabState.segments.length,
+        fallbackSegmentDurationSec: 4
+      }
+    )
+    if (typeof estimatedIndex === "number" && typeof ns.recordSeekPrediction === "function") {
+      ns.recordSeekPrediction(tabId, {
+        predictedIndex: estimatedIndex,
+        currentTimeSec,
+        previousIndex: tabState.hasAnchor ? tabState.anchorIndex : null,
+        teleport: false,
+        source: "seek-prediction-scrub-suppressed"
+      })
+    }
+    return
+  }
+
   if (
     typeof ns.isSeekPredictionEnabled === "function" &&
     !ns.isSeekPredictionEnabled()
@@ -1917,6 +2119,8 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     anchorSourceAt: Number(previous?.anchorSourceAt || 0),
     lastDomTeleportAt: Number(previous?.lastDomTeleportAt || 0),
     scrubbingTrainUntil: Number(previous?.scrubbingTrainUntil || 0),
+    unifiedSeekPassengerUntil: Number(previous?.unifiedSeekPassengerUntil || 0),
+    lastSeekReleaseAt: Number(previous?.lastSeekReleaseAt || 0),
     lastScrubSeekAt: Number(previous?.lastScrubSeekAt || 0),
     scrubSnapBackUntil: Number(previous?.scrubSnapBackUntil || 0),
     mutePassiveHysteresisUntil: Number(previous?.mutePassiveHysteresisUntil || 0),
@@ -3167,6 +3371,9 @@ ns.pruneRuntimeState = pruneRuntimeState
 ns.parseAndPrefetchFromPlaylist = parseAndPrefetchFromPlaylist
 ns.parsePlaylistContentForTab = parsePlaylistContentForTab
 ns.handleChunkObserved = handleChunkObserved
+ns.clearSeekPassengerLock = clearSeekPassengerLock
+ns.maybeBreakPassengerLockForStallRecovery = maybeBreakPassengerLockForStallRecovery
+ns.handleUnifiedSeekState = handleUnifiedSeekState
 ns.handleSeekPrediction = handleSeekPrediction
 ns.commitAnchorFromAuthority = commitAnchorFromAuthority
 ns.handleForceTeleportAnchor = handleForceTeleportAnchor

@@ -5,15 +5,9 @@ if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("video
 const { notifyRuntime, logBridge } = ns
 
 const TELEPORT_DEBOUNCE_MS = 40
-const SCRUB_SEEK_INTERVAL_MS = 800
-const SCRUB_IDLE_MS = 1_000
 const WORKER_LIVELINESS_PING_MS = 10_000
 
 const lastTeleportAtByVideo = new WeakMap()
-const scrubStateByVideo = new WeakMap()
-const SCRUB_VELOCITY_SAMPLE_MAX = 6
-const SCRUB_VELOCITY_LOOKAHEAD_MS = 400
-const SCRUB_VELOCITY_MIN_SEG_PER_SEC = 0.5
 
 function resolveManifestMapper() {
   const hint = ns.playbackManifestHint
@@ -29,106 +23,6 @@ function resolveManifestMapper() {
       })
     }
   }
-}
-
-function setScrubbingTrainActive(video, active) {
-  const state = scrubStateByVideo.get(video) || {
-    active: false,
-    lastSeekAt: 0,
-    idleTimer: null,
-    indexSamples: [],
-    lastVelocityPrewarmAt: 0
-  }
-  if (state.active === active) {
-    scrubStateByVideo.set(video, state)
-    return
-  }
-  state.active = active
-  if (!active) {
-    state.indexSamples = []
-    state.lastVelocityPrewarmAt = 0
-    state.lastPrearmedPredictedIndex = null
-  }
-  scrubStateByVideo.set(video, state)
-  notifyRuntime("SCRUBBING_TRAIN", { active })
-  logBridge?.(
-    active ? "Scrubbing train active (rapid seeking)" : "Scrubbing train idle",
-    "DEBUG"
-  )
-}
-
-function maybePrewarmFromScrubVelocity(video, mapper) {
-  if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
-  const state = scrubStateByVideo.get(video)
-  if (!state?.active || !Array.isArray(state.indexSamples) || state.indexSamples.length < 2) {
-    return
-  }
-  const samples = state.indexSamples
-  const first = samples[0]
-  const last = samples[samples.length - 1]
-  const dtSec = (last.t - first.t) / 1000
-  if (dtSec <= 0.05) return
-  const velocity = (last.index - first.index) / dtSec
-  if (Math.abs(velocity) < SCRUB_VELOCITY_MIN_SEG_PER_SEC) return
-
-  const lookaheadSec = SCRUB_VELOCITY_LOOKAHEAD_MS / 1000
-  const predictedIndex = Math.round(last.index + velocity * lookaheadSec)
-  if (predictedIndex === state.lastPrearmedPredictedIndex) return
-  const now = Date.now()
-  if (now - Number(state.lastVelocityPrewarmAt || 0) < 120) return
-  state.lastVelocityPrewarmAt = now
-  state.lastPrearmedPredictedIndex = predictedIndex
-
-  notifyRuntime("SCRUB_VELOCITY_PREFETCH", {
-    predictedIndex,
-    velocitySegPerSec: velocity,
-    currentIndex: last.index
-  })
-  logBridge?.(
-    `Scrub velocity prewarm: index ${last.index} -> ${predictedIndex} (${velocity.toFixed(1)} seg/s)`,
-    "DEBUG"
-  )
-}
-
-function noteSeekingForScrubTrain(video) {
-  if (!(video instanceof HTMLMediaElement)) return
-  const now = Date.now()
-  let state = scrubStateByVideo.get(video)
-  if (!state) {
-    state = {
-      active: false,
-      lastSeekAt: 0,
-      idleTimer: null,
-      indexSamples: [],
-      lastVelocityPrewarmAt: 0
-    }
-    scrubStateByVideo.set(video, state)
-  }
-
-  const mapper = resolveManifestMapper()
-  const currentTime = Number(video.currentTime)
-  if (mapper && Number.isFinite(currentTime)) {
-    const index = mapper.getSegmentIndexFromTime(currentTime)
-    if (typeof index === "number" && index >= 0) {
-      state.indexSamples.push({ index, t: now })
-      if (state.indexSamples.length > SCRUB_VELOCITY_SAMPLE_MAX) {
-        state.indexSamples.shift()
-      }
-      if (state.active) maybePrewarmFromScrubVelocity(video, mapper)
-    }
-  }
-
-  if (state.lastSeekAt > 0 && now - state.lastSeekAt < SCRUB_SEEK_INTERVAL_MS) {
-    if (!state.active) setScrubbingTrainActive(video, true)
-    else notifyRuntime("SCRUBBING_TRAIN", { active: true })
-  }
-
-  state.lastSeekAt = now
-  if (state.idleTimer) clearTimeout(state.idleTimer)
-  state.idleTimer = setTimeout(() => {
-    state.idleTimer = null
-    if (state.active) setScrubbingTrainActive(video, false)
-  }, SCRUB_IDLE_MS)
 }
 
 function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
@@ -168,9 +62,9 @@ function setupVideoElementAnchorBridge(videoElement, manifestMapper) {
   videoElement.__aegisAnchorBridgeHook = true
 
   const mapper = manifestMapper || resolveManifestMapper()
-  videoElement.addEventListener("seeking", () => noteSeekingForScrubTrain(videoElement), {
-    passive: true
-  })
+  if (typeof ns.setupSeekingController === "function") {
+    ns.setupSeekingController(videoElement)
+  }
   videoElement.addEventListener(
     "seeked",
     () => broadcastForceTeleport(videoElement, mapper, "seeked"),

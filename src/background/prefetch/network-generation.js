@@ -102,17 +102,23 @@
     return Date.now() - Number(tabState.lastScrubVelocityScheduleAt || 0) < gap
   }
 
-  /** Predictor must not schedule/delegate while velocity prewarm or scrub churn owns the lane. */
-  function shouldDeferSeekPredictionPrefetch(tabState) {
+  /** Immediate passenger lock from unified seek IPC (closes scrub-train race). */
+  function isSeekPredictionPassengerPhase(tabState, now = Date.now()) {
     if (!tabState) return false
-    if (isScrubbingTrainActive(tabState)) return true
+    if (now < Number(tabState.unifiedSeekPassengerUntil || 0)) return true
+    if (isScrubbingTrainActive(tabState, now)) return true
     if (isVelocityPrefetchLaneActive(tabState)) return true
-    if (Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)) {
+    if (now < Number(tabState.seekChurnAggressiveUntil || 0)) {
       const idleMs = Number(ns.constants?.SCRUBBING_TRAIN_IDLE_MS) || 1000
       const lastScrub = Number(tabState.lastScrubSeekAt || 0)
-      if (lastScrub > 0 && Date.now() - lastScrub < idleMs + 400) return true
+      if (lastScrub > 0 && now - lastScrub < idleMs + 400) return true
     }
     return false
+  }
+
+  /** Predictor must not schedule/delegate while velocity prewarm or scrub churn owns the lane. */
+  function shouldDeferSeekPredictionPrefetch(tabState) {
+    return isSeekPredictionPassengerPhase(tabState)
   }
 
   /** Scrub / soft-anchor schedules forward without invalidating in-flight delegate work. */
@@ -240,6 +246,7 @@
   ns.normalizeLifecycleEventSource = normalizeLifecycleEventSource
   ns.isNonDestructiveLifecycleSource = isNonDestructiveLifecycleSource
   ns.isSoftScrubDelegateSource = isSoftScrubDelegateSource
+  ns.isSeekPredictionPassengerPhase = isSeekPredictionPassengerPhase
   ns.shouldDeferSeekPredictionPrefetch = shouldDeferSeekPredictionPrefetch
   ns.isVelocityPrefetchLaneActive = isVelocityPrefetchLaneActive
   ns.isDestructiveDelegateSource = isDestructiveDelegateSource

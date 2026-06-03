@@ -41,6 +41,7 @@ importScripts(
   "./prefetch/anchor-authority.js",
   "./prefetch/prefetch-failure-log.js",
   "./prefetch/network-generation.js",
+  "./prefetch/unified-seek-wire.js",
   "./prefetch/orchestrator.js",
   "./prefetch/speculative-prefetch.js",
   "./network/fetch-priority.js",

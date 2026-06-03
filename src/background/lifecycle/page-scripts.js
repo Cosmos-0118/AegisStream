@@ -23,6 +23,7 @@ ns.MAIN_PAGE_SCRIPT_FILES = [
   "src/page/prefetch/buffer-health-monitor.js",
   "src/page/prefetch/prefetch-failure.js",
   "src/page/prefetch/seek-predictor.js",
+  "src/page/media/seeking-controller.js",
   "src/page/media/video-monitor.js",
   "src/page/bridge/extension-fetch-client.js",
   "src/page/prefetch/video.js",

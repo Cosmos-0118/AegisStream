@@ -639,6 +639,33 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "UNIFIED_SEEK_STATE") {
+    const wire = typeof data.wire === "string" ? data.wire : null
+    if (!wire) return
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:UnifiedSeekState",
+        wire
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "PLAYER_PAUSED") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:RuntimeMetric",
+        metricType: "player_paused",
+        currentTime: data.timeSec
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
   if (data.type === "SCRUBBING_TRAIN") {
     try {
       chrome.runtime.sendMessage({

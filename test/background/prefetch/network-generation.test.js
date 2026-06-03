@@ -98,8 +98,23 @@ const velocityLaneTabState = {
   ...tabState,
   lastScrubVelocityScheduleAt: Date.now()
 }
-const { shouldDeferSeekPredictionPrefetch, isVelocityPrefetchLaneActive } =
-  sandbox.self.AegisBackground
+const {
+  shouldDeferSeekPredictionPrefetch,
+  isVelocityPrefetchLaneActive,
+  isSeekPredictionPassengerPhase
+} = sandbox.self.AegisBackground
+const passengerLockTabState = {
+  ...tabState,
+  unifiedSeekPassengerUntil: Date.now() + 60_000
+}
+assert(
+  isSeekPredictionPassengerPhase(passengerLockTabState),
+  "unified seek passenger lock defers before scrub train flag propagates"
+)
+assert(
+  shouldDeferSeekPredictionPrefetch(passengerLockTabState),
+  "passenger lock triggers defer"
+)
 assert(
   isSoftScrubDelegateSource("delegate-seek-prediction", scrubTabState),
   "seek-prediction during scrub train must be soft delegate"

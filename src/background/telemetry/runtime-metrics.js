@@ -268,6 +268,13 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "player_paused") {
+    if (Number.isFinite(tabId) && typeof ns.notePlayerPausedForSeekPrediction === "function") {
+      ns.notePlayerPausedForSeekPrediction(tabId)
+    }
+    return
+  }
+
   if (metricType === "buffer_health") {
     const runwaySec = Number(message.runwaySec)
     if (!Number.isFinite(runwaySec) || runwaySec < 0) return
@@ -276,6 +283,9 @@ function handleRuntimeMetric(message, sender) {
     }
     if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) {
       return
+    }
+    if (message.paused === true && typeof ns.notePlayerPausedForSeekPrediction === "function") {
+      ns.notePlayerPausedForSeekPrediction(tabId)
     }
     if (typeof ns.updateTabBufferHealth === "function" && Number.isFinite(tabId)) {
       ns.updateTabBufferHealth(tabId, {
@@ -421,6 +431,21 @@ function handleRuntimeMetric(message, sender) {
     durationMs >= 1000 ? "WARN" : "INFO",
     `Playback stall ${Math.round(durationMs)}ms (${reason}) on ${tabLabel} at ${atSeconds}s`
   )
+  if (Number.isFinite(tabId)) {
+    const tabState = state.playlistByTab?.get(tabId)
+    if (
+      tabState &&
+      typeof ns.maybeBreakPassengerLockForStallRecovery === "function" &&
+      ns.maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
+        stall: true,
+        reason: "video-stall"
+      }) &&
+      typeof ns.handleSeekPrediction === "function" &&
+      Number.isFinite(message.atSeconds)
+    ) {
+      ns.handleSeekPrediction(tabId, Number(message.atSeconds), { stallOverride: true })
+    }
+  }
   if (
     Number.isFinite(tabId) &&
     typeof ns.recordPlaybackResumedAfterStall === "function"

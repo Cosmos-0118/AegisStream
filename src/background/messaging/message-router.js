@@ -31,6 +31,7 @@ const {
   handleForceTeleportAnchor,
   handleScrubbingTrainState,
   handleScrubVelocityPrefetch,
+  handleUnifiedSeekState,
   isTabInRapidSeek,
   syncKnownSegmentsToPage,
   maybeRequestPrefetchForTab,
@@ -747,6 +748,14 @@ function registerMessageRouter() {
         } else if (typeof ns.resumeTabPrefetchForVisibility === "function") {
           ns.resumeTabPrefetchForVisibility(tabId, "tab-visible")
         }
+      }
+      sendResponse({ ok: true })
+      return true
+    }
+    case "AegisStream:UnifiedSeekState": {
+      const tabId = sender?.tab?.id
+      if (state.settings.enabled && Number.isFinite(tabId)) {
+        handleUnifiedSeekState(tabId, message.wire || message.payload || message)
       }
       sendResponse({ ok: true })
       return true

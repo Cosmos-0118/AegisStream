@@ -98,8 +98,10 @@
     }
     if (label === "seek-prediction") {
       const defer =
-        typeof ns.shouldDeferSeekPredictionPrefetch === "function" &&
-        ns.shouldDeferSeekPredictionPrefetch(tabState)
+        typeof ns.isSeekPredictionPassengerPhase === "function"
+          ? ns.isSeekPredictionPassengerPhase(tabState)
+          : typeof ns.shouldDeferSeekPredictionPrefetch === "function" &&
+            ns.shouldDeferSeekPredictionPrefetch(tabState)
       if (defer) {
         return { allow: false, mode, reason: "scrub-train-velocity-lane", priority }
       }
