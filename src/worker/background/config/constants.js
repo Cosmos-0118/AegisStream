@@ -108,7 +108,11 @@ ns.constants = {
     prefetchEnabled: true,
     serveFromCache: true,
     maxEntries: 500,
-    prefetchWindow: 6
+    prefetchWindow: 6,
+    documentStreamBoost: true,
+    headerEarlyHints: true,
+    cpuShieldEnabled: true,
+    bfcacheEnforcerEnabled: true
   },
   createInitialStats() {
     return {

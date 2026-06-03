@@ -22,6 +22,9 @@ function prefetchDocumentForLink(link) {
   if (injected && typeof logBridge === "function") {
     logBridge(`Hover-prefetch queued: ${href.slice(0, 96)}`, "DEBUG")
   }
+  if (typeof ns.notifyRuntime === "function") {
+    ns.notifyRuntime("ARM_HEADER_HINTS", { targetUrl: href, reason: "hover" })
+  }
 }
 
 function onPointerOver(event) {

@@ -8,7 +8,7 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 
 ## What works now
 
-- **Page smoother:** hover-prefetch for same-origin navigation, viewport `preconnect`/`dns-prefetch`, and an adaptive circuit breaker for stuck `.js`/`.css`/font assets (`clamp(RTT × 12 + 400, 1.2s–8s)`, 2.5s fallback).
+- **Page smoother:** hover-prefetch + DNR session `Link` header early hints (Brotli/gzip-safe), layout asset learning, viewport preconnect, adaptive circuit breaker, optional uncompressed HTML stream fallback, CPU shield (DNR mock scripts), BFcache enforcer.
 - Detects likely HLS/DASH playlists and media chunks.
 - Parses HLS media playlists and follows master playlist variants.
 - Prefetches upcoming chunks with bounded concurrency.

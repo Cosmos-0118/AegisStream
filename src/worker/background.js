@@ -9,7 +9,12 @@ importScripts(
   "./background/orchestration/tab-prefetch-policy.js",
   "./background/orchestration/buffer-prefetch-policy.js",
   "./background/orchestration/prefetch-orchestrator.js",
-  "./background/io/extension-fetch.js"
+  "./background/io/extension-fetch.js",
+  "./background/io/html-head-scanner.js",
+  "./background/io/stream-injector.js",
+  "./background/io/document-stream-hook.js",
+  "./background/smoother/layout-asset-store.js",
+  "./background/smoother/header-injector.js"
 )
 
 const {
@@ -53,10 +58,21 @@ const {
   isTabEligibleForPrefetch,
   fetchExtensionResponse,
   pumpResponseBody,
-  headersToObject
+  headersToObject,
+  installDocumentStreamHook,
+  syncPerformanceGemsFromSettings,
+  recordLayoutAssets,
+  sanitizeRecordedAssetsFromPage,
+  armHeaderHintsForUrl,
+  registerEarlyHints,
+  isSkippableHeaderHintUrl
 } = self.AegisBackground
 
-const ISOLATED_BRIDGE_FILES = ["src/content/content-relay.js"]
+function isInjectableHttpUrl(url) {
+  return typeof url === "string" && /^https?:\/\//i.test(url)
+}
+
+const ISOLATED_BRIDGE_FILES = ["src/content/content-relay.js", "src/content/smoother/asset-tracker.js"]
 const MAIN_BRIDGE_FILES = [
   "src/bridge/shared/range-buffer.js",
   "src/bridge/shared/youtube-ump-flags.js",
@@ -73,14 +89,11 @@ const MAIN_BRIDGE_FILES = [
   "src/bridge/page/interceptors/xhr.js",
   "src/content/smoother/hover-prefetch.js",
   "src/content/smoother/viewport-preconnect.js",
+  "src/content/smoother/bfcache-enforcer.js",
   "src/content/smoother/smoother-install.js",
   "src/bridge/page/main.js"
 ]
 const YOUTUBE_MAIN_BRIDGE_FILES = ["src/content/youtube/kill-ump.js"]
-
-function isInjectableHttpUrl(url) {
-  return typeof url === "string" && /^https?:\/\//i.test(url)
-}
 
 function isYouTubeUrl(url) {
   if (typeof url !== "string") return false
@@ -180,6 +193,8 @@ async function bootstrapOpenTabs(reason = "bootstrap") {
 
 async function initializeBackground(reason = "startup") {
   await loadSettings()
+  installDocumentStreamHook()
+  await syncPerformanceGemsFromSettings().catch(() => {})
   await computeAdaptiveCachePolicy(true).catch(() => {})
   await refreshActivePrefetchTab()
   await bootstrapOpenTabs(reason)
@@ -259,6 +274,13 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
   addLog("INFO", "Browser started — loading settings")
   void initializeBackground("startup-event")
+})
+
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  if (!state.settings.enabled || state.settings.headerEarlyHints === false) return
+  if (changeInfo.status !== "loading" || !isInjectableHttpUrl(tab?.url)) return
+  if (isSkippableHeaderHintUrl(tab.url)) return
+  void armHeaderHintsForUrl(tab.url, "tab-loading").catch(() => {})
 })
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
@@ -566,6 +588,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         `Settings updated: enabled=${state.settings.enabled}, prefetch=${state.settings.prefetchEnabled}, cache=${state.settings.serveFromCache}, window=${state.settings.prefetchWindow}`
       )
       void computeAdaptiveCachePolicy(true).catch(() => {})
+      void syncPerformanceGemsFromSettings().catch(() => {})
       chrome.storage.local
         .set({ settings: state.settings })
         .then(() => sendResponse({ ok: true, settings: state.settings }))
@@ -694,6 +717,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       addLog(message.level || "DEBUG", `[Page Bridge] ${message.msg}`)
       sendResponse({ ok: true })
       return true
+    case "AegisStream:RecordLayoutAssets": {
+      ;(async () => {
+        if (!state.settings.enabled) {
+          sendResponse({ ok: false, error: "disabled" })
+          return
+        }
+        const assets = sanitizeRecordedAssetsFromPage(message.assets)
+        const saved = await recordLayoutAssets(message.origin, message.pathname, assets)
+        if (saved.length > 0) {
+          addLog(
+            "DEBUG",
+            `Layout assets recorded (${saved.length}) for ${String(message.origin || "").slice(0, 64)}${message.pathname || "/"}`
+          )
+        }
+        sendResponse({ ok: true, count: saved.length })
+      })().catch((e) => {
+        sendResponse({ ok: false, error: e.message })
+      })
+      return true
+    }
+    case "AegisStream:ArmHeaderHints": {
+      ;(async () => {
+        const result = await armHeaderHintsForUrl(message.targetUrl, message.reason || "hover")
+        sendResponse({ ok: result.ok === true, ...result })
+      })().catch((e) => {
+        sendResponse({ ok: false, error: e.message })
+      })
+      return true
+    }
     default:
       return false
   }

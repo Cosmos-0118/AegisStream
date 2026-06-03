@@ -350,6 +350,19 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "ARM_HEADER_HINTS" && data.targetUrl) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:ArmHeaderHints",
+        targetUrl: data.targetUrl,
+        reason: data.reason || "hover"
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
   if (data.type === "DEBUG_LOG") {
     try {
       chrome.runtime.sendMessage({

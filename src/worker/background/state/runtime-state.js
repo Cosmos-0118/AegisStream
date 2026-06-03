@@ -71,7 +71,11 @@ function sanitizeSettings(candidate = {}) {
       1,
       20,
       constants.DEFAULT_SETTINGS.prefetchWindow
-    )
+    ),
+    documentStreamBoost: candidate.documentStreamBoost !== false,
+    headerEarlyHints: candidate.headerEarlyHints !== false,
+    cpuShieldEnabled: candidate.cpuShieldEnabled !== false,
+    bfcacheEnforcerEnabled: candidate.bfcacheEnforcerEnabled !== false
   }
   state.cachePolicy.maxEntries = sanitized.maxEntries
   if (!Number.isFinite(state.cachePolicy.maxBytes) || state.cachePolicy.maxBytes < constants.CACHE_MIN_BYTES) {

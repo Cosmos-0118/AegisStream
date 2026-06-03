@@ -8,6 +8,8 @@ const CIRCUIT_BREAKER_MS = 2500
 const LOGOUT_PATTERN = /logout|signout|sign-out/i
 const STATIC_ASSET_EXT = /\.(js|css|woff2?|ttf)(\?|$)/i
 const MAX_INJECTED_HINTS = 500
+/** Max unique origins to preconnect/dns-prefetch per page (link-heavy sites stay bounded). */
+const VIEWPORT_PRECONNECT_ORIGIN_CAP = 50
 
 const injectedHints = new Set()
 
@@ -95,6 +97,7 @@ function appendCacheBust(url) {
 }
 
 smoother.HOVER_THRESHOLD_MS = HOVER_THRESHOLD_MS
+smoother.VIEWPORT_PRECONNECT_ORIGIN_CAP = VIEWPORT_PRECONNECT_ORIGIN_CAP
 smoother.CIRCUIT_BREAKER_MS = CIRCUIT_BREAKER_MS
 smoother.isSmootherSkippedHost = isSmootherSkippedHost
 smoother.isNavigableLink = isNavigableLink

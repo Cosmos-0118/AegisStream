@@ -20,7 +20,8 @@ function warmOriginForLink(link) {
   }
 
   warmedOrigins.add(origin)
-  if (warmedOrigins.size > 200) {
+  const originCap = smoother.VIEWPORT_PRECONNECT_ORIGIN_CAP || 50
+  if (warmedOrigins.size > originCap) {
     const drop = warmedOrigins.values().next().value
     warmedOrigins.delete(drop)
   }

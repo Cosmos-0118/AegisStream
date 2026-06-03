@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AegisStream",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Adaptive media and web-page acceleration with proactive prefetching and smoother navigation.",
   "permissions": [
     "storage",
@@ -22,6 +22,11 @@
         "id": "youtube_accelerator_rules",
         "enabled": true,
         "path": "src/worker/background/config/dnr-rules.json"
+      },
+      {
+        "id": "aegis_defuse_rules",
+        "enabled": false,
+        "path": "src/worker/background/config/dnr-defuse-rules.json"
       }
     ]
   },
@@ -61,6 +66,7 @@
         "src/bridge/page/interceptors/xhr.js",
         "src/content/smoother/hover-prefetch.js",
         "src/content/smoother/viewport-preconnect.js",
+        "src/content/smoother/bfcache-enforcer.js",
         "src/content/smoother/smoother-install.js",
         "src/bridge/page/main.js"
       ],
@@ -72,7 +78,8 @@
         "<all_urls>"
       ],
       "js": [
-        "src/content/content-relay.js"
+        "src/content/content-relay.js",
+        "src/content/smoother/asset-tracker.js"
       ],
       "run_at": "document_start",
       "world": "ISOLATED"
@@ -101,6 +108,7 @@
         "src/bridge/page/interceptors/xhr.js",
         "src/content/smoother/hover-prefetch.js",
         "src/content/smoother/viewport-preconnect.js",
+        "src/content/smoother/bfcache-enforcer.js",
         "src/content/smoother/smoother-install.js"
       ],
       "matches": [

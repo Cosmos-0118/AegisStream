@@ -1,0 +1,226 @@
+[
+  {
+    "id": 1001,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?hotjar\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1002,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?fullstory\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1003,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?clarity\\.ms/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1004,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?crazyegg\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1005,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?mouseflow\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1006,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?luckyorange\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1007,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?heapanalytics\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1008,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?heap\\.io/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1009,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?mixpanel\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1010,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?cdn\\.amplitude\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1011,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?intercomcdn\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1012,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?intercom\\.io/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1013,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?quantserve\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1014,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?scorecardresearch\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1015,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?segment\\.com/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 1016,
+    "priority": 2,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/src/worker/background/assets/mock-tracker.js"
+      }
+    },
+    "condition": {
+      "regexFilter": "^https://([^/]+\\.)?segment\\.io/",
+      "resourceTypes": ["script"]
+    }
+  }
+]
