@@ -133,7 +133,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     window.postMessage({
       __aegisstream: true,
       type: "KNOWN_SEGMENTS",
-      urls: message.urls
+      urls: message.urls,
+      playbackHint: message.playbackHint || null
     }, "*")
     sendResponse({ ok: true })
     return true
@@ -447,6 +448,23 @@ window.addEventListener("message", (event) => {
       chrome.runtime.sendMessage({
         type: "AegisStream:ChunkObserved",
         url: data.url
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "FORCE_TELEPORT_ANCHOR") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:ForceTeleportAnchor",
+        payload: {
+          index: data.index,
+          currentTimeSec: data.currentTimeSec,
+          timestamp: data.timestamp,
+          source: data.source || "dom-seeked"
+        }
       })
     } catch {
       // Extension context may be invalidated

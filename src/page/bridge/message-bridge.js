@@ -36,6 +36,17 @@ window.addEventListener("message", (event) => {
 
   // Receive known segment URLs from background
   if (data.type === "KNOWN_SEGMENTS" && data.urls) {
+    if (data.playbackHint && typeof data.playbackHint === "object") {
+      ns.playbackManifestHint = {
+        segmentDurations: Array.isArray(data.playbackHint.segmentDurations)
+          ? data.playbackHint.segmentDurations
+          : null,
+        segmentCount: Number(data.playbackHint.segmentCount) || data.urls.length,
+        totalDuration: Number.isFinite(Number(data.playbackHint.totalDuration))
+          ? Number(data.playbackHint.totalDuration)
+          : null
+      }
+    }
     for (const u of data.urls) {
       knownSegments.add(u.split("?")[0])
     }

@@ -97,6 +97,9 @@ function resetActivityMetrics() {
   if (typeof ns.resetSeekPredictionTelemetry === "function") {
     ns.resetSeekPredictionTelemetry()
   }
+  if (typeof ns.resetAnchorTelemetry === "function") {
+    ns.resetAnchorTelemetry()
+  }
 }
 
 function sumWindowCounters() {
@@ -211,6 +214,10 @@ async function buildDisplayStats() {
     seekPrediction:
       typeof ns.getSeekPredictionSummary === "function"
         ? ns.getSeekPredictionSummary()
+        : null,
+    anchorOwnership:
+      typeof ns.getAnchorOwnershipSummary === "function"
+        ? ns.getAnchorOwnershipSummary()
         : null
   }
 }

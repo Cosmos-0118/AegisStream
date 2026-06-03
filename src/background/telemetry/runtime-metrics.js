@@ -127,9 +127,13 @@ function maybeLogUmpHealthSummary(force = false) {
     seekSummary && seekSummary.samples > 0
       ? `, seekPred(mean=${seekSummary.meanError}, p95=${seekSummary.p95Error}, n=${seekSummary.samples})`
       : ""
+  const anchorLine =
+    typeof ns.formatAnchorOwnershipLine === "function"
+      ? `, ${ns.formatAnchorOwnershipLine()}`
+      : ""
   addLog(
     "INFO",
-    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
   if (typeof ns.maybeLogSeekPredictionSummary === "function") {
     ns.maybeLogSeekPredictionSummary(force)

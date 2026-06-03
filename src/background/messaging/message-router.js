@@ -26,6 +26,7 @@ const {
   parseAndPrefetchFromPlaylist,
   parsePlaylistContentForTab,
   handleChunkObserved,
+  handleForceTeleportAnchor,
   isTabInRapidSeek,
   syncKnownSegmentsToPage,
   maybeRequestPrefetchForTab,
@@ -604,6 +605,14 @@ function registerMessageRouter() {
       }
       if (tabId && message.url) {
         void handleChunkObserved(tabId, message.url)
+      }
+      sendResponse({ ok: true })
+      return true
+    }
+    case "AegisStream:ForceTeleportAnchor": {
+      const tabId = sender?.tab?.id
+      if (state.settings.enabled && Number.isFinite(tabId)) {
+        handleForceTeleportAnchor(tabId, message.payload || message)
       }
       sendResponse({ ok: true })
       return true

@@ -88,13 +88,133 @@ function markSeekChurnAggressive(tabState) {
   tabState.rapidSeekUntil = 0
 }
 
-function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport") {
+function softCommitAnchor(tabId, tabState, targetIndex, source = "anchor-soft-commit") {
+  if (!tabState?.segments?.length || typeof targetIndex !== "number") return
+  const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
+  const previousAnchor = tabState.anchorIndex
+
+  if (typeof ns.resetPassiveAnchorDeferral === "function") {
+    ns.resetPassiveAnchorDeferral(tabState)
+  } else {
+    tabState.anchorPendingIndex = null
+    tabState.anchorPendingCount = 0
+    tabState.anchorLockStartedAt = 0
+  }
+
+  markSeekChurnAggressive(tabState)
+  tabState.hasAnchor = true
+  tabState.anchorIndex = clampedTarget
+  tabState.anchorRetainedByRefresh = false
+  tabState.lastScheduledFromIndex = -1
+  if (typeof tabState.mediaSequence === "number") {
+    tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
+  }
+
+  addLog(
+    "INFO",
+    `Soft anchor commit on tab ${tabId} (${source}): ${previousAnchor ?? "?"} -> ${clampedTarget}, retaining prefetch overlap`
+  )
+  void schedulePrefetch(tabId, tabState.segments, Math.max(0, clampedTarget - 1), {
+    force: true,
+    source
+  })
+}
+
+function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anchor-authority") {
+  if (!Number.isFinite(tabId)) return false
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.segments?.length || typeof targetIndex !== "number") return false
+
+  const evaluate =
+    typeof ns.evaluateAuthorityCommit === "function" ? ns.evaluateAuthorityCommit : null
+  const decision = evaluate
+    ? evaluate(tabState, targetIndex, authority)
+    : { allow: true, reason: null, jump: anchorJumpForTab(tabState, targetIndex), purgeQueues: true }
+
+  if (!decision.allow) {
+    if (authority === ns.AnchorAuthority?.DOM_SEEKED && typeof ns.recordDomSeekSkipped === "function") {
+      ns.recordDomSeekSkipped()
+    }
+    addLog(
+      "DEBUG",
+      `Anchor authority commit skipped on tab ${tabId} (${typeof ns.authorityLabel === "function" ? ns.authorityLabel(authority) : authority}, ${decision.reason || "denied"}, jump=${decision.jump ?? "?"})`
+    )
+    return false
+  }
+
+  const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
+  const oldAnchor = tabState.hasAnchor ? tabState.anchorIndex : null
+  if (authority === ns.AnchorAuthority?.DOM_SEEKED) {
+    tabState.lastDomTeleportAt = Date.now()
+  }
+
+  if (typeof ns.resetPassiveAnchorDeferral === "function") {
+    ns.resetPassiveAnchorDeferral(tabState)
+  } else {
+    tabState.anchorPendingIndex = null
+    tabState.anchorPendingCount = 0
+    tabState.anchorLockStartedAt = 0
+  }
+
+  const label =
+    typeof ns.authorityLabel === "function" ? ns.authorityLabel(authority) : String(authority)
+  addLog(
+    "INFO",
+    `Anchor authority commit on tab ${tabId} (${label}, ${source}): ${oldAnchor ?? "?"} -> ${clampedTarget}, purgeQueues=${decision.purgeQueues === true}`
+  )
+
+  if (typeof ns.recordAnchorCommit === "function") {
+    ns.recordAnchorCommit(authority, {
+      teleport: decision.purgeQueues === true ? "hard" : "soft"
+    })
+  }
+
+  if (decision.purgeQueues === true) {
+    enterTeleportMode(tabId, tabState, clampedTarget, source, { purgeQueues: true })
+  } else {
+    softCommitAnchor(tabId, tabState, clampedTarget, source)
+  }
+  return true
+}
+
+function anchorJumpForTab(tabState, targetIndex) {
+  const current = tabState?.hasAnchor ? tabState.anchorIndex : null
+  if (typeof current !== "number" || typeof targetIndex !== "number") return Number.POSITIVE_INFINITY
+  return Math.abs(targetIndex - current)
+}
+
+function handleForceTeleportAnchor(tabId, payload = {}) {
+  if (!Number.isFinite(tabId)) return
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.segments?.length) return
+
+  let targetIndex = Number(payload.index)
+  if (!Number.isFinite(targetIndex) && Number.isFinite(Number(payload.currentTimeSec))) {
+    targetIndex = estimateManifestIndexFromTime(Number(payload.currentTimeSec), tabState.segmentDurations, {
+      totalDurationSec: tabState.playlistFingerprint?.totalDuration,
+      segmentCount: tabState.segments.length,
+      fallbackSegmentDurationSec: 4
+    })
+  }
+  if (!Number.isFinite(targetIndex)) return
+  const authority = ns.AnchorAuthority?.DOM_SEEKED ?? 3
+  commitAnchorFromAuthority(tabId, targetIndex, authority, payload.source || "dom-seeked")
+}
+
+function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", options = {}) {
   if (!tabState?.segments?.length || typeof targetIndex !== "number") return
   const now = Date.now()
   const radius = Math.max(1, Number(constants.TELEPORT_MODE_RADIUS) || 5)
   const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
   const start = Math.max(0, clampedTarget - radius)
   const previousAnchor = tabState.anchorIndex
+  const jump = anchorJumpForTab(tabState, clampedTarget)
+  const purgeQueues =
+    options.purgeQueues !== false &&
+    (options.purgeQueues === true ||
+      (typeof ns.shouldPurgePrefetchQueues === "function"
+        ? ns.shouldPurgePrefetchQueues(jump)
+        : jump >= (Number(constants.TELEPORT_QUEUE_PURGE_THRESHOLD) || 20)))
 
   tabState.teleportModeUntil = now + constants.TELEPORT_MODE_DURATION_MS
   tabState.teleportTargetIndex = clampedTarget
@@ -107,17 +227,19 @@ function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport") {
     tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
   }
 
-  cancelPendingPrefetchForTab(tabId)
-  releaseInflightForTab(tabId)
-  try {
-    chrome.tabs.sendMessage(tabId, { type: "AegisStream:CancelPrefetch" })
-  } catch {
-    // tab may not be ready
+  if (purgeQueues) {
+    cancelPendingPrefetchForTab(tabId)
+    releaseInflightForTab(tabId)
+    try {
+      chrome.tabs.sendMessage(tabId, { type: "AegisStream:CancelPrefetch" })
+    } catch {
+      // tab may not be ready
+    }
   }
 
   addLog(
     "INFO",
-    `Teleport mode activated on tab ${tabId} (${source}): anchor=${clampedTarget}/${tabState.segments.length - 1}, prefetching target ring ${start}-${Math.min(tabState.segments.length - 1, clampedTarget + radius)}`
+    `Teleport mode activated on tab ${tabId} (${source}): anchor=${clampedTarget}/${tabState.segments.length - 1}, prefetching target ring ${start}-${Math.min(tabState.segments.length - 1, clampedTarget + radius)}${purgeQueues ? "" : ", queues retained"}`
   )
   if (typeof ns.recordSeekPrediction === "function") {
     ns.recordSeekPrediction(tabId, {
@@ -168,7 +290,8 @@ function handleSeekPrediction(tabId, currentTimeSec) {
   if (typeof previousIndex === "number") {
     const jump = Math.abs(estimatedIndex - previousIndex)
     if (jump >= teleportThreshold) {
-      enterTeleportMode(tabId, tabState, estimatedIndex, "seek-prediction")
+      const authority = ns.AnchorAuthority?.SEEK_PREDICTION ?? 2
+      commitAnchorFromAuthority(tabId, estimatedIndex, authority, "seek-prediction")
       return
     }
     if (jump > 1) {
@@ -765,6 +888,13 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       "DEBUG",
       `HLS playlist token refresh on tab ${tabId} (structural hash stable, anchor retained)`
     )
+    if (
+      playbackTransition.retainAnchor &&
+      !playbackTransition.clearPrefetch &&
+      typeof ns.recordTokenRefreshRetention === "function"
+    ) {
+      ns.recordTokenRefreshRetention()
+    }
   }
 
   if (episodeChangedByFingerprint) {
@@ -896,9 +1026,12 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
 
   if (qualityVariantSwitch) {
     const matrixNote = previous?.playlistMatrix?.rows?.length ? " (matrix O(1) anchor)" : ""
+    const queueNote = playbackTransition.clearPrefetch
+      ? "cleared stale prefetch tracking"
+      : "retained prefetch queue/inflight"
     addLog(
       "INFO",
-      `HLS quality variant switch on tab ${tabId}${matrixNote} — cleared stale prefetch tracking and resuming from anchor ${anchorIndex ?? "?"}`
+      `HLS quality variant switch on tab ${tabId}${matrixNote} — ${queueNote}, resuming from anchor ${anchorIndex ?? "?"}`
     )
   }
 
@@ -1068,19 +1201,25 @@ function remapChunkIndexViaMediaSequence(tabState, chunkIndex) {
 }
 
 function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnchor) {
+  const resetDeferral =
+    typeof ns.resetPassiveAnchorDeferral === "function"
+      ? ns.resetPassiveAnchorDeferral
+      : (state) => {
+          if (!state) return
+          state.anchorPendingIndex = null
+          state.anchorPendingCount = 0
+          state.anchorLockStartedAt = 0
+        }
+
   if (!hadAnchor || typeof previousAnchorIndex !== "number") {
-    tabState.anchorPendingIndex = null
-    tabState.anchorPendingCount = 0
-    tabState.anchorLockStartedAt = 0
+    resetDeferral(tabState)
     return { accept: true, index: chunkIndex }
   }
 
   if (isTabInTeleportMode(tabState) && typeof tabState.teleportTargetIndex === "number") {
     const radius = Math.max(1, Number(constants.TELEPORT_MODE_RADIUS) || 5)
     if (Math.abs(chunkIndex - tabState.teleportTargetIndex) <= radius + 2) {
-      tabState.anchorPendingIndex = null
-      tabState.anchorPendingCount = 0
-      tabState.anchorLockStartedAt = 0
+      resetDeferral(tabState)
       return { accept: true, index: chunkIndex }
     }
   }
@@ -1092,9 +1231,7 @@ function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnch
     Date.now() - Number(tabState.playlistRefreshedAt || 0) < constants.PLAYLIST_ROTATION_GRACE_MS
 
   if (!isExtremeJump && !isZeroReset) {
-    tabState.anchorPendingIndex = null
-    tabState.anchorPendingCount = 0
-    tabState.anchorLockStartedAt = 0
+    resetDeferral(tabState)
     return { accept: true, index: chunkIndex }
   }
 
@@ -1102,23 +1239,19 @@ function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnch
     return { accept: true, index: chunkIndex }
   }
 
-  const confirmMs = Number(constants.ANCHOR_CONFIRM_MS) || 1500
-  const confirmSamples = Number(constants.ANCHOR_CONFIRM_SAMPLES) || 3
-  const now = Date.now()
-
-  if (tabState.anchorPendingIndex !== chunkIndex) {
-    tabState.anchorPendingIndex = chunkIndex
-    tabState.anchorPendingCount = 1
-    tabState.anchorLockStartedAt = now
-  } else {
-    tabState.anchorPendingCount = Number(tabState.anchorPendingCount || 0) + 1
-  }
-
-  const elapsed = now - Number(tabState.anchorLockStartedAt || 0)
-  const confirmed =
-    tabState.anchorPendingCount >= confirmSamples || elapsed >= confirmMs
-
-  if (!confirmed) {
+  const evaluatePassive =
+    typeof ns.evaluatePassiveAnchorSignal === "function"
+      ? ns.evaluatePassiveAnchorSignal
+      : null
+  if (evaluatePassive) {
+    const resolved = evaluatePassive(tabState, chunkIndex, previousAnchorIndex)
+    if (resolved !== previousAnchorIndex) {
+      return {
+        accept: true,
+        index: resolved,
+        via: "monotonic-breakthrough"
+      }
+    }
     return {
       accept: false,
       index: previousAnchorIndex,
@@ -1126,9 +1259,6 @@ function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnch
     }
   }
 
-  tabState.anchorPendingIndex = null
-  tabState.anchorPendingCount = 0
-  tabState.anchorLockStartedAt = 0
   return { accept: true, index: chunkIndex }
 }
 
@@ -1136,6 +1266,19 @@ function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex)
   if (typeof previousAnchorIndex !== "number" || typeof chunkIndex !== "number") return false
   const threshold = Math.max(state.settings.prefetchWindow * 2, 8)
   if (chunkIndex >= previousAnchorIndex - threshold) return false
+
+  const backwardJump = previousAnchorIndex - chunkIndex
+  const teleportThreshold = Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD) || 5
+  if (backwardJump >= teleportThreshold) {
+    return false
+  }
+  if (
+    isTabInSeekChurnAggressive(tabState) ||
+    isTabInTeleportMode(tabState) ||
+    isTabInRapidSeek(tabState)
+  ) {
+    return false
+  }
 
   const now = Date.now()
   const playlistGrace =
@@ -1650,8 +1793,19 @@ function syncKnownSegmentsToPage(tabId, segments, options = {}) {
     tabState.lastKnownSyncAt = now
   }
   const reason = options.reason ? ` (${options.reason})` : ""
+  const playbackHint = tabState
+    ? {
+        segmentDurations: Array.isArray(tabState.segmentDurations) ? tabState.segmentDurations : null,
+        segmentCount: tabState.segments?.length || segments.length,
+        totalDuration: tabState.playlistFingerprint?.totalDuration ?? null
+      }
+    : null
   chrome.tabs
-    .sendMessage(tabId, { type: "AegisStream:KnownSegments", urls: segments })
+    .sendMessage(tabId, {
+      type: "AegisStream:KnownSegments",
+      urls: segments,
+      playbackHint
+    })
     .then(() => {
       addLog(
         "INFO",
@@ -1926,6 +2080,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
 
   const anchorDecision = evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnchor)
   if (!anchorDecision.accept) {
+    if (typeof ns.recordAnchorDeferred === "function") {
+      ns.recordAnchorDeferred()
+    }
     addLog(
       "DEBUG",
       `Deferred anchor ${previousAnchorIndex} -> ${chunkIndex} (${anchorDecision.reason || "hysteresis"}, tab ${tabId})`
@@ -1933,6 +2090,19 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
     return
   }
   chunkIndex = anchorDecision.index
+
+  const anchorMoved =
+    !hadAnchor ||
+    (typeof previousAnchorIndex === "number" && chunkIndex !== previousAnchorIndex)
+  if (anchorMoved) {
+    if (anchorDecision.via === "monotonic-breakthrough") {
+      if (typeof ns.recordMonotonicBreakthrough === "function") {
+        ns.recordMonotonicBreakthrough()
+      }
+    } else if (typeof ns.recordAnchorCommit === "function") {
+      ns.recordAnchorCommit(ns.AnchorAuthority?.NETWORK ?? 1)
+    }
+  }
 
   tabState.hasAnchor = true
   tabState.anchorIndex = chunkIndex
@@ -1974,6 +2144,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
       const teleportThreshold = Number(constants.TELEPORT_MODE_JUMP_THRESHOLD) || 20
       if (Math.abs(chunkIndex - previousAnchorIndex) >= teleportThreshold) {
         enterTeleportMode(tabId, tabState, chunkIndex, "anchor-jump")
+        if (typeof ns.recordTeleportHard === "function") {
+          ns.recordTeleportHard()
+        }
       } else {
         noteAnchorJump(tabId)
         applyAnchorJumpCooldown(tabState, previousAnchorIndex, chunkIndex)
@@ -2007,6 +2180,8 @@ ns.parseAndPrefetchFromPlaylist = parseAndPrefetchFromPlaylist
 ns.parsePlaylistContentForTab = parsePlaylistContentForTab
 ns.handleChunkObserved = handleChunkObserved
 ns.handleSeekPrediction = handleSeekPrediction
+ns.commitAnchorFromAuthority = commitAnchorFromAuthority
+ns.handleForceTeleportAnchor = handleForceTeleportAnchor
 ns.isTabInSeekChurnAggressive = isTabInSeekChurnAggressive
 ns.isTabInTeleportMode = isTabInTeleportMode
 ns.observeChunkFromWebRequest = observeChunkFromWebRequest

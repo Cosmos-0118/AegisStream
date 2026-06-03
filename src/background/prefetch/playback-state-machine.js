@@ -61,6 +61,14 @@ function determinePlaybackTransition(previous, next) {
   }
 
   if (rungLabelChanged || mediaPathChanged) {
+    if (!structuralHashChanged) {
+      return {
+        state: PlaybackStates.TOKEN_REFRESHING,
+        clearPrefetch: false,
+        retainAnchor: true,
+        qualitySwitch: false
+      }
+    }
     return {
       state: PlaybackStates.QUALITY_SWITCHING,
       clearPrefetch: true,

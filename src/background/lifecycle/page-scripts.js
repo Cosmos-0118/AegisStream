@@ -22,6 +22,7 @@ ns.MAIN_PAGE_SCRIPT_FILES = [
   "src/page/smoother/circuit-breaker/asset-breaker.js",
   "src/page/prefetch/buffer-health-monitor.js",
   "src/page/prefetch/seek-predictor.js",
+  "src/page/media/video-monitor.js",
   "src/page/bridge/extension-fetch-client.js",
   "src/page/prefetch/video.js",
   "src/page/bridge/message-bridge.js",

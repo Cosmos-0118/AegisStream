@@ -98,7 +98,11 @@ ns.constants = {
   BUFFER_HEALTH_MIN_SCORE_WHEN_SECURE: 20,
   ANCHOR_CONFIRM_MS: 1_500,
   ANCHOR_CONFIRM_SAMPLES: 3,
+  ANCHOR_MONOTONIC_STREAK_THRESHOLD: 2,
   ANCHOR_TELEPORT_JUMP_THRESHOLD: 5,
+  DOM_TELEPORT_MIN_JUMP: 10,
+  DOM_TELEPORT_COOLDOWN_MS: 500,
+  TELEPORT_QUEUE_PURGE_THRESHOLD: 20,
   TELEPORT_MODE_JUMP_THRESHOLD: 20,
   TELEPORT_MODE_RADIUS: 5,
   TELEPORT_MODE_DURATION_MS: 8_000,
@@ -217,7 +221,16 @@ ns.constants = {
       speculativeBytesWasted: 0,
       speculativeQualitySwitchHits: 0,
       speculativeCrossItagUsed: 0,
-      youtubeCrossItagPrefetch: 0
+      youtubeCrossItagPrefetch: 0,
+      anchorCommitsNetwork: 0,
+      anchorCommitsSeekPrediction: 0,
+      anchorCommitsDomSeeked: 0,
+      teleportsHard: 0,
+      teleportsSoft: 0,
+      monotonicBreakthroughs: 0,
+      tokenRefreshRetentions: 0,
+      anchorDeferred: 0,
+      domSeekSkipped: 0
     }
   }
 }
