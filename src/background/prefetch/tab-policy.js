@@ -81,7 +81,10 @@ function cancelAllPendingPrefetches() {
 }
 
 async function broadcastSettingsToTabs(settings) {
-  const payload = settings || state.settings
+  const payload =
+    typeof ns.buildSettingsPayloadForTabs === "function"
+      ? ns.buildSettingsPayloadForTabs()
+      : settings || state.settings
   if (!payload) return
   try {
     const tabs = await chrome.tabs.query({})

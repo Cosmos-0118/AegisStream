@@ -41,6 +41,10 @@ function refreshFirstByteStats() {
   state.stats.requestFirstByteP95Ms = computePercentile(all, 95)
   state.stats.cacheFirstByteAvgMs = computeAverage(cache)
   state.stats.networkFirstByteAvgMs = computeAverage(network)
+  state.stats.networkFirstByteP95Ms = computePercentile(network, 95)
+  if (typeof ns.syncNetworkPanicMode === "function") {
+    ns.syncNetworkPanicMode()
+  }
 }
 
 function shouldEmitThrottledLog(key, intervalMs) {
@@ -81,9 +85,13 @@ function maybeLogUmpHealthSummary(force = false) {
   const workerLine = workerLifecycle
     ? `SW starts=#${workerLifecycle.workerStartCount}, reason=${workerLifecycle.workerRestartReason || "unknown"}`
     : ""
+  const panicLabel =
+    typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
+      ? ", panic=ON"
+      : ""
   addLog(
     "INFO",
-    `${modeLabel} — req=${requests}, lookups=${lookups}, hits=${hits}, miss=${misses}, warmup=${warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, stalls=${state.stats.videoStalls} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `${modeLabel} — req=${requests}, lookups=${lookups}, hits=${hits}, miss=${misses}, warmup=${warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${state.stats.videoStalls} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
 }
 

@@ -52,7 +52,15 @@ function isMaintenancePrefetchMode() {
 function getBufferAdjustedConcurrency() {
   const tier = getBufferTier()
   const healthScore = Number(ns.bufferHealthScore)
-  if (!tier) return PREFETCH_CONCURRENCY
+  if (!tier) {
+    return ns.networkPanicActive === true
+      ? Math.min(5, PREFETCH_CONCURRENCY + 2)
+      : PREFETCH_CONCURRENCY
+  }
+
+  if (ns.networkPanicActive === true && tier === ns.TIER_NORMAL) {
+    return Math.min(4, PREFETCH_CONCURRENCY + 1)
+  }
 
   switch (tier) {
     case ns.TIER_EMERGENCY:

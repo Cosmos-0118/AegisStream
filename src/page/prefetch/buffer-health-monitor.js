@@ -5,8 +5,20 @@ if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("buffe
 const { notifyRuntime, logBridge } = ns
 
 const SAMPLE_INTERVAL_MS = 750
-const TARGET_RUNWAY_SEC = 60
-const COMFORT_RUNWAY_SEC = 45
+const DEFAULT_TARGET_RUNWAY_SEC = 60
+const DEFAULT_COMFORT_RUNWAY_SEC = 45
+
+function getTargetRunwaySec() {
+  const configured = Number(ns.bufferTargetRunwaySec)
+  if (Number.isFinite(configured) && configured > 0) return configured
+  return DEFAULT_TARGET_RUNWAY_SEC
+}
+
+function getComfortRunwaySec() {
+  const target = getTargetRunwaySec()
+  if (target <= DEFAULT_TARGET_RUNWAY_SEC) return DEFAULT_COMFORT_RUNWAY_SEC
+  return Math.round(target * (DEFAULT_COMFORT_RUNWAY_SEC / DEFAULT_TARGET_RUNWAY_SEC))
+}
 const STALL_WINDOW_MS = 30_000
 
 const TIER_EMERGENCY = "emergency"
@@ -109,14 +121,16 @@ function computeNetFillRate(runwaySec, paused, now) {
 }
 
 function computeHealthScore(runwaySec, netFillRate, paused, playbackRate = 1) {
-  const runwayPct = Math.min(100, (runwaySec / TARGET_RUNWAY_SEC) * 100)
+  const targetRunwaySec = getTargetRunwaySec()
+  const comfortRunwaySec = getComfortRunwaySec()
+  const runwayPct = Math.min(100, (runwaySec / targetRunwaySec) * 100)
   const rate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1
 
   let fillPct = 55
   if (paused) {
-    fillPct = runwaySec >= COMFORT_RUNWAY_SEC ? 90 : 70
+    fillPct = runwaySec >= comfortRunwaySec ? 90 : 70
   } else if (netFillRate !== null) {
-    if (runwaySec >= COMFORT_RUNWAY_SEC) {
+    if (runwaySec >= comfortRunwaySec) {
       // Plenty of runway — steady lead or slow drain is healthy, not a crisis.
       if (netFillRate >= rate * 0.85) {
         fillPct = 95
@@ -217,7 +231,7 @@ function tick() {
   const netFillRate = computeNetFillRate(runwaySec, video.paused, now)
   const healthScore = computeHealthScore(runwaySec, netFillRate, video.paused, video.playbackRate)
   const tier = classifyTier(runwaySec, healthScore)
-  const runwayPct = Math.min(100, Math.round((runwaySec / TARGET_RUNWAY_SEC) * 100))
+  const runwayPct = Math.min(100, Math.round((runwaySec / getTargetRunwaySec()) * 100))
 
   const state = {
     runwaySec,

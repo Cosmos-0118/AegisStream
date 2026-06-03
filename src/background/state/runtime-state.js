@@ -39,6 +39,14 @@ function createState() {
       lastStartedAt: 0,
       lastReason: null
     },
+    networkPanic: {
+      active: false,
+      activatedAt: 0,
+      clearedAt: 0,
+      networkP95Ms: 0,
+      prefetchWindow: 20,
+      targetRunwaySec: 180
+    },
     logs: [],
     stats: constants.createInitialStats(),
     activePrefetchTabId: null,

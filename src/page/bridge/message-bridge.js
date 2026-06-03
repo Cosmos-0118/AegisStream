@@ -9,6 +9,16 @@ function applyRuntimeSettings(settings) {
   ns.extensionEnabled = settings.enabled !== false
   ns.prefetchEnabled = settings.prefetchEnabled !== false
   ns.serveFromCache = settings.serveFromCache !== false
+  const targetRunway = Number(settings.bufferTargetRunwaySec)
+  ns.bufferTargetRunwaySec =
+    Number.isFinite(targetRunway) && targetRunway > 0 ? targetRunway : 60
+  ns.networkPanicActive = settings.networkPanicActive === true
+  if (ns.networkPanicActive) {
+    ns.logBridge?.(
+      `Network panic mode active — target buffer runway ${ns.bufferTargetRunwaySec}s`,
+      "INFO"
+    )
+  }
   if (ns.extensionEnabled === false || ns.prefetchEnabled === false) {
     if (typeof cancelPrefetchRunway === "function") {
       cancelPrefetchRunway()

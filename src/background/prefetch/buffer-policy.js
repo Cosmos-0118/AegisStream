@@ -117,20 +117,30 @@ function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
   const tier = getTabBufferTier(tabId)
   if (!tier) return baseWindow
 
+  let adjusted = baseWindow
   switch (tier) {
     case TIER_EMERGENCY:
-      return Math.min(20, Math.max(baseWindow, Math.ceil(baseWindow * 1.75)))
+      adjusted = Math.min(20, Math.max(baseWindow, Math.ceil(baseWindow * 1.75)))
+      break
     case TIER_AGGRESSIVE:
-      return Math.min(20, Math.max(baseWindow, Math.ceil(baseWindow * 1.35)))
+      adjusted = Math.min(20, Math.max(baseWindow, Math.ceil(baseWindow * 1.35)))
+      break
     case TIER_NORMAL:
-      return baseWindow
+      adjusted = baseWindow
+      break
     case TIER_MAINTENANCE:
-      return Math.max(1, Math.min(baseWindow, 2))
+      adjusted = Math.max(1, Math.min(baseWindow, 2))
+      break
     case TIER_IDLE:
-      return 1
+      adjusted = 1
+      break
     default:
-      return baseWindow
+      adjusted = baseWindow
   }
+  if (typeof ns.resolvePanicAdjustedPrefetchWindow === "function") {
+    return ns.resolvePanicAdjustedPrefetchWindow(adjusted)
+  }
+  return adjusted
 }
 
 function resolveBufferAdjustedGlobalCap(tabId) {
@@ -138,20 +148,30 @@ function resolveBufferAdjustedGlobalCap(tabId) {
   const tier = getTabBufferTier(tabId)
   if (!tier) return base
 
+  let adjusted = base
   switch (tier) {
     case TIER_EMERGENCY:
-      return Math.min(24, base + 8)
+      adjusted = Math.min(24, base + 8)
+      break
     case TIER_AGGRESSIVE:
-      return Math.min(20, base + 4)
+      adjusted = Math.min(20, base + 4)
+      break
     case TIER_NORMAL:
-      return base
+      adjusted = base
+      break
     case TIER_MAINTENANCE:
-      return Math.max(4, Math.ceil(base * 0.5))
+      adjusted = Math.max(4, Math.ceil(base * 0.5))
+      break
     case TIER_IDLE:
-      return 2
+      adjusted = 2
+      break
     default:
-      return base
+      adjusted = base
   }
+  if (typeof ns.resolvePanicAdjustedGlobalCap === "function") {
+    return ns.resolvePanicAdjustedGlobalCap(adjusted)
+  }
+  return adjusted
 }
 
 function resolvePagePrefetchConcurrency(tierOrRunway, healthScore) {

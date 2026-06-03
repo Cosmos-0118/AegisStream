@@ -1154,8 +1154,9 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   const globalCap = resolveBufferAdjustedGlobalCap(tabId)
   const globalInflight = countGlobalInflightPrefetches()
   const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
+  const panicActive = typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
   const batchInflightCap =
-    tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE
+    panicActive || tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE
       ? constants.PREFETCH_BATCH_INFLIGHT_CAP + 2
       : constants.PREFETCH_BATCH_INFLIGHT_CAP
 
@@ -1253,11 +1254,12 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
   if (isPrefetchBlocked(tabState)) return
 
   const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
+  const panicActive = typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
   const now = Date.now()
   const minGap =
     options.force
       ? 0
-      : tier === TIER_EMERGENCY
+      : panicActive || tier === TIER_EMERGENCY
         ? constants.PREFETCH_EMERGENCY_MIN_GAP_MS
         : tier === TIER_AGGRESSIVE
           ? 250

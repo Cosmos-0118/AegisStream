@@ -16,6 +16,7 @@ importScripts(
   "./telemetry/worker-lifecycle.js",
   "./telemetry/runtime-metrics.js",
   "./prefetch/tab-policy.js",
+  "./prefetch/network-panic-policy.js",
   "./prefetch/buffer-policy.js",
   "./prefetch/orchestrator.js",
   "./network/extension-fetch.js",

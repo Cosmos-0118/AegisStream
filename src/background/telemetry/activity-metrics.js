@@ -130,6 +130,8 @@ async function buildDisplayStats() {
     requestFirstByteSamples: state.stats.requestFirstByteSamples || 0,
     requestFirstByteAvgMs: state.stats.requestFirstByteAvgMs || 0,
     requestFirstByteP95Ms: state.stats.requestFirstByteP95Ms || 0,
+    networkFirstByteP95Ms: state.stats.networkFirstByteP95Ms || 0,
+    networkPanicActive: state.stats.networkPanicActive === 1,
     cacheFirstByteAvgMs: state.stats.cacheFirstByteAvgMs || 0,
     networkFirstByteAvgMs: state.stats.networkFirstByteAvgMs || 0,
     youtubeUmpRequests: windowTotals.youtubeUmpRequests || 0,
