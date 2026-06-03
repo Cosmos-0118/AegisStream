@@ -2,11 +2,19 @@
 var ns = (self.AegisBackground ||= {})
 const { constants, state, addLog } = ns
 
-function releaseInflightForTab(tabId) {
+function releaseInflightForTab(tabId, options = {}) {
   for (const [url, inflight] of state.inflightPrefetches.entries()) {
     if (inflight?.tabId === tabId) {
       state.inflightPrefetches.delete(url)
     }
+  }
+  if (options.notifyPage === false) return
+  const tabState = state.playlistByTab.get(tabId)
+  if (tabState && typeof ns.broadcastDelegatedPrefetchAbort === "function") {
+    ns.broadcastDelegatedPrefetchAbort(tabId, tabState, {
+      reason: options.reason || "release-inflight",
+      log: false
+    })
   }
 }
 
@@ -49,9 +57,72 @@ function setActivePrefetchTab(tabId, reason = "unknown") {
   }
 }
 
+function isTabVisibilitySleeping(tabState) {
+  return tabState?.visibilitySleepActive === true
+}
+
+function pauseTabPrefetchForVisibility(tabId, reason = "tab-hidden") {
+  if (!Number.isFinite(tabId)) return
+  let tabState = state.playlistByTab.get(tabId)
+  if (!tabState) {
+    tabState = { segments: [], updatedAt: Date.now() }
+    state.playlistByTab.set(tabId, tabState)
+  }
+  if (tabState.visibilitySleepActive === true) return
+  tabState.visibilitySleepActive = true
+  tabState.visibilitySleepAt = Date.now()
+  tabState.speculativeAllowed = false
+  cancelPendingPrefetchForTab(tabId)
+  releaseInflightForTab(tabId, { reason: reason || "visibility-pause" })
+  if (tabState.prefetchCapRetryTimer) {
+    clearTimeout(tabState.prefetchCapRetryTimer)
+    tabState.prefetchCapRetryTimer = null
+  }
+  tabState.prefetchCapRetryPending = null
+  if (tabState.prefetchInflightRetryTimer) {
+    clearTimeout(tabState.prefetchInflightRetryTimer)
+    tabState.prefetchInflightRetryTimer = null
+  }
+  tabState.prefetchInflightRetryPending = null
+  addLog("INFO", `Tab ${tabId} hidden — prefetch engine sleeping (${reason})`)
+  if (typeof ns.recordDecision === "function") {
+    ns.recordDecision("visibility", "pause", reason || "tab-hidden")
+  }
+}
+
+function resumeTabPrefetchForVisibility(tabId, reason = "tab-visible") {
+  if (!Number.isFinite(tabId)) return
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.visibilitySleepActive) return
+  tabState.visibilitySleepActive = false
+  tabState.visibilitySleepAt = 0
+  setActivePrefetchTab(tabId, reason || "visibility-resume")
+  addLog("INFO", `Tab ${tabId} visible — prefetch engine resuming (${reason})`)
+  if (typeof ns.recordDecision === "function") {
+    ns.recordDecision("visibility", "resume", reason || "tab-visible")
+  }
+  if (
+    tabState.hasAnchor &&
+    typeof tabState.anchorIndex === "number" &&
+    Array.isArray(tabState.segments) &&
+    tabState.segments.length &&
+    typeof ns.maybeRequestPrefetchForTab === "function"
+  ) {
+    ns.maybeRequestPrefetchForTab(
+      tabId,
+      tabState.segments,
+      tabState.anchorIndex + 1,
+      "visibility-resume",
+      { force: true }
+    )
+  }
+}
+
 function isTabEligibleForPrefetch(tabId) {
   if (!state.settings.enabled || !state.settings.prefetchEnabled) return false
   if (!Number.isFinite(tabId) || tabId < 0) return false
+  const tabState = state.playlistByTab.get(tabId)
+  if (isTabVisibilitySleeping(tabState)) return false
   return state.activePrefetchTabId === tabId
 }
 
@@ -131,6 +202,9 @@ function countInflightPrefetchesForTab(tabId) {
 
 ns.refreshActivePrefetchTab = refreshActivePrefetchTab
 ns.setActivePrefetchTab = setActivePrefetchTab
+ns.isTabVisibilitySleeping = isTabVisibilitySleeping
+ns.pauseTabPrefetchForVisibility = pauseTabPrefetchForVisibility
+ns.resumeTabPrefetchForVisibility = resumeTabPrefetchForVisibility
 ns.isTabEligibleForPrefetch = isTabEligibleForPrefetch
 ns.isTabInAnchorCooldown = isTabInAnchorCooldown
 ns.applyAnchorJumpCooldown = applyAnchorJumpCooldown

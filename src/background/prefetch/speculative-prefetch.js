@@ -190,6 +190,29 @@ async function scheduleSpeculativeRungPrefetch(tabId, tabState = null) {
   if (!isTabEligibleForPrefetch(tabId)) return
   const resolved = tabState || state.playlistByTab.get(tabId)
   if (!resolved) return
+  if (typeof ns.isRescueModeActive === "function" && ns.isRescueModeActive(resolved)) {
+    return
+  }
+  if (typeof ns.resolveSpeculativeDenyReason === "function") {
+    const denyReason = ns.resolveSpeculativeDenyReason(tabId, resolved)
+    if (denyReason) {
+      if (typeof ns.notePainSpeculativeDenied === "function") {
+        ns.notePainSpeculativeDenied(denyReason)
+      }
+      return
+    }
+  }
+  if (typeof ns.computeCongestionDirectivesForTab === "function") {
+    const directives = ns.computeCongestionDirectivesForTab(tabId)
+    if (directives?.speculativeAllowed !== true) {
+      if (typeof ns.notePainCongestionThrottle === "function") {
+        ns.notePainCongestionThrottle(
+          `speculative blocked, tier=${directives?.activeTierName || "unknown"}`
+        )
+      }
+      return
+    }
+  }
 
   const targets = collectSpeculativeRungUrls(tabId, resolved)
   if (!targets.length) return
@@ -216,7 +239,7 @@ async function scheduleSpeculativeRungPrefetch(tabId, tabState = null) {
   const urls = uncached.map((item) => item.url)
   let delegated = false
   if (typeof ns.delegatePrefetchToPage === "function") {
-    delegated = await ns.delegatePrefetchToPage(tabId, urls)
+    delegated = await ns.delegatePrefetchToPage(tabId, urls, { source: "speculative-rung" })
   } else {
     try {
       await chrome.tabs.sendMessage(tabId, {

@@ -1,6 +1,12 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { constants, state, addLog, bumpActivity, noteTabPageUrl, isReactivePrefetchTab } = ns
+const { constants, state, addLog, noteTabPageUrl, isReactivePrefetchTab } = ns
+
+function bumpActivity(metric, amount = 1) {
+  if (typeof ns.bumpActivity === "function") {
+    ns.bumpActivity(metric, amount)
+  }
+}
 
 function sanitizeMetricLatencyMs(value) {
   const latency = Number(value)
@@ -97,6 +103,9 @@ function recordChunkStoreOutcomeMetric(message) {
   } else {
     totals.failedStores += 1
     bucket.failed += 1
+    if (typeof ns.notePainStoreFailed === "function") {
+      ns.notePainStoreFailed(source)
+    }
   }
 }
 
@@ -203,18 +212,31 @@ function maybeLogUmpHealthSummary(force = false) {
       : null
   const seekLine =
     seekSummary && seekSummary.samples > 0
-      ? `, seekPred(mean=${seekSummary.meanError}, p95=${seekSummary.p95Error}, n=${seekSummary.samples})`
+      ? `, seekPred(mean=${seekSummary.meanError}, p95=${seekSummary.p95Error}, conf=${Math.round((seekSummary.confidence || 0) * 100)}%, hitRate=${Math.round((seekSummary.hitRate || 0) * 100)}%, predictor=${seekSummary.enabled ? "ON" : "OFF"}, speculative=${seekSummary.speculative ? "ON" : "OFF"}, n=${seekSummary.samples})`
       : ""
   const anchorLine =
     typeof ns.formatAnchorOwnershipLine === "function"
       ? `, ${ns.formatAnchorOwnershipLine()}`
       : ""
+  const inflightLine =
+    typeof ns.formatInflightAccountingLine === "function"
+      ? `, ${ns.formatInflightAccountingLine()}`
+      : ""
+  const rescueLine =
+    typeof ns.formatRescueTelemetryLine === "function" ? ns.formatRescueTelemetryLine() : ""
+  const rescueTelemetry = rescueLine ? `, ${rescueLine}` : ""
   addLog(
     "INFO",
-    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}${inflightLine}${rescueTelemetry}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
+  if (typeof ns.noteInflightMismatch === "function") {
+    ns.noteInflightMismatch(ns.auditInflightAccounting(), "health-summary")
+  }
   if (typeof ns.maybeLogSeekPredictionSummary === "function") {
     ns.maybeLogSeekPredictionSummary(force)
+  }
+  if (typeof ns.maybeLogObservabilitySummary === "function") {
+    ns.maybeLogObservabilitySummary(force)
   }
 }
 
@@ -388,6 +410,9 @@ function handleRuntimeMetric(message, sender) {
   if (durationMs === null) return
   bumpActivity("videoStalls", 1)
   bumpActivity("videoStallMsTotal", durationMs)
+  if (typeof ns.notePainPlaybackStall === "function") {
+    ns.notePainPlaybackStall(durationMs)
+  }
   state.stats.videoStallLongestMs = Math.max(state.stats.videoStallLongestMs, durationMs)
   const reason = typeof message.reason === "string" ? message.reason : "unknown"
   const atSeconds = Number.isFinite(message.atSeconds) ? Number(message.atSeconds).toFixed(1) : "n/a"

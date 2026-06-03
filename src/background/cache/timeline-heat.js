@@ -74,6 +74,24 @@
     return D * wD + H * wH
   }
 
+  function calculateSegmentTemperature(tabState, segmentIndex, now = Date.now()) {
+    if (!tabState || !Number.isFinite(segmentIndex)) return Number.NEGATIVE_INFINITY
+    const map = heatMapForTab(tabState)
+    const bucket = map?.get(segmentIndex)
+    const hitCount = Number(bucket?.hits) || 0
+    const lastAccessed = Number(bucket?.lastAt) || 0
+    const anchor =
+      typeof tabState.anchorIndex === "number" && tabState.anchorIndex >= 0
+        ? tabState.anchorIndex
+        : 0
+    const distance = Math.abs(segmentIndex - anchor)
+    const timeSinceLastAccess = lastAccessed > 0 ? Math.max(0, now - lastAccessed) : Number.POSITIVE_INFINITY
+    const recencyWeight = 100_000 / (100_000 + timeSinceLastAccess)
+    const frequencyScore = hitCount * (Number(constants.TEMPERATURE_WEIGHT_FREQUENCY) || 4)
+    const proximityPenalty = distance * (Number(constants.TEMPERATURE_WEIGHT_PROXIMITY) || 1.5)
+    return frequencyScore * recencyWeight - proximityPenalty
+  }
+
   function isTimelineHeatProtected(survivalScore, heat) {
     const minHeat = Number(constants.TIMELINE_HEAT_PROTECT_MIN_HITS) || 4
     const H = Math.max(0, Number(heat) || 0)
@@ -88,4 +106,5 @@
   ns.getTimelineHeatForUrl = getTimelineHeatForUrl
   ns.computeTimelineSurvivalScore = computeTimelineSurvivalScore
   ns.isTimelineHeatProtected = isTimelineHeatProtected
+  ns.calculateSegmentTemperature = calculateSegmentTemperature
 })()

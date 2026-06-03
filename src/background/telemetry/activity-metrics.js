@@ -84,6 +84,9 @@ function recordCacheLookupMiss(url) {
     ns.recordStreamMetric("hls", "misses", 1)
   }
   bumpLookupMetric("cacheMisses", url, 1)
+  if (typeof ns.notePainCacheMiss === "function") {
+    ns.notePainCacheMiss(1)
+  }
 }
 
 function resetActivityMetrics() {
@@ -99,6 +102,9 @@ function resetActivityMetrics() {
   }
   if (typeof ns.resetAnchorTelemetry === "function") {
     ns.resetAnchorTelemetry()
+  }
+  if (typeof ns.resetDecisionObservability === "function") {
+    ns.resetDecisionObservability()
   }
 }
 

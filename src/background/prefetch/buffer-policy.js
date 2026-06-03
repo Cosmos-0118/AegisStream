@@ -89,6 +89,19 @@ function updateTabBufferHealth(tabId, payload) {
         "INFO",
         `Buffer ${tier} on tab ${tabId} (runway=${runwaySec.toFixed(1)}s, health=${scoreLabel}) — increasing prefetch`
       )
+      if (
+        tier === TIER_EMERGENCY &&
+        tabState.segments?.length &&
+        typeof ns.arbitrateTabStreaming === "function" &&
+        typeof ns.executeRescuePrefetch === "function"
+      ) {
+        const mode = ns.arbitrateTabStreaming(tabState)
+        if (mode === ns.EngineModes?.RESCUE) {
+          void ns.executeRescuePrefetch(tabId, tabState, tabState.segments, {
+            source: "buffer-emergency"
+          })
+        }
+      }
     } else if (tier === TIER_MAINTENANCE || tier === TIER_IDLE) {
       addLog(
         "INFO",

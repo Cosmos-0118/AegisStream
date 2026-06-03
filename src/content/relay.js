@@ -118,7 +118,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       __aegisstream: true,
       type: "PREFETCH_SEGMENTS",
       urls: message.urls,
-      networkGeneration: message.networkGeneration
+      networkGeneration: message.networkGeneration,
+      playbackGeneration: message.playbackGeneration ?? message.networkGeneration,
+      priority: message.priority || "low"
     }, "*")
     sendResponse({ ok: true })
     return true
@@ -184,6 +186,25 @@ window.addEventListener("pageshow", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     notifyBridgeReady("visible")
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:TabVisibility",
+        hidden: false,
+        pageUrl: location.href
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+  } else {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:TabVisibility",
+        hidden: true,
+        pageUrl: location.href
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
   }
 })
 
@@ -583,6 +604,35 @@ window.addEventListener("message", (event) => {
   if (data.type === "LIVELINESS_PING") {
     try {
       chrome.runtime.sendMessage({ type: "AegisStream:LivelinessPing" })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "SCRUB_VELOCITY_PREFETCH") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:ScrubVelocityPrefetch",
+        payload: {
+          predictedIndex: data.predictedIndex,
+          velocitySegPerSec: data.velocitySegPerSec,
+          currentIndex: data.currentIndex
+        }
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "TAB_VISIBILITY_PAUSE" || data.type === "TAB_VISIBILITY_RESUME") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:TabVisibility",
+        hidden: data.type === "TAB_VISIBILITY_PAUSE" || data.hidden === true,
+        pageUrl: location.href
+      })
     } catch {
       // Extension context may be invalidated
     }

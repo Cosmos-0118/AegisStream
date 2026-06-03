@@ -113,9 +113,13 @@ function describeWireBytes(raw) {
 
 function describeStoreMessageWire(message) {
   if (typeof message?.bytesBase64 === "string" && message.bytesBase64.length > 0) {
-    return "base64"
+    return "ipc-base64"
   }
-  return describeWireBytes(message?.bytes)
+  const wire = describeWireBytes(message?.bytes)
+  if (wire === "ArrayBuffer" || wire === "TypedArray" || wire === "byteLength-view") {
+    return "ipc-binary"
+  }
+  return wire
 }
 
 function coercePlainWireBytes(raw) {

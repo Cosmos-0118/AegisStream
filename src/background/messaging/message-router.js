@@ -30,6 +30,7 @@ const {
   handleChunkObserved,
   handleForceTeleportAnchor,
   handleScrubbingTrainState,
+  handleScrubVelocityPrefetch,
   isTabInRapidSeek,
   syncKnownSegmentsToPage,
   maybeRequestPrefetchForTab,
@@ -196,7 +197,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       hasRange ||
       !lookupUrl ||
       !state.settings.enabled ||
-      !state.settings.serveFromCache
+      !state.settings.serveFromCache ||
+      (typeof ns.isStorageSystemOperational === "function" && !ns.isStorageSystemOperational())
     ) {
       sendResponse({ ok: true, hit: false, skipped: true })
       return
@@ -359,14 +361,17 @@ function handleStoreChunk(message, sendResponse) {
       "INFO",
       `StoreChunk accepted: source=${captureSource}, wire=${wireType}, persist=ArrayBuffer, bytes=${byteLength}${storeCrcTag ? `, ${storeCrcTag}` : ""}`
     )
-    const storeResult = await enqueueStoreWrite(() =>
-      cacheChunk(storeUrl, message.contentType, bytes)
-    )
+    const writeTask =
+      typeof ns.safeCacheChunk === "function"
+        ? () => ns.safeCacheChunk(storeUrl, message.contentType, bytes)
+        : () => cacheChunk(storeUrl, message.contentType, bytes)
+    const storeResult = await enqueueStoreWrite(writeTask)
     if (!storeResult?.ok) {
       sendResponse({
         ok: false,
         skipped: true,
-        error: storeResult?.error || "cache-write-failed"
+        error: storeResult?.error || "cache-write-failed",
+        storageBypass: storeResult?.bypass === true
       })
       return
     }
@@ -732,10 +737,32 @@ function registerMessageRouter() {
       sendResponse({ ok: true })
       return true
     }
+    case "AegisStream:TabVisibility": {
+      const tabId = sender?.tab?.id
+      if (Number.isFinite(tabId)) {
+        if (message.hidden === true) {
+          if (typeof ns.pauseTabPrefetchForVisibility === "function") {
+            ns.pauseTabPrefetchForVisibility(tabId, "tab-hidden")
+          }
+        } else if (typeof ns.resumeTabPrefetchForVisibility === "function") {
+          ns.resumeTabPrefetchForVisibility(tabId, "tab-visible")
+        }
+      }
+      sendResponse({ ok: true })
+      return true
+    }
     case "AegisStream:ScrubbingTrain": {
       const tabId = sender?.tab?.id
       if (state.settings.enabled && Number.isFinite(tabId)) {
         handleScrubbingTrainState(tabId, message.payload || message)
+      }
+      sendResponse({ ok: true })
+      return true
+    }
+    case "AegisStream:ScrubVelocityPrefetch": {
+      const tabId = sender?.tab?.id
+      if (state.settings.enabled && Number.isFinite(tabId)) {
+        handleScrubVelocityPrefetch(tabId, message.payload || message)
       }
       sendResponse({ ok: true })
       return true

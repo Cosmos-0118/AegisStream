@@ -72,7 +72,10 @@ window.addEventListener("message", (event) => {
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
     if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
     void prefetchSegmentsFromPage(data.urls, {
-      networkGeneration: data.networkGeneration
+      networkGeneration: data.networkGeneration,
+      playbackGeneration: data.playbackGeneration,
+      priority: data.priority,
+      reason: "prefetch-segments"
     })
     return
   }

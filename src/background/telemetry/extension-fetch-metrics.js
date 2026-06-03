@@ -1,6 +1,12 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { state, addLog, bumpActivity } = ns
+const { state, addLog } = ns
+
+function bumpActivity(metric, amount = 1) {
+  if (typeof ns.bumpActivity === "function") {
+    ns.bumpActivity(metric, amount)
+  }
+}
 
 const LEAK_MAX_ACTIVE_FETCHES = 20
 const LEAK_MAX_CONTROLLER_AGE_MS = 60_000

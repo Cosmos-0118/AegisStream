@@ -56,6 +56,7 @@ const prefetchQueueWaiters = []
 const prefetchAbortControllers = new Map()
 const urlQueuedGeneration = new Map()
 let pageNetworkGeneration = 0
+let pagePrefetchPriority = "low"
 let prefetchWorkersStarted = false
 const observedChunkAt = new Map()
 const knownUmpCacheKeys = new Set()
@@ -67,6 +68,7 @@ const CHUNK_OBSERVED_DEBOUNCE_MS = 2000
 
 function isPagePrefetchAllowed() {
   if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return false
+  if (ns.pageVisibilitySleep === true) return false
   return typeof document === "undefined" || document.visibilityState === "visible"
 }
 
@@ -134,6 +136,7 @@ function cancelPrefetchRunway(keepUrls = [], options = {}) {
     pageNetworkGeneration = Number(options.networkGeneration)
   }
   const keep = new Set(keepUrls.filter(Boolean))
+  const aborted = prefetchAbortControllers.size + prefetchQueue.length
   for (const [url, controller] of prefetchAbortControllers.entries()) {
     if (!keep.has(url)) {
       controller.abort()
@@ -161,6 +164,12 @@ function cancelPrefetchRunway(keepUrls = [], options = {}) {
   }
   if (typeof ns.cancelInflightChunkStores === "function") {
     ns.cancelInflightChunkStores(options.reason || "cancel-prefetch")
+  }
+  if (aborted > 0 && typeof ns.logBridge === "function") {
+    ns.logBridge(
+      `Delegated prefetch abort: stopped ${aborted} queued/in-flight segment fetch(es)${options.reason ? ` (${options.reason})` : ""}`,
+      "DEBUG"
+    )
   }
 }
 
@@ -441,10 +450,11 @@ async function processPrefetchUrlWork(url) {
   try {
   // Fetch without credentials first (most CDNs use wildcard CORS which breaks with credentials)
   // The browser will use the cache/cookies appropriate for the origin automatically
+  const fetchPriority = pagePrefetchPriority === "high" ? "high" : "low"
   let res = await originalFetch(url, {
     cache: "no-store",
     signal: controller.signal,
-    priority: "low"
+    priority: fetchPriority
   })
   
   // If 403, fallback to include credentials just in case it's same-origin and requires them
@@ -453,7 +463,7 @@ async function processPrefetchUrlWork(url) {
        credentials: "include",
        cache: "no-store",
        signal: controller.signal,
-       priority: "low"
+       priority: fetchPriority
      })
   }
   requestStatus = Number(res.status || 0)
@@ -642,14 +652,20 @@ async function prefetchSegmentsFromPage(urls, options = {}) {
   if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
     return
   }
-  const msgGen = Number(options.networkGeneration)
+  const msgGen = Number(options.playbackGeneration ?? options.networkGeneration)
+  pagePrefetchPriority = options.priority === "high" ? "high" : "low"
   if (Number.isFinite(msgGen)) {
     if (msgGen < pageNetworkGeneration) return
-    if (msgGen > pageNetworkGeneration) {
-      cancelPrefetchRunway([], { networkGeneration: msgGen })
-    } else {
-      pageNetworkGeneration = msgGen
+    const generationAdvanced = msgGen > pageNetworkGeneration
+    pageNetworkGeneration = msgGen
+    if (generationAdvanced) {
+      cancelPrefetchRunway([], {
+        networkGeneration: msgGen,
+        reason: options.reason || "delegated-batch"
+      })
     }
+  } else if (options.append !== true) {
+    cancelPrefetchRunway([], { reason: options.reason || "delegated-batch" })
   }
   const unique = []
   const seen = new Set()

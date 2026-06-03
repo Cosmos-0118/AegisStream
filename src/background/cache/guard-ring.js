@@ -77,6 +77,10 @@ function scoreEvictionCandidate(item, protectedSet) {
       typeof ns.getTimelineHeatForIndex === "function"
         ? ns.getTimelineHeatForIndex(tabState, index)
         : 0
+    const temperature =
+      typeof ns.calculateSegmentTemperature === "function"
+        ? ns.calculateSegmentTemperature(tabState, index)
+        : null
     const survival =
       typeof ns.computeTimelineSurvivalScore === "function"
         ? ns.computeTimelineSurvivalScore(distance, heat)
@@ -88,7 +92,10 @@ function scoreEvictionCandidate(item, protectedSet) {
       return Number.NEGATIVE_INFINITY
     }
     const heatBias = Number(constants.TIMELINE_HEAT_WEIGHT_HISTORICAL) || 4
-    const evictionPriority = distance - heat * heatBias
+    const evictionPriority =
+      Number.isFinite(temperature) && temperature !== Number.NEGATIVE_INFINITY
+        ? -temperature
+        : distance - heat * heatBias
     if (evictionPriority > bestEvictionPriority) bestEvictionPriority = evictionPriority
   }
 

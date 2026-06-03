@@ -4,6 +4,52 @@ const { constants, state, addLog, stripHash, buildCacheKeyVariants, isUmpCacheKe
 let evictionTimerId = null
 let evictionInProgress = false
 let lastEvictionRunAt = 0
+let storageSystemOperational = true
+let storageBypassLogged = false
+
+function isStorageFailureError(error) {
+  const name = String(error?.name || "")
+  const message = String(error?.message || "").toLowerCase()
+  return (
+    name === "QuotaExceededError" ||
+    name === "InvalidStateError" ||
+    name === "UnknownError" ||
+    message.includes("quota") ||
+    message.includes("corrupt") ||
+    message.includes("database") ||
+    message.includes("indexeddb") ||
+    message.includes("storage")
+  )
+}
+
+function triggerEmergencyCacheEviction() {
+  scheduleEviction(true)
+}
+
+function engageStoragePassthroughValve(reason, error) {
+  if (!storageSystemOperational) return
+  storageSystemOperational = false
+  state.settings.serveFromCache = false
+  triggerEmergencyCacheEviction()
+  if (!storageBypassLogged) {
+    storageBypassLogged = true
+    const detail = error?.message ? `: ${error.message}` : ""
+    addLog(
+      "ERROR",
+      `Hard storage failure (${reason}) — pass-through safety valve engaged${detail}`
+    )
+    if (typeof ns.recordDecision === "function") {
+      ns.recordDecision("storage", "bypass", reason)
+    }
+  }
+  if (typeof ns.broadcastSettingsToTabs === "function") {
+    void ns.broadcastSettingsToTabs(state.settings)
+  }
+}
+
+function isStorageSystemOperational() {
+  return storageSystemOperational
+}
 
 function getByteLength(value) {
   if (!value) return 0
@@ -89,6 +135,9 @@ async function computeAdaptiveCachePolicy(force = false) {
 }
 
 function openDb() {
+  if (!storageSystemOperational) {
+    return Promise.reject(new Error("storage-bypass"))
+  }
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(constants.DB_NAME, constants.DB_VERSION)
     req.onupgradeneeded = () => {
@@ -109,7 +158,13 @@ function openDb() {
       }
     }
     req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onerror = () => {
+      const err = req.error
+      if (isStorageFailureError(err)) {
+        engageStoragePassthroughValve("open-failed", err)
+      }
+      reject(err)
+    }
   })
 }
 
@@ -331,6 +386,21 @@ async function runEvictionPass(force = false) {
   }
 }
 
+async function safeCacheChunk(url, contentType, bytes) {
+  if (!storageSystemOperational) {
+    return { ok: false, error: "storage-bypass", bypass: true }
+  }
+  try {
+    return await cacheChunk(url, contentType, bytes)
+  } catch (error) {
+    if (isStorageFailureError(error)) {
+      engageStoragePassthroughValve("write-failed", error)
+      return { ok: false, error: "storage-bypass", bypass: true }
+    }
+    return { ok: false, error: error?.message || "cache-write-failed" }
+  }
+}
+
 async function cacheChunk(url, contentType, bytes) {
   const normalizedUrl = stripHash(url)
   if (!normalizedUrl) return { ok: false, error: "invalid-url" }
@@ -428,18 +498,26 @@ async function listCachedChunkKeys(limit = 1200) {
 }
 
 async function resolveCachedChunk(url) {
-  const cacheKeys = buildCacheKeyVariants(url)
-  for (const key of cacheKeys) {
-    const direct = await dbGet(constants.STORE_CHUNKS, key)
-    if (direct?.bytes) return { item: direct, key, via: "direct" }
+  if (!storageSystemOperational) return null
+  try {
+    const cacheKeys = buildCacheKeyVariants(url)
+    for (const key of cacheKeys) {
+      const direct = await dbGet(constants.STORE_CHUNKS, key)
+      if (direct?.bytes) return { item: direct, key, via: "direct" }
 
-    const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
-    if (!aliasEntry?.targetUrl) continue
-    const aliased = await dbGet(constants.STORE_CHUNKS, aliasEntry.targetUrl)
-    if (aliased?.bytes) return { item: aliased, key, via: "alias" }
-    await dbDelete(constants.STORE_ALIASES, key).catch(() => {})
+      const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
+      if (!aliasEntry?.targetUrl) continue
+      const aliased = await dbGet(constants.STORE_CHUNKS, aliasEntry.targetUrl)
+      if (aliased?.bytes) return { item: aliased, key, via: "alias" }
+      await dbDelete(constants.STORE_ALIASES, key).catch(() => {})
+    }
+    return null
+  } catch (error) {
+    if (isStorageFailureError(error)) {
+      engageStoragePassthroughValve("read-failed", error)
+    }
+    return null
   }
-  return null
 }
 
 async function clearCacheStores() {
@@ -449,6 +527,9 @@ async function clearCacheStores() {
   }
   evictionInProgress = false
   lastEvictionRunAt = 0
+  storageSystemOperational = true
+  storageBypassLogged = false
+  state.settings.serveFromCache = true
   await dbClear(constants.STORE_CHUNKS)
   await dbClear(constants.STORE_ALIASES)
   if (typeof ns.clearCacheRegistry === "function") {
@@ -462,6 +543,9 @@ async function getCacheEntryCount() {
 }
 
 ns.cacheChunk = cacheChunk
+ns.safeCacheChunk = safeCacheChunk
+ns.isStorageSystemOperational = isStorageSystemOperational
+ns.engageStoragePassthroughValve = engageStoragePassthroughValve
 ns.resolveCachedChunk = resolveCachedChunk
 ns.clearCacheStores = clearCacheStores
 ns.computeAdaptiveCachePolicy = computeAdaptiveCachePolicy
