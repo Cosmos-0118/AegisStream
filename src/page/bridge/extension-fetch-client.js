@@ -86,15 +86,27 @@ function onExtensionFetchStreamMeta(requestId, response) {
 }
 
 function decodeExtensionFetchChunk(chunkInput) {
-  if (chunkInput instanceof ArrayBuffer && chunkInput.byteLength > 0) {
-    return new Uint8Array(chunkInput)
-  }
-  if (chunkInput && typeof chunkInput.byteLength === "number" && chunkInput.buffer) {
-    return new Uint8Array(chunkInput.buffer, chunkInput.byteOffset, chunkInput.byteLength)
-  }
-  if (typeof chunkInput === "string") {
-    const buffer = base64ToArrayBuffer(chunkInput)
-    if (buffer && buffer.byteLength > 0) return new Uint8Array(buffer)
+  try {
+    if (typeof ns.copyArrayBufferForBridge === "function") {
+      const copied = ns.copyArrayBufferForBridge(
+        chunkInput instanceof ArrayBuffer ? chunkInput : chunkInput?.buffer || chunkInput
+      )
+      if (copied && copied.byteLength > 0) return new Uint8Array(copied)
+    }
+    if (chunkInput instanceof ArrayBuffer && chunkInput.byteLength > 0) {
+      return new Uint8Array(chunkInput.slice(0))
+    }
+    if (chunkInput && typeof chunkInput.byteLength === "number" && chunkInput.buffer) {
+      return new Uint8Array(
+        chunkInput.buffer.slice(chunkInput.byteOffset, chunkInput.byteOffset + chunkInput.byteLength)
+      )
+    }
+    if (typeof chunkInput === "string") {
+      const buffer = base64ToArrayBuffer(chunkInput)
+      if (buffer && buffer.byteLength > 0) return new Uint8Array(buffer)
+    }
+  } catch {
+    return null
   }
   return null
 }

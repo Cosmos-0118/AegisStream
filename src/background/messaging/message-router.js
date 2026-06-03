@@ -309,10 +309,11 @@ function handleStoreChunk(message, sendResponse) {
       sendResponse({ ok: true, skipped: true })
       return
     }
-    if (!storeUrl || !bytes || typeof bytes.byteLength !== "number" || bytes.byteLength <= 0) {
+    const byteLength = bytes && typeof bytes.byteLength === "number" ? bytes.byteLength : -1
+    if (!storeUrl || !bytes || byteLength <= 0) {
       addLog(
         "WARN",
-        `StoreChunk rejected (invalid payload): url=${Boolean(storeUrl)} bytes=${typeof bytes?.byteLength === "number" ? bytes.byteLength : "none"} method=${method} range=${hasRange} status=${status}`
+        `StoreChunk rejected (invalid payload): url=${Boolean(storeUrl)} bytes=${byteLength >= 0 ? byteLength : "none"} method=${method} range=${hasRange} status=${status} hadBase64=${typeof message.bytesBase64 === "string"}`
       )
       sendResponse({ ok: false, skipped: true, error: "invalid-payload" })
       return

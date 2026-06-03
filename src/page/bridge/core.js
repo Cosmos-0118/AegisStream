@@ -77,16 +77,30 @@ const inflightChunkStores = new Map()
 
 function requestRuntime(type, payload, transferables = []) {
   return new Promise((resolve) => {
+    let outbound = payload
+    if (type === "STORE_CHUNK_REQUEST" && payload?.bytes) {
+      const copied = cloneBytesForBridge(payload.bytes)
+      if (!copied) {
+        resolve({ ok: false, error: "invalid-bytes" })
+        return
+      }
+      outbound = { ...payload, bytes: copied }
+    }
     const requestId = nextRequestId()
     pending.set(requestId, resolve)
+    // Never transfer ArrayBuffers on the store lane — structured clone only.
     const transfer =
-      Array.isArray(transferables) && transferables.length > 0 ? transferables : []
+      type === "STORE_CHUNK_REQUEST"
+        ? []
+        : Array.isArray(transferables) && transferables.length > 0
+          ? transferables
+          : []
     window.postMessage(
       {
         __aegisstream: true,
         type,
         requestId,
-        ...payload
+        ...outbound
       },
       "*",
       transfer
@@ -139,8 +153,23 @@ function storeInflightKey(payload) {
   return `${url || ""}|${byteLength}`
 }
 
+function isDetachedBuffer(bytes) {
+  if (!bytes) return true
+  try {
+    if (bytes instanceof ArrayBuffer) {
+      new Uint8Array(bytes)
+      return false
+    }
+    new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    return false
+  } catch {
+    return true
+  }
+}
+
 function cloneBytesForBridge(bytes) {
-  if (!bytes || typeof bytes.byteLength !== "number") return null
+  if (!bytes || isDetachedBuffer(bytes)) return null
+  if (typeof bytes.byteLength !== "number" || bytes.byteLength <= 0) return null
   const view =
     bytes instanceof ArrayBuffer
       ? new Uint8Array(bytes)
@@ -163,35 +192,26 @@ async function recoverStoreFromCache(payload) {
 }
 
 async function storeChunkFromPage(payload) {
-  const inflightKey = storeInflightKey(payload)
+  const stableBytes = payload?.bytes ? cloneBytesForBridge(payload.bytes) : null
+  if (!stableBytes) {
+    return { ok: false, error: "invalid-bytes" }
+  }
+  const stablePayload = { ...payload, bytes: stableBytes }
+
+  const inflightKey = storeInflightKey(stablePayload)
   if (inflightChunkStores.has(inflightKey)) {
     return inflightChunkStores.get(inflightKey)
   }
 
   const run = (async () => {
-    const bridgedBytes = cloneBytesForBridge(payload.bytes)
-    const storeBase =
-      bridgedBytes != null ? { ...payload, bytes: bridgedBytes } : { ...payload }
     let lastRes = { ok: false, error: "store-failed" }
     for (let attempt = 0; attempt < STORE_CHUNK_RETRY_ATTEMPTS; attempt += 1) {
-      const storePayload = { ...storeBase }
-      const transfer = []
-      if (storePayload.bytes && typeof storePayload.bytes.byteLength === "number") {
-        const buf =
-          storePayload.bytes instanceof ArrayBuffer
-            ? storePayload.bytes
-            : storePayload.bytes.buffer
-        if (buf) transfer.push(buf)
-      }
-      lastRes = await requestRuntime("STORE_CHUNK_REQUEST", storePayload, transfer)
+      lastRes = await requestRuntime("STORE_CHUNK_REQUEST", stablePayload)
       if (lastRes?.ok) {
         if (typeof ns.noteLocalCacheKey === "function") {
-          ns.noteLocalCacheKey(payload.url)
+          ns.noteLocalCacheKey(stablePayload.url)
         }
         return lastRes
-      }
-      if (bridgedBytes != null) {
-        storeBase.bytes = cloneBytesForBridge(bridgedBytes)
       }
       if (!isTransientStoreFailure(lastRes) || attempt >= STORE_CHUNK_RETRY_ATTEMPTS - 1) {
         break
@@ -199,7 +219,7 @@ async function storeChunkFromPage(payload) {
       await new Promise((resolve) => setTimeout(resolve, STORE_CHUNK_RETRY_DELAY_MS * (attempt + 1)))
     }
     if (!lastRes?.ok && isTransientStoreFailure(lastRes)) {
-      const recovered = await recoverStoreFromCache(payload)
+      const recovered = await recoverStoreFromCache(stablePayload)
       if (recovered?.ok) return recovered
     }
     return lastRes
@@ -279,6 +299,8 @@ ns.getRequestDetails = getRequestDetails
 ns.requestRuntime = requestRuntime
 ns.formatStoreChunkError = formatStoreChunkError
 ns.isTransientStoreFailure = isTransientStoreFailure
+ns.cloneBytesForBridge = cloneBytesForBridge
+ns.copyArrayBufferForBridge = cloneBytesForBridge
 ns.storeChunkFromPage = storeChunkFromPage
 ns.base64ToArrayBuffer = base64ToArrayBuffer
 ns.resolveLookupBytes = resolveLookupBytes

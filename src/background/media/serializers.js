@@ -23,9 +23,24 @@ function base64ToArrayBuffer(base64) {
   return bytes.buffer
 }
 
+function safeCopyArrayBuffer(bytes) {
+  if (!bytes || typeof bytes.byteLength !== "number" || bytes.byteLength <= 0) {
+    return null
+  }
+  try {
+    const view =
+      bytes instanceof ArrayBuffer
+        ? new Uint8Array(bytes)
+        : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    return view.slice().buffer
+  } catch {
+    return null
+  }
+}
+
 function extractMessageBytes(message) {
   if (message?.bytes && typeof message.bytes.byteLength === "number") {
-    return message.bytes
+    return safeCopyArrayBuffer(message.bytes)
   }
   if (typeof message?.bytesBase64 === "string") {
     try {

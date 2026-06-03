@@ -313,6 +313,12 @@
 
           if (!bytes || bytes.byteLength === 0) return
 
+          const bytesForStore =
+            typeof self.AegisPageBridge?.copyArrayBufferForBridge === "function"
+              ? self.AegisPageBridge.copyArrayBufferForBridge(bytes)
+              : bytes
+          if (!bytesForStore || bytesForStore.byteLength === 0) return
+
           // Send to background for caching using the normalized cache key
           const storeChunk =
             typeof self.AegisPageBridge?.storeChunkFromPage === "function"
@@ -321,7 +327,7 @@
           const storeRes = await storeChunk({
             url: cacheKey,
             contentType,
-            bytes,
+            bytes: bytesForStore,
             status: 200, // Treat as full so background caches it
             method: "GET",
             hasRange: false

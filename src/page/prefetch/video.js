@@ -497,11 +497,25 @@ async function processPrefetchUrl(url) {
     return
   }
 
+  const bytesForStore =
+    typeof ns.copyArrayBufferForBridge === "function"
+      ? ns.copyArrayBufferForBridge(bytes)
+      : bytes
+  if (!bytesForStore || bytesForStore.byteLength === 0) {
+    emitPrefetchFailure(url, {
+      fetchPath: "cache-store",
+      status: requestStatus,
+      errorMessage: "invalid-bytes-for-store",
+      errorName: "StoreError"
+    })
+    return
+  }
+
   // Send bytes to background for caching
   const storeRes = await storeChunkForPrefetch({
     url,
     contentType,
-    bytes,
+    bytes: bytesForStore,
     // Treat prefetch payload as full representation for this exact key.
     status: 200,
     method: "GET",

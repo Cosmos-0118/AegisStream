@@ -11,6 +11,7 @@ const {
   stripHash,
   requestRuntime,
   storeChunkFromPage,
+  copyArrayBufferForBridge,
   formatStoreChunkError,
   resolveLookupBytes,
   logBridge,
@@ -32,6 +33,7 @@ const {
 const networkFetch = fetchWithCircuitBreaker || originalFetch
 
 function synthesizeXhrFromBuffer(xhr, statusCode, statusText, bytes, contentType, extraHeaders = {}) {
+  xhr.__aegisServedFromCache = true
   Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
   Object.defineProperty(xhr, "statusText", { get: () => statusText, configurable: true })
   Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
@@ -150,6 +152,9 @@ function AegisXHR() {
     // Always attach a load listener to capture playlist responses from XHR
     xhr.addEventListener("load", function xhrLoadHandler() {
       try {
+        if (xhr.__aegisServedFromCache === true) {
+          return
+        }
         if (xhr.status >= 200 && xhr.status < 300 && _url) {
           const ct = xhr.getResponseHeader("content-type") || ""
 
@@ -201,6 +206,13 @@ function AegisXHR() {
               bytes = new TextEncoder().encode(xhr.response).buffer
             }
             if (bytes && bytes.byteLength > 0) {
+              const bytesForStore =
+                typeof copyArrayBufferForBridge === "function"
+                  ? copyArrayBufferForBridge(bytes)
+                  : null
+              if (!bytesForStore) {
+                return
+              }
               let cacheLookupUrl = _url
 
               if (responseYoutubeChunk) {
@@ -226,7 +238,7 @@ function AegisXHR() {
                 void storeChunkFromPage({
                   url: cacheLookupUrl,
                   contentType: ct,
-                  bytes,
+                  bytes: bytesForStore,
                   status: 200,
                   method: _method,
                   hasRange: false
@@ -346,6 +358,7 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
+        xhr.__aegisServedFromCache = true
         // Synthesize a successful XHR response from cache
         const is206 =
           youtubeChunk?.type === "bytes" &&

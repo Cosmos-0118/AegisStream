@@ -76,14 +76,13 @@ function relayExtensionFetchStreamToPage(message) {
       requestId: message.requestId,
       index: message.index
     }
-    const transfer = []
-    if (message.bytes && typeof message.bytes.byteLength === "number") {
-      payload.bytes = message.bytes
-      transfer.push(message.bytes)
+    const copied = copyArrayBuffer(message.bytes)
+    if (copied) {
+      payload.bytes = copied
     } else if (typeof message.chunkBase64 === "string") {
       payload.chunkBase64 = message.chunkBase64
     }
-    window.postMessage(payload, "*", transfer)
+    window.postMessage(payload, "*")
     return
   }
   if (message.type === "AegisStream:ExtensionFetchEnd") {
@@ -192,6 +191,24 @@ document.addEventListener("visibilitychange", () => {
 // Messages FROM page-bridge → relay to background service worker
 // ---------------------------------------------------------------------------
 
+function copyArrayBuffer(bytes) {
+  if (!bytes) return null
+  try {
+    if (bytes instanceof ArrayBuffer) {
+      if (bytes.byteLength <= 0) return null
+      return bytes.slice(0)
+    }
+    if (typeof bytes.byteLength === "number" && bytes.buffer) {
+      const length = bytes.byteLength
+      if (length <= 0) return null
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + length)
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 function arrayBufferToBase64(buffer) {
   if (!buffer || typeof buffer.byteLength !== "number") return null
   const bytes = new Uint8Array(buffer)
@@ -220,11 +237,15 @@ window.addEventListener("message", (event) => {
         },
         (response) => {
           const runtimeError = chrome.runtime.lastError
-          const payload = runtimeError ? { ok: false, hit: false } : response || { ok: false, hit: false }
-          const transfer =
-            payload?.hit && payload.bytes && typeof payload.bytes.byteLength === "number"
-              ? [payload.bytes]
-              : []
+          let payload = runtimeError ? { ok: false, hit: false } : response || { ok: false, hit: false }
+          if (payload?.hit && payload.bytes) {
+            const copied = copyArrayBuffer(payload.bytes)
+            if (copied) {
+              payload = { ...payload, bytes: copied }
+            } else {
+              payload = { ok: false, hit: false, error: "cache-bytes-unavailable" }
+            }
+          }
           window.postMessage(
             {
               __aegisstream: true,
@@ -232,8 +253,7 @@ window.addEventListener("message", (event) => {
               requestId: data.requestId,
               response: payload
             },
-            "*",
-            transfer
+            "*"
           )
         }
       )
@@ -262,16 +282,22 @@ window.addEventListener("message", (event) => {
         hasRange: data.hasRange
       }
 
-      if (data.bytes && typeof data.bytes.byteLength === "number") {
-        payload.bytes =
-          data.bytes instanceof ArrayBuffer
-            ? data.bytes
-            : data.bytes.buffer.slice(
-                data.bytes.byteOffset,
-                data.bytes.byteOffset + data.bytes.byteLength
-              )
+      const copied = copyArrayBuffer(data.bytes)
+      if (copied) {
+        payload.bytes = copied
       } else if (typeof data.bytesBase64 === "string") {
         payload.bytesBase64 = data.bytesBase64
+      } else {
+        window.postMessage(
+          {
+            __aegisstream: true,
+            type: "STORE_CHUNK_RESPONSE",
+            requestId: data.requestId,
+            response: { ok: false, error: "relay-missing-bytes" }
+          },
+          "*"
+        )
+        return
       }
 
       chrome.runtime.sendMessage(

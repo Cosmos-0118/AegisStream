@@ -363,10 +363,26 @@ async function storeUmpStreamCapture({
       offset += chunk.byteLength
     }
 
+    const bytesForStore =
+      typeof ns.copyArrayBufferForBridge === "function"
+        ? ns.copyArrayBufferForBridge(merged.buffer)
+        : merged.buffer
+    if (!bytesForStore) {
+      reportRuntimeMetric("youtube_ump_stream_outcome", {
+        outcome: "store_failed",
+        bytes: total,
+        detail: "detached-buffer",
+        durationMs: Number.isFinite(requestStartedAt)
+          ? Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+          : null
+      })
+      return
+    }
+
     void storeChunkFromPage({
       url: cacheLookupUrl,
       contentType,
-      bytes: merged.buffer,
+      bytes: bytesForStore,
       status: 200,
       method: "GET",
       hasRange: false
@@ -507,10 +523,22 @@ function cacheNetworkStreamInBackground({
       return
     }
 
+    const bytesForStore =
+      typeof ns.copyArrayBufferForBridge === "function"
+        ? ns.copyArrayBufferForBridge(streamed.bytes)
+        : streamed.bytes
+    if (!bytesForStore) {
+      logBridge(
+        `Network chunk store failed (detached-buffer): ${String(urlForLog).slice(-80)}`,
+        "WARN"
+      )
+      return
+    }
+
     const storeRes = await storeChunkFromPage({
       url: cacheLookupUrl,
       contentType,
-      bytes: streamed.bytes,
+      bytes: bytesForStore,
       status: 200,
       method: storeMethod,
       hasRange: false

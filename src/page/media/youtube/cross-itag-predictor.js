@@ -143,10 +143,24 @@
           ? bridge.storeChunkFromPage
           : (payload) => requestRuntime("STORE_CHUNK_REQUEST", payload)
 
+      const bytesForStore =
+        typeof bridge?.copyArrayBufferForBridge === "function"
+          ? bridge.copyArrayBufferForBridge(bytes)
+          : bytes
+      if (!bytesForStore || bytesForStore.byteLength === 0) {
+        notifyRuntime("PREFETCH_RESULT", {
+          url: storeUrl,
+          success: false,
+          error: "invalid-bytes-for-store",
+          source: "cross-itag"
+        })
+        return
+      }
+
       const storeRes = await storeChunk({
         url: storeUrl,
         contentType,
-        bytes,
+        bytes: bytesForStore,
         status: 200,
         method: "GET",
         hasRange: false
