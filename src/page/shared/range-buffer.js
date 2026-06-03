@@ -330,7 +330,8 @@
             bytes: bytesForStore,
             status: 200, // Treat as full so background caches it
             method: "GET",
-            hasRange: false
+            hasRange: false,
+            captureSource: "range-buffer"
           })
 
           if (!storeRes?.ok) {

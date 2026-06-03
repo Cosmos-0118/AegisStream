@@ -163,7 +163,8 @@
         bytes: bytesForStore,
         status: 200,
         method: "GET",
-        hasRange: false
+        hasRange: false,
+        captureSource: "cross-itag"
       })
 
       if (storeRes?.ok) {

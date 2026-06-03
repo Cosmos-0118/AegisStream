@@ -279,7 +279,8 @@ window.addEventListener("message", (event) => {
         contentType: data.contentType,
         status: data.status,
         method: data.method,
-        hasRange: data.hasRange
+        hasRange: data.hasRange,
+        captureSource: data.captureSource
       }
 
       const copied = copyArrayBuffer(data.bytes)

@@ -385,7 +385,8 @@ async function storeUmpStreamCapture({
       bytes: bytesForStore,
       status: 200,
       method: "GET",
-      hasRange: false
+      hasRange: false,
+      captureSource: "ump"
     })
       .then((storeRes) => {
         if (storeRes?.ok) {
@@ -541,7 +542,8 @@ function cacheNetworkStreamInBackground({
       bytes: bytesForStore,
       status: 200,
       method: storeMethod,
-      hasRange: false
+      hasRange: false,
+      captureSource: "fetch-tee"
     }).catch((error) => ({ ok: false, error: formatStoreChunkError(null, error) }))
 
     if (!storeRes?.ok) {

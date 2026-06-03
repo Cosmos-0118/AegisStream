@@ -47,6 +47,79 @@ function refreshFirstByteStats() {
   }
 }
 
+const CHUNK_CAPTURE_SOURCES = new Set([
+  "xhr-sync",
+  "xhr-load",
+  "fetch-clone",
+  "fetch-tee",
+  "ump",
+  "prefetch",
+  "range-buffer",
+  "cross-itag",
+  "unknown"
+])
+
+function normalizeChunkCaptureSource(source) {
+  const normalized = String(source || "unknown").toLowerCase()
+  return CHUNK_CAPTURE_SOURCES.has(normalized) ? normalized : "unknown"
+}
+
+function ensureChunkStoreBucket(source) {
+  if (!state.telemetry.chunkStore) {
+    state.telemetry.chunkStore = {
+      successfulStores: 0,
+      failedStores: 0,
+      totalBytesStored: 0,
+      bySource: {}
+    }
+  }
+  const bucket = state.telemetry.chunkStore
+  if (!bucket.bySource[source]) {
+    bucket.bySource[source] = { success: 0, failed: 0, bytes: 0 }
+  }
+  return bucket.bySource[source]
+}
+
+function recordChunkStoreOutcomeMetric(message) {
+  const source = normalizeChunkCaptureSource(message.captureSource)
+  const ok = message.ok === true
+  const byteLength = Number(message.byteLength)
+  const bucket = ensureChunkStoreBucket(source)
+  const totals = state.telemetry.chunkStore
+
+  if (ok) {
+    totals.successfulStores += 1
+    bucket.success += 1
+    if (Number.isFinite(byteLength) && byteLength > 0) {
+      totals.totalBytesStored += byteLength
+      bucket.bytes += byteLength
+    }
+  } else {
+    totals.failedStores += 1
+    bucket.failed += 1
+  }
+}
+
+function formatChunkStoreTelemetryLine() {
+  const totals = state.telemetry.chunkStore
+  if (!totals) return ""
+  const attempts = (totals.successfulStores || 0) + (totals.failedStores || 0)
+  if (attempts === 0) return ""
+
+  const bySource = Object.entries(totals.bySource || {})
+    .filter(([, stats]) => (stats?.success || 0) > 0)
+    .sort((a, b) => (b[1]?.success || 0) - (a[1]?.success || 0))
+    .map(([source, stats]) => `${source}=${stats.success}`)
+    .join(", ")
+
+  const avgKb =
+    totals.successfulStores > 0
+      ? (totals.totalBytesStored / totals.successfulStores / 1024).toFixed(1)
+      : "0"
+
+  return `stores(ok=${totals.successfulStores}, fail=${totals.failedStores}, avgKB=${avgKb}${bySource ? `, ${bySource}` : ""})`
+}
+
 function shouldEmitThrottledLog(key, intervalMs) {
   const now = Date.now()
   const last = state.telemetry.logThrottleByKey.get(key) || 0
@@ -89,6 +162,7 @@ function maybeLogUmpHealthSummary(force = false) {
     typeof ns.formatExtensionFetchMetricsLine === "function"
       ? ns.formatExtensionFetchMetricsLine()
       : ""
+  const chunkStoreLine = formatChunkStoreTelemetryLine()
   const workerLifecycle =
     typeof ns.getWorkerLifecycleSnapshot === "function"
       ? ns.getWorkerLifecycleSnapshot()
@@ -108,7 +182,7 @@ function maybeLogUmpHealthSummary(force = false) {
     const hitRate = effective > 0 ? Math.round((ump.hits / effective) * 100) : 0
     addLog(
       "INFO",
-      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
     )
     return
   }
@@ -133,7 +207,7 @@ function maybeLogUmpHealthSummary(force = false) {
       : ""
   addLog(
     "INFO",
-    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
   if (typeof ns.maybeLogSeekPredictionSummary === "function") {
     ns.maybeLogSeekPredictionSummary(force)
@@ -240,6 +314,20 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "chunk_store_outcome") {
+    recordChunkStoreOutcomeMetric(message)
+    const totals = state.telemetry.chunkStore
+    if (
+      totals &&
+      (totals.successfulStores + totals.failedStores) % 40 === 0 &&
+      shouldEmitThrottledLog("chunk_store_telemetry", 15_000)
+    ) {
+      const line = formatChunkStoreTelemetryLine()
+      if (line) addLog("INFO", `Chunk store telemetry — ${line}`)
+    }
+    return
+  }
+
   if (metricType === "request_first_byte") {
     const latencyMs = sanitizeMetricLatencyMs(message.latencyMs)
     if (latencyMs === null) return
@@ -290,4 +378,5 @@ function handleRuntimeMetric(message, sender) {
 ns.handleRuntimeMetric = handleRuntimeMetric
 ns.rememberUmpLookupKey = rememberUmpLookupKey
 ns.maybeLogUmpHealthSummary = maybeLogUmpHealthSummary
+ns.formatChunkStoreTelemetryLine = formatChunkStoreTelemetryLine
 })()

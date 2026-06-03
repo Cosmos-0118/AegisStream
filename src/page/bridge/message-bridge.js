@@ -77,8 +77,11 @@ window.addEventListener("message", (event) => {
   if (data.type === "CANCEL_PREFETCH") {
     if (typeof cancelPrefetchRunway === "function") {
       cancelPrefetchRunway([], {
-        networkGeneration: data.networkGeneration
+        networkGeneration: data.networkGeneration,
+        reason: "cancel-prefetch"
       })
+    } else if (typeof ns.cancelInflightChunkStores === "function") {
+      ns.cancelInflightChunkStores("cancel-prefetch")
     }
     return
   }
@@ -90,7 +93,9 @@ window.addEventListener("message", (event) => {
 
   if (data.type === "REFRESH_PLAYLIST" && data.url) {
     if (typeof cancelPrefetchRunway === "function") {
-      cancelPrefetchRunway()
+      cancelPrefetchRunway([], { reason: "refresh-playlist" })
+    } else if (typeof ns.cancelInflightChunkStores === "function") {
+      ns.cancelInflightChunkStores("refresh-playlist")
     }
     void refreshPlaylistFromPage(data.url, data.generation)
     return
@@ -137,6 +142,18 @@ window.addEventListener("message", (event) => {
   pending.delete(data.requestId)
   resolve(data.response || { ok: false, hit: false })
 })
+
+function onPageSessionTeardown() {
+  if (typeof cancelPrefetchRunway === "function") {
+    cancelPrefetchRunway([], { reason: "page-teardown" })
+  } else if (typeof ns.cancelInflightChunkStores === "function") {
+    ns.cancelInflightChunkStores("page-teardown")
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", onPageSessionTeardown)
+}
 
 ns.knownSegments = knownSegments
 })()

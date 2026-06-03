@@ -311,9 +311,11 @@ function handleStoreChunk(message, sendResponse) {
     }
     const byteLength = bytes && typeof bytes.byteLength === "number" ? bytes.byteLength : -1
     if (!storeUrl || !bytes || byteLength <= 0) {
+      const captureSource =
+        typeof message.captureSource === "string" ? message.captureSource : "unknown"
       addLog(
         "WARN",
-        `StoreChunk rejected (invalid payload): url=${Boolean(storeUrl)} bytes=${byteLength >= 0 ? byteLength : "none"} method=${method} range=${hasRange} status=${status} hadBase64=${typeof message.bytesBase64 === "string"}`
+        `StoreChunk rejected (invalid payload): url=${Boolean(storeUrl)} bytes=${byteLength >= 0 ? byteLength : "none"} method=${method} range=${hasRange} status=${status} hadBase64=${typeof message.bytesBase64 === "string"} source=${captureSource}`
       )
       sendResponse({ ok: false, skipped: true, error: "invalid-payload" })
       return
@@ -340,9 +342,11 @@ function handleStoreChunk(message, sendResponse) {
       maybeLogUmpHealthSummary()
     }
     void refreshCacheEntryCount(true).catch(() => {})
+    const captureSource =
+      typeof message.captureSource === "string" ? message.captureSource : "unknown"
     addLog(
       "INFO",
-      `Cached chunk from page (${(bytes.byteLength / 1024).toFixed(1)} KB): ${storeUrl.slice(-60)}`
+      `Cached chunk from page (${(bytes.byteLength / 1024).toFixed(1)} KB, ${captureSource}): ${storeUrl.slice(-60)}`
     )
     sendResponse({ ok: true })
   })().catch((e) => {

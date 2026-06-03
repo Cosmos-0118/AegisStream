@@ -32,6 +32,133 @@ const {
 
 const networkFetch = fetchWithCircuitBreaker || originalFetch
 
+let syncResponseTapInstalled = false
+
+function resetXhrCaptureState(xhr) {
+  xhr.__aegisChunkCaptured = false
+  xhr.__aegisServedFromCache = false
+}
+
+function bytesFromXhrRawResponse(xhr, rawResponse) {
+  if (rawResponse instanceof ArrayBuffer && rawResponse.byteLength > 0) {
+    return rawResponse.slice(0)
+  }
+  if (
+    xhr.responseType === "arraybuffer" &&
+    rawResponse &&
+    typeof rawResponse.byteLength === "number" &&
+    rawResponse.byteLength > 0 &&
+    rawResponse.buffer instanceof ArrayBuffer
+  ) {
+    try {
+      return rawResponse.buffer.slice(
+        rawResponse.byteOffset,
+        rawResponse.byteOffset + rawResponse.byteLength
+      )
+    } catch {
+      return null
+    }
+  }
+  if (typeof rawResponse === "string" && rawResponse.length > 0) {
+    return new TextEncoder().encode(rawResponse).buffer
+  }
+  return null
+}
+
+function resolveXhrYoutubeChunk(xhr, url, status) {
+  if (!isYoutubeVideoPlaybackUrl(url)) return null
+  const requestRangeHeaders = new Headers()
+  if (xhr.__aegisRangeHeader) {
+    requestRangeHeaders.set("Range", xhr.__aegisRangeHeader)
+  }
+  let youtubeChunk = buildYoutubeChunkState(url, requestRangeHeaders)
+  if (!youtubeChunk && status === 206) {
+    youtubeChunk = buildYoutubeChunkStateFromContentRange(
+      url,
+      xhr.getResponseHeader("content-range")
+    )
+  }
+  return youtubeChunk
+}
+
+function captureXhrResponseSync(xhr, rawResponse) {
+  if (xhr.__aegisServedFromCache === true) return
+  if (xhr.__aegisChunkCaptured === true) return
+  if (ns.extensionEnabled === false || ns.serveFromCache === false) return
+  // Only capture fully finalized responses; readyState 3 (LOADING) may be truncated.
+  if (xhr.readyState !== OriginalXHR.DONE) return
+
+  const status = xhr.status
+  if (status < 200 || status >= 300) return
+
+  const url = xhr.__aegisUrl || (xhr.responseURL ? stripHash(xhr.responseURL) : null)
+  const method = (xhr.__aegisMethod || "GET").toUpperCase()
+  if (!url || method !== "GET") return
+  if (url && globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.(url)) return
+
+  const youtubeChunk = resolveXhrYoutubeChunk(xhr, url, status)
+  const shouldIntercept = isLikelyChunk(url) || Boolean(youtubeChunk)
+  if (!shouldIntercept) return
+  if (!(status === 200 || (status === 206 && youtubeChunk?.type === "bytes"))) return
+
+  const bytes = bytesFromXhrRawResponse(xhr, rawResponse)
+  if (!bytes) return
+
+  xhr.__aegisChunkCaptured = true
+
+  let cacheLookupUrl = url
+  if (youtubeChunk) {
+    cacheLookupUrl = youtubeChunk.cacheKey
+  }
+
+  const ct = xhr.getResponseHeader("content-type") || ""
+  void storeChunkFromPage({
+    url: cacheLookupUrl,
+    contentType: ct,
+    bytes,
+    status: 200,
+    method,
+    hasRange: false,
+    captureSource: "xhr-sync"
+  })
+    .then((storeRes) => {
+      if (storeRes?.ok || document.visibilityState !== "visible") return
+      logBridge(
+        `XHR sync capture store failed (${formatStoreChunkError(storeRes)}): ${String(cacheLookupUrl).slice(-80)}`,
+        "WARN"
+      )
+    })
+    .catch((error) => {
+      if (document.visibilityState !== "visible") return
+      logBridge(
+        `XHR sync capture store failed (${formatStoreChunkError(null, error)}): ${String(cacheLookupUrl).slice(-80)}`,
+        "WARN"
+      )
+    })
+}
+
+function installSyncXhrResponseTap() {
+  if (syncResponseTapInstalled) return
+  const responseDesc = Object.getOwnPropertyDescriptor(OriginalXHR.prototype, "response")
+  const originalResponseGet = responseDesc?.get
+  if (typeof originalResponseGet !== "function") return
+
+  Object.defineProperty(OriginalXHR.prototype, "response", {
+    get: function aegisXhrResponseGet() {
+      const rawResponse = originalResponseGet.call(this)
+      try {
+        captureXhrResponseSync(this, rawResponse)
+      } catch {
+        // Never break player reads
+      }
+      return rawResponse
+    },
+    configurable: true,
+    enumerable: true
+  })
+  syncResponseTapInstalled = true
+}
+
 function synthesizeXhrFromBuffer(xhr, statusCode, statusText, bytes, contentType, extraHeaders = {}) {
   xhr.__aegisServedFromCache = true
   Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
@@ -83,12 +210,15 @@ function AegisXHR() {
 
   const originalOpen = xhr.open.bind(xhr)
   xhr.open = function (method, url, ...args) {
+    resetXhrCaptureState(xhr)
     _method = (method || "GET").toUpperCase()
     try {
       _url = stripHash(new URL(url, location.href).toString())
     } catch {
       _url = stripHash(url)
     }
+    xhr.__aegisMethod = _method
+    xhr.__aegisUrl = _url
     return originalOpen(method, url, ...args)
   }
 
@@ -97,6 +227,7 @@ function AegisXHR() {
     if (name.toLowerCase() === "range") {
       _hasRange = true
       _rangeHeaderValue = value
+      xhr.__aegisRangeHeader = value
     }
     return originalSetRequestHeader(name, value)
   }
@@ -199,20 +330,13 @@ function AegisXHR() {
             shouldIntercept &&
             (xhr.status === 200 || (xhr.status === 206 && responseYoutubeChunk?.type === "bytes"))
           ) {
-            let bytes = null
+            let byteLength = 0
             if (xhr.response instanceof ArrayBuffer) {
-              bytes = xhr.response
+              byteLength = xhr.response.byteLength
             } else if (typeof xhr.response === "string") {
-              bytes = new TextEncoder().encode(xhr.response).buffer
+              byteLength = new TextEncoder().encode(xhr.response).byteLength
             }
-            if (bytes && bytes.byteLength > 0) {
-              const bytesForStore =
-                typeof copyArrayBufferForBridge === "function"
-                  ? copyArrayBufferForBridge(bytes)
-                  : null
-              if (!bytesForStore) {
-                return
-              }
+            if (byteLength > 0) {
               let cacheLookupUrl = _url
 
               if (responseYoutubeChunk) {
@@ -220,7 +344,7 @@ function AegisXHR() {
                 const prefetchHeaders = buildYouTubePrefetchHeaders(
                   requestRangeHeaders,
                   responseYoutubeChunk,
-                  bytes.byteLength
+                  byteLength
                 )
                 window.AegisRangeBuffer.triggerHeuristicPrefetch(
                   _url,
@@ -234,14 +358,32 @@ function AegisXHR() {
                 )
               }
 
+              if (xhr.__aegisChunkCaptured === true) {
+                return
+              }
+
               if (ns.extensionEnabled !== false && ns.serveFromCache !== false) {
+                let bytes = null
+                if (xhr.response instanceof ArrayBuffer) {
+                  bytes = xhr.response
+                } else if (typeof xhr.response === "string") {
+                  bytes = new TextEncoder().encode(xhr.response).buffer
+                }
+                const bytesForStore =
+                  typeof copyArrayBufferForBridge === "function"
+                    ? copyArrayBufferForBridge(bytes)
+                    : null
+                if (!bytesForStore) {
+                  return
+                }
                 void storeChunkFromPage({
                   url: cacheLookupUrl,
                   contentType: ct,
                   bytes: bytesForStore,
                   status: 200,
                   method: _method,
-                  hasRange: false
+                  hasRange: false,
+                  captureSource: "xhr-load"
                 }).then((storeRes) => {
                   if (storeRes?.ok || document.visibilityState !== "visible") return
                   logBridge(
@@ -434,6 +576,7 @@ function AegisXHR() {
 }
 
 function installXhrInterceptor() {
+  installSyncXhrResponseTap()
   window.XMLHttpRequest = AegisXHR
   window.XMLHttpRequest.prototype = OriginalXHR.prototype
   Object.keys(OriginalXHR).forEach((key) => {

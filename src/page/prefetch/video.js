@@ -159,6 +159,9 @@ function cancelPrefetchRunway(keepUrls = [], options = {}) {
     urlQueuedGeneration.delete(url)
     emitPrefetchSkipped(url, "aborted")
   }
+  if (typeof ns.cancelInflightChunkStores === "function") {
+    ns.cancelInflightChunkStores(options.reason || "cancel-prefetch")
+  }
 }
 
 function notifyChunkObserved(url) {
@@ -519,7 +522,8 @@ async function processPrefetchUrl(url) {
     // Treat prefetch payload as full representation for this exact key.
     status: 200,
     method: "GET",
-    hasRange: false
+    hasRange: false,
+    captureSource: "prefetch"
   })
 
   if (!storeRes?.ok) {

@@ -32,7 +32,13 @@ function createState() {
       umpHashes: new Set(),
       logThrottleByKey: new Map(),
       lastUmpHealthLogAt: 0,
-      extensionFetchBySource: {}
+      extensionFetchBySource: {},
+      chunkStore: {
+        successfulStores: 0,
+        failedStores: 0,
+        totalBytesStored: 0,
+        bySource: {}
+      }
     },
     workerLifecycle: {
       startCount: 0,
@@ -115,6 +121,12 @@ function resetStats() {
   state.telemetry.umpHashes.clear()
   state.telemetry.logThrottleByKey.clear()
   state.telemetry.lastUmpHealthLogAt = 0
+  state.telemetry.chunkStore = {
+    successfulStores: 0,
+    failedStores: 0,
+    totalBytesStored: 0,
+    bySource: {}
+  }
   if (typeof ns.resetActivityMetrics === "function") {
     ns.resetActivityMetrics()
   }

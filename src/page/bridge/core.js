@@ -73,10 +73,99 @@ function getRequestDetails(input, init) {
 const STORE_CHUNK_TIMEOUT_MS = 30_000
 const STORE_CHUNK_RETRY_ATTEMPTS = 2
 const STORE_CHUNK_RETRY_DELAY_MS = 80
-const inflightChunkStores = new Map()
 
-function requestRuntime(type, payload, transferables = []) {
+const CHUNK_CAPTURE_SOURCES = new Set([
+  "xhr-sync",
+  "xhr-load",
+  "fetch-clone",
+  "fetch-tee",
+  "ump",
+  "prefetch",
+  "range-buffer",
+  "cross-itag",
+  "unknown"
+])
+
+function normalizeCaptureSource(source) {
+  const normalized = String(source || "unknown").toLowerCase()
+  return CHUNK_CAPTURE_SOURCES.has(normalized) ? normalized : "unknown"
+}
+
+function recordChunkStoreOutcome({ captureSource, ok, byteLength, aborted }) {
+  if (aborted) return
+  reportRuntimeMetric("chunk_store_outcome", {
+    captureSource: normalizeCaptureSource(captureSource),
+    ok: !!ok,
+    byteLength: ok && Number.isFinite(byteLength) ? Math.max(0, Math.round(byteLength)) : 0
+  })
+}
+/** @type {Map<string, { abortController: AbortController, promise: Promise<object> }>} */
+const inflightChunkStores = new Map()
+const pendingStoreRequestIds = new Set()
+
+function abortedStoreResult() {
+  return { ok: false, error: "aborted", aborted: true, skipped: true }
+}
+
+function cancelInflightChunkStores(reason = "teardown") {
+  if (inflightChunkStores.size === 0) return 0
+  const count = inflightChunkStores.size
+  for (const ctx of inflightChunkStores.values()) {
+    try {
+      ctx.abortController.abort()
+    } catch {
+      // ignore
+    }
+  }
+  inflightChunkStores.clear()
+  for (const requestId of pendingStoreRequestIds) {
+    const resolve = pending.get(requestId)
+    if (resolve) {
+      pending.delete(requestId)
+      resolve(abortedStoreResult())
+    }
+  }
+  pendingStoreRequestIds.clear()
+  logBridge(
+    `Stale session store guard: evicted ${count} in-flight write(s) (${reason})`,
+    "WARN"
+  )
+  return count
+}
+
+function delayWithAbortSignal(ms, signal) {
+  if (!signal) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+  if (signal.aborted) {
+    return Promise.reject(new DOMException("Aborted", "AbortError"))
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", onAbort)
+      reject(new DOMException("Aborted", "AbortError"))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+function requestRuntime(type, payload, transferables = [], options = {}) {
+  const signal = options?.signal
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(
+        type === "STORE_CHUNK_REQUEST"
+          ? abortedStoreResult()
+          : { ok: false, hit: false, error: "aborted", aborted: true }
+      )
+      return
+    }
+
     let outbound = payload
     if (type === "STORE_CHUNK_REQUEST" && payload?.bytes) {
       const copied = cloneBytesForBridge(payload.bytes)
@@ -87,7 +176,40 @@ function requestRuntime(type, payload, transferables = []) {
       outbound = { ...payload, bytes: copied }
     }
     const requestId = nextRequestId()
-    pending.set(requestId, resolve)
+    const trackStoreRequest = type === "STORE_CHUNK_REQUEST"
+    if (trackStoreRequest) pendingStoreRequestIds.add(requestId)
+
+    const timeoutMs =
+      type === "STORE_CHUNK_REQUEST"
+        ? STORE_CHUNK_TIMEOUT_MS
+        : type === "EXTENSION_FETCH_REQUEST"
+          ? 65000
+          : 5000
+    let timeoutId = null
+
+    const settle = (response) => {
+      if (timeoutId != null) clearTimeout(timeoutId)
+      if (signal) signal.removeEventListener("abort", onAbort)
+      if (trackStoreRequest) pendingStoreRequestIds.delete(requestId)
+      resolve(response)
+    }
+
+    const settleAborted = () => {
+      if (!pending.has(requestId)) return
+      pending.delete(requestId)
+      settle(
+        type === "STORE_CHUNK_REQUEST"
+          ? abortedStoreResult()
+          : { ok: false, hit: false, error: "aborted", aborted: true }
+      )
+    }
+    const onAbort = () => settleAborted()
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+
+    pending.set(requestId, settle)
+
     // Never transfer ArrayBuffers on the store lane — structured clone only.
     const transfer =
       type === "STORE_CHUNK_REQUEST"
@@ -105,21 +227,18 @@ function requestRuntime(type, payload, transferables = []) {
       "*",
       transfer
     )
-    setTimeout(() => {
+
+    timeoutId = setTimeout(() => {
       if (pending.has(requestId)) {
         pending.delete(requestId)
-        resolve({
+        settle({
           ok: false,
           hit: false,
           timeout: true,
           error: "timeout"
         })
       }
-    }, type === "STORE_CHUNK_REQUEST"
-      ? STORE_CHUNK_TIMEOUT_MS
-      : type === "EXTENSION_FETCH_REQUEST"
-        ? 65000
-        : 5000)
+    }, timeoutMs)
   })
 }
 
@@ -192,47 +311,109 @@ async function recoverStoreFromCache(payload) {
 }
 
 async function storeChunkFromPage(payload) {
+  const captureSource = normalizeCaptureSource(payload?.captureSource)
+  const rawByteLength =
+    payload?.bytes && typeof payload.bytes.byteLength === "number"
+      ? payload.bytes.byteLength
+      : null
+
+  if (rawByteLength === 0) {
+    logBridge(`zero-byte-chunk (${captureSource})`, "WARN")
+  }
+
   const stableBytes = payload?.bytes ? cloneBytesForBridge(payload.bytes) : null
   if (!stableBytes) {
+    recordChunkStoreOutcome({
+      captureSource,
+      ok: false,
+      byteLength: rawByteLength || 0
+    })
     return { ok: false, error: "invalid-bytes" }
   }
-  const stablePayload = { ...payload, bytes: stableBytes }
+  const stablePayload = { ...payload, bytes: stableBytes, captureSource }
 
   const inflightKey = storeInflightKey(stablePayload)
-  if (inflightChunkStores.has(inflightKey)) {
-    return inflightChunkStores.get(inflightKey)
+  const existing = inflightChunkStores.get(inflightKey)
+  if (existing) {
+    return existing.promise
   }
+
+  const abortController = new AbortController()
+  const { signal } = abortController
 
   const run = (async () => {
     let lastRes = { ok: false, error: "store-failed" }
-    for (let attempt = 0; attempt < STORE_CHUNK_RETRY_ATTEMPTS; attempt += 1) {
-      lastRes = await requestRuntime("STORE_CHUNK_REQUEST", stablePayload)
-      if (lastRes?.ok) {
-        if (typeof ns.noteLocalCacheKey === "function") {
-          ns.noteLocalCacheKey(stablePayload.url)
+    let aborted = false
+    try {
+      if (signal.aborted) {
+        aborted = true
+        return abortedStoreResult()
+      }
+
+      for (let attempt = 0; attempt < STORE_CHUNK_RETRY_ATTEMPTS; attempt += 1) {
+        if (signal.aborted) {
+          aborted = true
+          return abortedStoreResult()
         }
-        return lastRes
+        lastRes = await requestRuntime("STORE_CHUNK_REQUEST", stablePayload, [], { signal })
+        if (lastRes?.aborted) {
+          aborted = true
+          return abortedStoreResult()
+        }
+        if (lastRes?.ok) {
+          if (typeof ns.noteLocalCacheKey === "function") {
+            ns.noteLocalCacheKey(stablePayload.url)
+          }
+          return lastRes
+        }
+        if (!isTransientStoreFailure(lastRes) || attempt >= STORE_CHUNK_RETRY_ATTEMPTS - 1) {
+          break
+        }
+        try {
+          await delayWithAbortSignal(STORE_CHUNK_RETRY_DELAY_MS * (attempt + 1), signal)
+        } catch {
+          aborted = true
+          return abortedStoreResult()
+        }
       }
-      if (!isTransientStoreFailure(lastRes) || attempt >= STORE_CHUNK_RETRY_ATTEMPTS - 1) {
-        break
+
+      if (signal.aborted) {
+        aborted = true
+        return abortedStoreResult()
       }
-      await new Promise((resolve) => setTimeout(resolve, STORE_CHUNK_RETRY_DELAY_MS * (attempt + 1)))
+
+      if (!lastRes?.ok && isTransientStoreFailure(lastRes) && !signal.aborted) {
+        const recovered = await recoverStoreFromCache(stablePayload)
+        if (recovered?.ok) {
+          lastRes = recovered
+          return recovered
+        }
+      }
+      return lastRes
+    } catch (error) {
+      if (signal.aborted || error?.name === "AbortError") {
+        aborted = true
+        return abortedStoreResult()
+      }
+      throw error
+    } finally {
+      if (!aborted) {
+        recordChunkStoreOutcome({
+          captureSource,
+          ok: !!lastRes?.ok,
+          byteLength: stableBytes.byteLength,
+          aborted: false
+        })
+      }
+      const ctx = inflightChunkStores.get(inflightKey)
+      if (ctx?.promise === run) {
+        inflightChunkStores.delete(inflightKey)
+      }
     }
-    if (!lastRes?.ok && isTransientStoreFailure(lastRes)) {
-      const recovered = await recoverStoreFromCache(stablePayload)
-      if (recovered?.ok) return recovered
-    }
-    return lastRes
   })()
 
-  inflightChunkStores.set(inflightKey, run)
-  try {
-    return await run
-  } finally {
-    if (inflightChunkStores.get(inflightKey) === run) {
-      inflightChunkStores.delete(inflightKey)
-    }
-  }
+  inflightChunkStores.set(inflightKey, { abortController, promise: run })
+  return run
 }
 
 function base64ToArrayBuffer(base64) {
@@ -301,7 +482,9 @@ ns.formatStoreChunkError = formatStoreChunkError
 ns.isTransientStoreFailure = isTransientStoreFailure
 ns.cloneBytesForBridge = cloneBytesForBridge
 ns.copyArrayBufferForBridge = cloneBytesForBridge
+ns.normalizeCaptureSource = normalizeCaptureSource
 ns.storeChunkFromPage = storeChunkFromPage
+ns.cancelInflightChunkStores = cancelInflightChunkStores
 ns.base64ToArrayBuffer = base64ToArrayBuffer
 ns.resolveLookupBytes = resolveLookupBytes
 ns.notifyRuntime = notifyRuntime
