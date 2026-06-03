@@ -287,7 +287,8 @@ window.addEventListener("message", (event) => {
         requestId: data.requestId,
         url: data.url,
         method: data.method,
-        headers: data.headers
+        headers: data.headers,
+        source: data.source || "extension-fetch"
       }
 
       if (data.bytes && typeof data.bytes.byteLength === "number") {

@@ -143,6 +143,25 @@ async function buildDisplayStats() {
     youtubeUmpStreamsAborted: state.stats.youtubeUmpStreamsAborted || 0,
     youtubeUmpStreamsErrored: state.stats.youtubeUmpStreamsErrored || 0,
     youtubeUmpCaptureSkipped: state.stats.youtubeUmpCaptureSkipped || 0,
+    extensionFetchStarted: state.stats.extensionFetchStarted || 0,
+    extensionFetchCompleted: state.stats.extensionFetchCompleted || 0,
+    extensionFetchAborted: state.stats.extensionFetchAborted || 0,
+    extensionFetchFailed: state.stats.extensionFetchFailed || 0,
+    playlistFingerprintNewPlayback:
+      windowTotals.playlistFingerprintNewPlayback || state.stats.playlistFingerprintNewPlayback || 0,
+    extensionFetchBySource: state.telemetry.extensionFetchBySource || {},
+    workerStartCount:
+      typeof ns.getWorkerLifecycleSnapshot === "function"
+        ? ns.getWorkerLifecycleSnapshot().workerStartCount
+        : Number(state.workerLifecycle?.startCount) || 0,
+    workerLastStarted:
+      typeof ns.getWorkerLifecycleSnapshot === "function"
+        ? ns.getWorkerLifecycleSnapshot().workerLastStarted
+        : Number(state.workerLifecycle?.lastStartedAt) || 0,
+    workerRestartReason:
+      typeof ns.getWorkerLifecycleSnapshot === "function"
+        ? ns.getWorkerLifecycleSnapshot().workerRestartReason
+        : state.workerLifecycle?.lastReason || null,
     activityWindowMs: WINDOW_MS,
     activityWindowLabel: "Last 5 min"
   }

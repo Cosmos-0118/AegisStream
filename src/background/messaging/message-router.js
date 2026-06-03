@@ -37,6 +37,12 @@ const {
   fetchExtensionResponse,
   pumpResponseBody,
   headersToObject,
+  isExpectedAbortError,
+  bumpExtensionFetchLifecycle,
+  registerActiveExtensionFetch,
+  releaseActiveExtensionFetch,
+  abortActiveExtensionFetch,
+  startExtensionFetchLeakMonitor,
   recordLayoutAssets,
   sanitizeRecordedAssetsFromPage,
   armHeaderHintsForUrl,
@@ -93,11 +99,10 @@ function sendExtensionFetchEnd(tabId, requestId, payload) {
     .catch(() => {})
 }
 
-const activeFetchControllers = new Map()
-
 function handleExtensionFetch(message, sendResponse, sender) {
   const tabId = sender?.tab?.id
   const requestId = message.requestId
+  const source = message.source || "extension-fetch"
 
   ;(async () => {
     if (!tabId || !requestId) {
@@ -107,8 +112,14 @@ function handleExtensionFetch(message, sendResponse, sender) {
 
     let metaSent = false
     const controller = new AbortController()
-    activeFetchControllers.set(requestId, controller)
-    
+    registerActiveExtensionFetch(requestId, {
+      controller,
+      startedAt: Date.now(),
+      tabId,
+      source
+    })
+    bumpExtensionFetchLifecycle(source, "started")
+
     try {
       const bodyBytes = extractMessageBytes(message)
       noteTwitchAuthFromUrl(tabId, message.url)
@@ -117,7 +128,7 @@ function handleExtensionFetch(message, sendResponse, sender) {
         message.method || "GET",
         message.headers || {},
         bodyBytes,
-        { tabId, signal: controller.signal }
+        { tabId, signal: controller.signal, source }
       )
 
       sendResponse({
@@ -137,11 +148,13 @@ function handleExtensionFetch(message, sendResponse, sender) {
       })
 
       await sendExtensionFetchEnd(tabId, requestId, { ok: true })
+      bumpExtensionFetchLifecycle(source, "completed")
     } catch (err) {
-      if (err?.name === "AbortError") {
-        // Silently handle aborts
+      if (isExpectedAbortError(err)) {
+        bumpExtensionFetchLifecycle(source, "aborted")
         return
       }
+      bumpExtensionFetchLifecycle(source, "failed")
       const msg = err?.message || "extension fetch failed"
       if (!metaSent) {
         sendResponse({ ok: false, error: msg })
@@ -149,17 +162,13 @@ function handleExtensionFetch(message, sendResponse, sender) {
       }
       await sendExtensionFetchEnd(tabId, requestId, { ok: false, error: msg })
     } finally {
-      activeFetchControllers.delete(requestId)
+      releaseActiveExtensionFetch(requestId)
     }
   })()
 }
 
 function handleExtensionFetchAbort(message) {
-  const controller = activeFetchControllers.get(message.requestId)
-  if (controller) {
-    controller.abort()
-    activeFetchControllers.delete(message.requestId)
-  }
+  abortActiveExtensionFetch(message.requestId)
 }
 
 function handleCacheLookup(message, sendResponse, tabId = null) {
@@ -299,6 +308,9 @@ function handleStoreChunk(message, sendResponse) {
 
 function registerMessageRouter() {
   const { wakeBackgroundEngine } = ns
+  if (typeof startExtensionFetchLeakMonitor === "function") {
+    startExtensionFetchLeakMonitor()
+  }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void wakeBackgroundEngine()

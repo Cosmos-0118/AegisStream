@@ -31,7 +31,13 @@ function createState() {
       firstByteNetwork: [],
       umpHashes: new Set(),
       logThrottleByKey: new Map(),
-      lastUmpHealthLogAt: 0
+      lastUmpHealthLogAt: 0,
+      extensionFetchBySource: {}
+    },
+    workerLifecycle: {
+      startCount: 0,
+      lastStartedAt: 0,
+      lastReason: null
     },
     logs: [],
     stats: constants.createInitialStats(),
@@ -101,6 +107,9 @@ function resetStats() {
   state.telemetry.lastUmpHealthLogAt = 0
   if (typeof ns.resetActivityMetrics === "function") {
     ns.resetActivityMetrics()
+  }
+  if (typeof ns.resetExtensionFetchMetrics === "function") {
+    ns.resetExtensionFetchMetrics()
   }
 }
 

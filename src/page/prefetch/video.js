@@ -162,7 +162,8 @@ async function fetchPrefetchBytesWithExtension(url) {
   const extensionRes = await requestExtensionFetchBuffered({
     url,
     method: "GET",
-    headers: {}
+    headers: {},
+    source: "prefetch-video"
   })
   if (!extensionRes?.ok) {
     return {

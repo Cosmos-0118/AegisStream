@@ -70,9 +70,20 @@ function maybeLogUmpHealthSummary(force = false) {
   const stallSeconds = (state.stats.videoStallMsTotal / 1000).toFixed(1)
   const modeLabel =
     requests > 0 || lookups > 0 ? "YouTube realtime health" : "AegisStream realtime health"
+  const extensionFetchLine =
+    typeof ns.formatExtensionFetchMetricsLine === "function"
+      ? ns.formatExtensionFetchMetricsLine()
+      : ""
+  const workerLifecycle =
+    typeof ns.getWorkerLifecycleSnapshot === "function"
+      ? ns.getWorkerLifecycleSnapshot()
+      : null
+  const workerLine = workerLifecycle
+    ? `SW starts=#${workerLifecycle.workerStartCount}, reason=${workerLifecycle.workerRestartReason || "unknown"}`
+    : ""
   addLog(
     "INFO",
-    `${modeLabel} — req=${requests}, lookups=${lookups}, hits=${hits}, miss=${misses}, warmup=${warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, stalls=${state.stats.videoStalls} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}`
+    `${modeLabel} — req=${requests}, lookups=${lookups}, hits=${hits}, miss=${misses}, warmup=${warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, stalls=${state.stats.videoStalls} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
 }
 

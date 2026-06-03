@@ -168,7 +168,12 @@ ns.constants = {
       networkFirstByteAvgMs: 0,
       videoStalls: 0,
       videoStallMsTotal: 0,
-      videoStallLongestMs: 0
+      videoStallLongestMs: 0,
+      extensionFetchStarted: 0,
+      extensionFetchCompleted: 0,
+      extensionFetchAborted: 0,
+      extensionFetchFailed: 0,
+      playlistFingerprintNewPlayback: 0
     }
   }
 }

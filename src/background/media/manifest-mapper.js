@@ -135,38 +135,111 @@ function buildPlaylistFingerprint({
   }
 }
 
-function comparePlaylistFingerprints(previous, current) {
+const PLAYLIST_FINGERPRINT_SCORE = {
+  pageUrl: 50,
+  duration: 20,
+  segmentEndpoints: 20,
+  mediaPlaylist: 20,
+  segmentCount: 10
+}
+const NEW_PLAYBACK_SCORE_THRESHOLD = 45
+
+function formatFingerprintReason(signals) {
+  if (!Array.isArray(signals) || signals.length === 0) return null
+  return signals.join(" + ")
+}
+
+/**
+ * Confidence-weighted playlist change assessment. Weak signals alone stay below
+ * threshold; page navigation or multiple corroborating signals indicate new playback.
+ */
+function scorePlaylistFingerprintChange(previous, current, options = {}) {
+  const threshold = NEW_PLAYBACK_SCORE_THRESHOLD
   if (!previous || !current) {
     return {
       contentChanged: false,
+      score: 0,
+      threshold,
+      signals: [],
+      fingerprintReason: null,
       pageChanged: false,
       durationChanged: false,
       endpointsChanged: false,
-      mediaPlaylistChanged: false
+      mediaPlaylistChanged: false,
+      segmentCountChanged: false
     }
   }
+
+  const signals = []
+  let score = 0
+
   const pageChanged =
     Boolean(previous.pageUrlHash && current.pageUrlHash) &&
     previous.pageUrlHash !== current.pageUrlHash
+  if (pageChanged) {
+    score += PLAYLIST_FINGERPRINT_SCORE.pageUrl
+    signals.push("page-url")
+  }
+
   const durationChanged =
     previous.totalDuration != null &&
     current.totalDuration != null &&
     previous.totalDuration !== current.totalDuration
-  const endpointsChanged =
-    previous.firstSegmentSignature !== current.firstSegmentSignature ||
-    previous.lastSegmentSignature !== current.lastSegmentSignature
+  if (durationChanged) {
+    score += PLAYLIST_FINGERPRINT_SCORE.duration
+    signals.push("duration")
+  }
+
+  const firstChanged = previous.firstSegmentSignature !== current.firstSegmentSignature
+  const lastChanged = previous.lastSegmentSignature !== current.lastSegmentSignature
+  const endpointsChanged = firstChanged || lastChanged
+  if (endpointsChanged) {
+    score += PLAYLIST_FINGERPRINT_SCORE.segmentEndpoints
+    if (firstChanged && lastChanged) {
+      signals.push("segment-endpoints")
+    } else if (firstChanged) {
+      signals.push("first-segment")
+    } else {
+      signals.push("last-segment")
+    }
+  }
+
   const mediaPlaylistChanged =
     Boolean(previous.mediaPlaylistPath && current.mediaPlaylistPath) &&
     previous.mediaPlaylistPath !== current.mediaPlaylistPath
-  const contentChanged =
-    pageChanged || durationChanged || endpointsChanged || mediaPlaylistChanged
+  if (mediaPlaylistChanged) {
+    score += PLAYLIST_FINGERPRINT_SCORE.mediaPlaylist
+    signals.push("media-playlist")
+  }
+
+  const segmentCountChanged =
+    Number.isFinite(previous.segmentCount) &&
+    Number.isFinite(current.segmentCount) &&
+    previous.segmentCount !== current.segmentCount
+  if (segmentCountChanged && !options.isLive) {
+    score += PLAYLIST_FINGERPRINT_SCORE.segmentCount
+    signals.push("segment-count")
+  }
+
+  const fingerprintReason = formatFingerprintReason(signals)
+  const contentChanged = score >= threshold
+
   return {
     contentChanged,
+    score,
+    threshold,
+    signals,
+    fingerprintReason,
     pageChanged,
     durationChanged,
     endpointsChanged,
-    mediaPlaylistChanged
+    mediaPlaylistChanged,
+    segmentCountChanged
   }
+}
+
+function comparePlaylistFingerprints(previous, current, options = {}) {
+  return scorePlaylistFingerprintChange(previous, current, options)
 }
 
 ns.getManifestUrlSignature = getManifestUrlSignature
@@ -175,5 +248,8 @@ ns.resolveSegmentIndexInManifest = resolveSegmentIndexInManifest
 ns.getSequentialPrefetchTargets = getSequentialPrefetchTargets
 ns.getPageUrlFingerprint = getPageUrlFingerprint
 ns.buildPlaylistFingerprint = buildPlaylistFingerprint
+ns.scorePlaylistFingerprintChange = scorePlaylistFingerprintChange
 ns.comparePlaylistFingerprints = comparePlaylistFingerprints
+ns.PLAYLIST_FINGERPRINT_SCORE = PLAYLIST_FINGERPRINT_SCORE
+ns.NEW_PLAYBACK_SCORE_THRESHOLD = NEW_PLAYBACK_SCORE_THRESHOLD
 })()

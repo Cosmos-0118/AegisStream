@@ -82,13 +82,41 @@ const fp2 = api.buildPlaylistFingerprint({
 })
 const sameStructure = fp1.firstSegmentSignature === fp2.firstSegmentSignature
 assert(sameStructure, "fixture: pathname structure unchanged")
-const delta = api.comparePlaylistFingerprints(fp1, fp2)
+const delta = api.scorePlaylistFingerprintChange(fp1, fp2)
 assert(delta.contentChanged && delta.pageChanged, "page navigation detects new episode despite reused segment paths")
+assert(delta.score >= api.NEW_PLAYBACK_SCORE_THRESHOLD, "page-url alone exceeds threshold")
+assert(delta.fingerprintReason === "page-url", "reason lists contributing signals")
 
-const refreshDelta = api.comparePlaylistFingerprints(fp1, {
+const durationOnly = api.scorePlaylistFingerprintChange(fp1, {
+  ...fp1,
+  totalDuration: 99,
+  pageUrlHash: fp1.pageUrlHash
+})
+assert(!durationOnly.contentChanged, "duration alone stays below threshold")
+assert(durationOnly.score === api.PLAYLIST_FINGERPRINT_SCORE.duration, "duration contributes weak score")
+
+const corroborated = api.scorePlaylistFingerprintChange(fp1, {
+  ...fp1,
+  totalDuration: 99,
+  firstSegmentSignature: "https://cdn.site.com/segment/999.ts",
+  lastSegmentSignature: "https://cdn.site.com/segment/998.ts",
+  mediaPlaylistPath: "https://cdn.site.com/other.m3u8"
+})
+assert(
+  corroborated.contentChanged,
+  "multiple medium signals exceed threshold without page change"
+)
+assert(
+  corroborated.fingerprintReason.includes("duration") &&
+    corroborated.fingerprintReason.includes("media-playlist"),
+  "reason combines multiple signals"
+)
+
+const refreshDelta = api.scorePlaylistFingerprintChange(fp1, {
   ...fp1,
   segmentCount: fp1.segmentCount
 })
 assert(!refreshDelta.contentChanged, "identical fingerprint is not new content")
+assert(refreshDelta.fingerprintReason === null, "no reason when score is zero")
 
 console.log("manifest-mapper.test.js: ok")

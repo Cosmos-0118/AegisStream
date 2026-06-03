@@ -12,6 +12,8 @@ importScripts(
   "./cache/db.js",
   "./cache/store-queue.js",
   "./telemetry/activity-metrics.js",
+  "./telemetry/extension-fetch-metrics.js",
+  "./telemetry/worker-lifecycle.js",
   "./telemetry/runtime-metrics.js",
   "./prefetch/tab-policy.js",
   "./prefetch/buffer-policy.js",
@@ -32,7 +34,12 @@ importScripts(
 )
 
 // Lifecycle: no top-level init. Engine state wakes on demand; tab bootstrap runs only on install.
-const { registerChromeEventListeners, registerMessageRouter } = self.AegisBackground
+const {
+  registerChromeEventListeners,
+  registerMessageRouter,
+  recordServiceWorkerActivation
+} = self.AegisBackground
 
+void recordServiceWorkerActivation()
 registerChromeEventListeners()
 registerMessageRouter()

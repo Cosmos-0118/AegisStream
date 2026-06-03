@@ -28,7 +28,7 @@ const {
   getManifestUrlSignature,
   buildManifestSequenceIndex,
   buildPlaylistFingerprint,
-  comparePlaylistFingerprints,
+  scorePlaylistFingerprintChange,
   resolveSegmentIndexInManifest
 } = ns
 
@@ -578,11 +578,14 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     totalDuration: meta.totalDuration,
     pageUrl: pageUrlForFingerprint
   })
-  const fingerprintDelta = comparePlaylistFingerprints(
+  const fingerprintAssessment = scorePlaylistFingerprintChange(
     previous?.playlistFingerprint,
-    playlistFingerprint
+    playlistFingerprint,
+    { isLive: meta.isLive === true || previous?.isLive === true }
   )
-  const contentChangedByFingerprint = fingerprintDelta.contentChanged
+  const contentChangedByFingerprint = fingerprintAssessment.contentChanged
+  const fingerprintReason = fingerprintAssessment.fingerprintReason
+  const fingerprintScore = fingerprintAssessment.score
 
   const structureChanged =
     !previous?.segments ||
@@ -611,17 +614,11 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   }
 
   if (episodeChangedByFingerprint) {
-    const reason = fingerprintDelta.pageChanged
-      ? "page-url"
-      : fingerprintDelta.durationChanged
-        ? "duration"
-        : fingerprintDelta.endpointsChanged
-          ? "segment-endpoints"
-          : "media-playlist"
     addLog(
       "INFO",
-      `New playback detected via playlist fingerprint (${reason}, tab ${tabId}) — not treating as signed-URL refresh`
+      `New playback detected via playlist fingerprint (${fingerprintReason || "unknown"}, score=${fingerprintScore}/${fingerprintAssessment.threshold}, tab ${tabId}) — not treating as signed-URL refresh`
     )
+    bumpActivity("playlistFingerprintNewPlayback", 1)
   }
 
   let hasAnchor = false
@@ -769,6 +766,20 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       anchorRetainedByRefresh || previous?.anchorRetainedByRefresh === true,
     prefetchFailureWindow: previous?.prefetchFailureWindow || null,
     playlistFingerprint,
+    fingerprintReason: fingerprintReason || null,
+    fingerprintScore,
+    fingerprintThreshold: fingerprintAssessment.threshold,
+    playlistClassification: episodeChangedByFingerprint
+      ? "new-playback"
+      : qualityVariantSwitch
+        ? "quality-switch"
+        : tokensRefreshed
+          ? "token-refresh"
+          : structureChanged
+            ? "structure-change"
+            : urlsChanged
+              ? "urls-changed"
+              : "unchanged",
     recentAnchorChanges:
       qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint
         ? []

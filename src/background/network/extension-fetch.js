@@ -1,14 +1,41 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
+const { logUnexpectedRaceBranchError, isExpectedAbortError } = ns
 
 const FETCH_TIMEOUT_MS = 65_000
 const STREAM_CHUNK_SIZE = 256 * 1024
 
+function linkParentAbortSignal(parentSignal, ...controllers) {
+  if (!parentSignal) return () => {}
+  const abortAll = () => {
+    for (const controller of controllers) {
+      try {
+        controller.abort()
+      } catch {
+        // ignore
+      }
+    }
+  }
+  if (parentSignal.aborted) {
+    abortAll()
+    return () => {}
+  }
+  parentSignal.addEventListener("abort", abortAll, { once: true })
+  return () => parentSignal.removeEventListener("abort", abortAll)
+}
+
 function fetchWithTimeout(url, init, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const unlinkParent = linkParentAbortSignal(init?.signal, controller)
+  if (init?.signal?.aborted) {
+    clearTimeout(timer)
+    unlinkParent()
+    return Promise.reject(new DOMException("Aborted", "AbortError"))
+  }
   return fetch(url, { ...init, signal: controller.signal }).finally(() => {
     clearTimeout(timer)
+    unlinkParent()
   })
 }
 
@@ -52,8 +79,14 @@ async function raceExtensionFetch(url, init = {}) {
 
   const pathA = runPath("include", "high", controllerA)
   const pathB = runPath("omit", "low", controllerB)
-  pathA.catch(() => {})
-  pathB.catch(() => {})
+  pathA.catch((err) => logUnexpectedRaceBranchError("include", err))
+  pathB.catch((err) => logUnexpectedRaceBranchError("omit", err))
+
+  const unlinkParent = linkParentAbortSignal(init.signal, controllerA, controllerB)
+  if (init.signal?.aborted) {
+    unlinkParent()
+    throw new DOMException("Aborted", "AbortError")
+  }
 
   try {
     const winner = await Promise.race([pathA, pathB])
@@ -64,13 +97,16 @@ async function raceExtensionFetch(url, init = {}) {
       throw new Error(`HTTP ${winner.response.status}`)
     }
     return winner.response
-  } catch {
+  } catch (err) {
     controllerA.abort()
     controllerB.abort()
+    if (isExpectedAbortError(err)) throw err
     return fetchWithTimeout(url, {
       ...sharedInit,
       credentials: "include"
     })
+  } finally {
+    unlinkParent()
   }
 }
 

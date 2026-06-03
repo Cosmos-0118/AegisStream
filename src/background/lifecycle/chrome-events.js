@@ -21,7 +21,8 @@ const {
   ensureTabBridgeReady,
   wakeBackgroundEngine,
   handleExtensionInstall,
-  handleBrowserStartup
+  handleBrowserStartup,
+  setWorkerRestartReason
 } = ns
 
 function registerChromeEventListeners() {
@@ -98,12 +99,19 @@ function registerChromeEventListeners() {
     }
   })
 
-  chrome.runtime.onInstalled.addListener(() => {
+  chrome.runtime.onInstalled.addListener((details) => {
+    const reason = details?.reason === "install" ? "install" : "update"
+    if (typeof setWorkerRestartReason === "function") {
+      setWorkerRestartReason(reason)
+    }
     addLog("INFO", "Extension installed/updated")
     void handleExtensionInstall()
   })
 
   chrome.runtime.onStartup.addListener(() => {
+    if (typeof setWorkerRestartReason === "function") {
+      setWorkerRestartReason("browser_startup")
+    }
     addLog("INFO", "Browser started — loading settings")
     void handleBrowserStartup()
   })

@@ -255,7 +255,8 @@ async function aegisFetchInner(input, init) {
       url,
       method,
       headers: headersObj,
-      bytes: bodyBytes
+      bytes: bodyBytes,
+      source: "player-fetch"
     })
 
     try {
@@ -275,7 +276,13 @@ async function aegisFetchInner(input, init) {
         `Extension fetch failed (${streamErr?.message || "unknown"}), falling back to native fetch`,
         "WARN"
       )
-      try { stream.cancel().catch(() => {}) } catch {}
+      try {
+        stream.cancel().catch((err) => {
+          if (err?.name !== "AbortError") {
+            logBridge(`Stream cancel failed: ${err?.message || err}`, "WARN")
+          }
+        })
+      } catch {}
       networkResponse = await originalFetch(input, init)
     }
   } catch (e) {

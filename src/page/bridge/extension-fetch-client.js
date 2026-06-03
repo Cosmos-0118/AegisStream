@@ -17,7 +17,8 @@ function postFetchRequest(payload) {
       __aegisstream: true,
       type: "EXTENSION_FETCH_REQUEST",
       requestId,
-      ...payload
+      ...payload,
+      source: payload?.source || "prefetch-buffered"
     },
     "*"
   )
@@ -191,7 +192,8 @@ function requestExtensionFetchStream(payload) {
       __aegisstream: true,
       type: "EXTENSION_FETCH_REQUEST",
       requestId,
-      ...payload
+      ...payload,
+      source: payload?.source || "player-stream"
     },
     "*"
   )

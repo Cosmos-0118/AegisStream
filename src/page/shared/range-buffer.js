@@ -25,11 +25,12 @@
   async function fetchWithExtensionFallback(url, requestRuntime) {
     const bufferedFetch = self.AegisPageBridge?.requestExtensionFetchBuffered
     const extensionRes = bufferedFetch
-      ? await bufferedFetch({ url, method: "GET", headers: {} })
+      ? await bufferedFetch({ url, method: "GET", headers: {}, source: "range-buffer" })
       : await requestRuntime("EXTENSION_FETCH_REQUEST", {
           url,
           method: "GET",
-          headers: {}
+          headers: {},
+          source: "range-buffer"
         })
     if (!extensionRes?.ok) {
       return {
