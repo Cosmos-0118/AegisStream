@@ -2,9 +2,9 @@
 var ns = (self.AegisBackground ||= {})
 
 const STORAGE_KEY = "layoutAssetsByOrigin"
-const MAX_PATHS_PER_ORIGIN = 40
+const MAX_PATHS_PER_ORIGIN = 48
 const MAX_ASSETS_PER_PATH = 12
-const MAX_SCRIPT_ASSETS = 5
+const MAX_SCRIPT_ASSETS = 6
 
 function normalizeAssetUrl(resolvedUrl) {
   if (!resolvedUrl) return null
@@ -80,18 +80,20 @@ async function writeStore(store) {
   await chrome.storage.local.set({ [STORAGE_KEY]: store })
 }
 
-async function recordLayoutAssets(origin, pathname, assets) {
+async function recordLayoutAssets(origin, pathname, assets, options = {}) {
   if (!origin || !Array.isArray(assets) || assets.length === 0) return []
-  const normalized = dedupeAssets(assets)
-  if (normalized.length === 0) return []
+  const incoming = dedupeAssets(assets)
+  if (incoming.length === 0) return []
 
   const store = await readStore()
   const originKey = origin
   const pathKey = normalizePathname(pathname)
   const originBucket = store[originKey] && typeof store[originKey] === "object" ? store[originKey] : {}
+  const previous = Array.isArray(originBucket[pathKey]?.assets) ? originBucket[pathKey].assets : []
+  const merged = options.replace === true ? incoming : dedupeAssets([...previous, ...incoming])
 
   originBucket[pathKey] = {
-    assets: normalized,
+    assets: merged,
     updatedAt: Date.now()
   }
 
@@ -107,54 +109,79 @@ async function recordLayoutAssets(origin, pathname, assets) {
 
   store[originKey] = originBucket
   await writeStore(store)
-  return normalized
+  return merged
 }
 
 function scorePathMatch(requestPath, candidatePath) {
-  if (requestPath === candidatePath) return 1000
+  if (requestPath === candidatePath) return 1000 + candidatePath.length
   if (candidatePath === "/") return 1
-  if (requestPath.startsWith(candidatePath.endsWith("/") ? candidatePath : `${candidatePath}/`)) {
-    return candidatePath.length
-  }
+  const prefix = candidatePath.endsWith("/") ? candidatePath : `${candidatePath}/`
+  if (requestPath.startsWith(prefix)) return candidatePath.length
   return -1
 }
 
 async function lookupAssetsForUrl(targetUrl) {
   try {
     const parsed = new URL(targetUrl)
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return []
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { assets: [], matchedPath: null, fallback: null }
+    }
     const store = await readStore()
     const originBucket = store[parsed.origin]
-    if (!originBucket) return []
+    if (!originBucket) {
+      return { assets: [], matchedPath: null, fallback: null }
+    }
 
     const requestPath = normalizePathname(parsed.pathname)
-    let best = null
+    let bestPath = null
     let bestScore = -1
+    let rootAssets = null
 
     for (const [path, record] of Object.entries(originBucket)) {
+      if (!Array.isArray(record?.assets) || record.assets.length === 0) continue
+      if (path === "/") rootAssets = record.assets
       const score = scorePathMatch(requestPath, path)
-      if (score > bestScore && Array.isArray(record?.assets) && record.assets.length > 0) {
+      if (score > bestScore) {
         bestScore = score
-        best = record.assets
+        bestPath = path
       }
     }
 
-    return dedupeAssets(best || [])
+    if (bestScore > 0 && bestPath) {
+      return {
+        assets: dedupeAssets(originBucket[bestPath].assets),
+        matchedPath: bestPath,
+        fallback: bestPath === "/" ? null : "path"
+      }
+    }
+
+    if (rootAssets?.length) {
+      return {
+        assets: dedupeAssets(rootAssets),
+        matchedPath: "/",
+        fallback: "origin-root"
+      }
+    }
+
+    return { assets: [], matchedPath: null, fallback: null }
   } catch {
-    return []
+    return { assets: [], matchedPath: null, fallback: null }
   }
 }
 
 function sanitizeRecordedAssetsFromPage(assets) {
   const styles = []
   const scripts = []
+  const preloads = []
+
   for (const item of assets || []) {
     const entry = normalizeAssetEntry(item)
     if (!entry) continue
     if (entry.as === "style") styles.push(entry)
     else scripts.push(entry)
   }
-  return [...styles, ...scripts.slice(0, MAX_SCRIPT_ASSETS)]
+
+  return dedupeAssets([...preloads, ...styles, ...scripts.slice(0, MAX_SCRIPT_ASSETS)])
 }
 
 ns.normalizeAssetUrl = normalizeAssetUrl
@@ -162,4 +189,5 @@ ns.dedupeAssets = dedupeAssets
 ns.recordLayoutAssets = recordLayoutAssets
 ns.lookupAssetsForUrl = lookupAssetsForUrl
 ns.sanitizeRecordedAssetsFromPage = sanitizeRecordedAssetsFromPage
+ns.normalizePathname = normalizePathname
 })()

@@ -4,6 +4,9 @@ var ns = (self.AegisBackground ||= {})
 const SESSION_RULE_ID = 9001
 const MAX_LINK_HEADER_CHARS = 6144
 const MAX_LINK_ASSETS = 10
+const HINT_LOG_THROTTLE_MS = 4000
+
+const lastHintLogByKey = new Map()
 
 function isSkippableDocumentUrl(url) {
   if (typeof url !== "string") return true
@@ -23,9 +26,14 @@ function escapeRegex(value) {
 
 function buildDocumentCondition(documentUrl) {
   const parsed = new URL(documentUrl)
-  const href = parsed.href.split("#")[0]
+  const origin = parsed.origin
+  const path =
+    typeof ns.normalizePathname === "function"
+      ? ns.normalizePathname(parsed.pathname)
+      : parsed.pathname || "/"
+  const pathPart = path === "/" ? "/" : path
   return {
-    regexFilter: `^${escapeRegex(href)}$`,
+    regexFilter: `^${escapeRegex(origin)}${escapeRegex(pathPart)}(\\?[^#]*)?(#.*)?$`,
     resourceTypes: ["main_frame"]
   }
 }
@@ -42,6 +50,16 @@ function buildLinkHeaderValue(assets) {
   return parts.join(", ")
 }
 
+function shouldLogHint(key, level = "DEBUG") {
+  const now = Date.now()
+  const last = Number(lastHintLogByKey.get(key) || 0)
+  if (level === "WARN" || now - last >= HINT_LOG_THROTTLE_MS) {
+    lastHintLogByKey.set(key, now)
+    return true
+  }
+  return false
+}
+
 async function clearHeaderSessionRule() {
   if (typeof chrome.declarativeNetRequest?.updateSessionRules !== "function") return
   try {
@@ -53,7 +71,7 @@ async function clearHeaderSessionRule() {
   }
 }
 
-async function registerEarlyHints(targetUrl, assets, reason = "unknown") {
+async function registerEarlyHints(targetUrl, assets, reason = "unknown", meta = {}) {
   if (typeof chrome.declarativeNetRequest?.updateSessionRules !== "function") {
     return { ok: false, error: "session-rules-unavailable" }
   }
@@ -89,13 +107,16 @@ async function registerEarlyHints(targetUrl, assets, reason = "unknown") {
       removeRuleIds: [SESSION_RULE_ID],
       addRules: [rule]
     })
-    if (typeof ns.addLog === "function") {
+    const logKey = `armed:${reason}:${new URL(targetUrl).origin}`
+    if (shouldLogHint(logKey) && typeof ns.addLog === "function") {
+      const pathNote = meta.matchedPath ? ` path=${meta.matchedPath}` : ""
+      const fallbackNote = meta.fallback ? ` via ${meta.fallback}` : ""
       ns.addLog(
         "DEBUG",
-        `Link header hints armed (${reason}, ${deduped.length} assets): ${targetUrl.slice(0, 96)}`
+        `Link header hints armed (${reason}, ${deduped.length} assets${pathNote}${fallbackNote}): ${targetUrl.slice(0, 96)}`
       )
     }
-    return { ok: true, assetCount: deduped.length }
+    return { ok: true, assetCount: deduped.length, matchedPath: meta.matchedPath || null }
   } catch (e) {
     if (typeof ns.addLog === "function") {
       ns.addLog("WARN", `Header hint session rule failed: ${e.message}`)
@@ -113,12 +134,27 @@ async function armHeaderHintsForUrl(targetUrl, reason = "unknown") {
     return { ok: false, error: "skipped-host" }
   }
 
-  const assets =
-    typeof ns.lookupAssetsForUrl === "function" ? await ns.lookupAssetsForUrl(targetUrl) : []
+  const lookup =
+    typeof ns.lookupAssetsForUrl === "function"
+      ? await ns.lookupAssetsForUrl(targetUrl)
+      : { assets: [], matchedPath: null, fallback: null }
+
+  const assets = lookup.assets || []
   if (!assets.length) {
+    const missKey = `miss:${reason}:${new URL(targetUrl).origin}`
+    if (shouldLogHint(missKey) && typeof ns.addLog === "function") {
+      ns.addLog(
+        "DEBUG",
+        `Header hints not armed (${reason}, no layout cache): ${targetUrl.slice(0, 96)}`
+      )
+    }
     return { ok: false, error: "no-cached-layout" }
   }
-  return registerEarlyHints(targetUrl, assets, reason)
+
+  return registerEarlyHints(targetUrl, assets, reason, {
+    matchedPath: lookup.matchedPath,
+    fallback: lookup.fallback
+  })
 }
 
 ns.SESSION_HEADER_RULE_ID = SESSION_RULE_ID

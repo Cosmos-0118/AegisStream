@@ -1,6 +1,7 @@
 importScripts(
   "./background/config/constants.js",
   "./background/state/runtime-state.js",
+  "./background/domain/injectable-url.js",
   "./background/domain/url-playlist-utils.js",
   "./background/io/cache-db.js",
   "./background/io/store-queue.js",
@@ -65,11 +66,41 @@ const {
   sanitizeRecordedAssetsFromPage,
   armHeaderHintsForUrl,
   registerEarlyHints,
-  isSkippableHeaderHintUrl
+  isSkippableHeaderHintUrl,
+  isScriptInjectionAllowedUrl,
+  isRestrictedInjectionError
 } = self.AegisBackground
 
+const playlistDiscoverThrottleAt = new Map()
+const layoutRecordLogAt = new Map()
+
+function shouldLogLayoutRecord(origin, pathname, reason) {
+  const key = `${origin}|${pathname}|${reason}`
+  const now = Date.now()
+  const last = Number(layoutRecordLogAt.get(key) || 0)
+  if (now - last < 2500) return false
+  layoutRecordLogAt.set(key, now)
+  return true
+}
+
 function isInjectableHttpUrl(url) {
-  return typeof url === "string" && /^https?:\/\//i.test(url)
+  return isScriptInjectionAllowedUrl(url)
+}
+
+function shouldThrottlePlaylistDiscover(url) {
+  const key = stripHash(url)
+  if (!key) return true
+  const now = Date.now()
+  const last = Number(playlistDiscoverThrottleAt.get(key) || 0)
+  if (now - last < 4000) return true
+  playlistDiscoverThrottleAt.set(key, now)
+  if (playlistDiscoverThrottleAt.size > 500) {
+    const cutoff = now - 60_000
+    for (const [entryKey, ts] of playlistDiscoverThrottleAt.entries()) {
+      if (ts < cutoff) playlistDiscoverThrottleAt.delete(entryKey)
+    }
+  }
+  return false
 }
 
 const ISOLATED_BRIDGE_FILES = ["src/content/content-relay.js", "src/content/smoother/asset-tracker.js"]
@@ -171,7 +202,11 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
     }
     return true
   } catch (e) {
-    addLog("WARN", `Bridge reinjection skipped for tab ${tabId} (${reason}): ${e.message}`)
+    if (isRestrictedInjectionError(e.message)) {
+      addLog("DEBUG", `Bridge injection unavailable for tab ${tabId} (${reason})`)
+    } else {
+      addLog("WARN", `Bridge reinjection skipped for tab ${tabId} (${reason}): ${e.message}`)
+    }
     return false
   }
 }
@@ -628,8 +663,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true
     case "AegisStream:PlaylistDiscovered": {
       const tabId = sender?.tab?.id
-      if (tabId && message.url) {
-        addLog("INFO", `Playlist URL discovered in DOM: ${message.url.slice(-80)}`)
+      if (tabId && message.url && !shouldThrottlePlaylistDiscover(message.url)) {
+        addLog("DEBUG", `Playlist URL discovered in DOM: ${message.url.slice(-80)}`)
         void parseAndPrefetchFromPlaylist(tabId, message.url)
       }
       sendResponse({ ok: true })
@@ -725,10 +760,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const assets = sanitizeRecordedAssetsFromPage(message.assets)
         const saved = await recordLayoutAssets(message.origin, message.pathname, assets)
-        if (saved.length > 0) {
+        if (saved.length > 0 && shouldLogLayoutRecord(message.origin, message.pathname, message.reason)) {
           addLog(
             "DEBUG",
-            `Layout assets recorded (${saved.length}) for ${String(message.origin || "").slice(0, 64)}${message.pathname || "/"}`
+            `Layout assets recorded (${saved.length}, ${message.reason || "unknown"}) for ${String(message.origin || "").slice(0, 48)}${message.pathname || "/"}`
           )
         }
         sendResponse({ ok: true, count: saved.length })

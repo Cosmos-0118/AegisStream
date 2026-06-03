@@ -25,6 +25,8 @@ const TIER_EMERGENCY = "emergency"
 const TIER_AGGRESSIVE = "aggressive"
 
 const chunkObservedDebounceAt = new Map()
+const playlistFetchInFlight = new Set()
+const playlistFetchCompletedAt = new Map()
 
 function pruneChunkObservedDebounce(now = Date.now()) {
   const cutoff = now - constants.CHUNK_OBSERVED_DEBOUNCE_MS * 4
@@ -589,7 +591,7 @@ function syncKnownSegmentsToPage(tabId, segments, options = {}) {
     tabState &&
     !shouldForce &&
     tabState.lastKnownSyncSignature === signature &&
-    now - Number(tabState.lastKnownSyncAt || 0) < 5000
+    now - Number(tabState.lastKnownSyncAt || 0) < 8000
   ) {
     return
   }
@@ -614,8 +616,15 @@ function syncKnownSegmentsToPage(tabId, segments, options = {}) {
 async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
   const normalizedPlaylistUrl = stripHash(playlistUrl)
   if (!normalizedPlaylistUrl) return
+
+  const inflightKey = `${tabId}|${normalizedPlaylistUrl}|${depth}`
+  if (playlistFetchInFlight.has(inflightKey)) return
+  const completedAt = Number(playlistFetchCompletedAt.get(inflightKey) || 0)
+  if (Date.now() - completedAt < 5000) return
+
+  playlistFetchInFlight.add(inflightKey)
   try {
-    addLog("INFO", `Fetching playlist (depth=${depth}): ${normalizedPlaylistUrl.slice(-100)}`)
+    addLog("DEBUG", `Fetching playlist (depth=${depth}): ${normalizedPlaylistUrl.slice(-100)}`)
     const res = await fetch(normalizedPlaylistUrl, { credentials: "include", cache: "no-store" })
     if (!res.ok) {
       addLog("WARN", `Playlist fetch failed: HTTP ${res.status} — ${normalizedPlaylistUrl.slice(-80)}`)
@@ -685,6 +694,9 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
     }
   } catch (e) {
     addLog("ERROR", `Playlist error: ${e.message}`)
+  } finally {
+    playlistFetchInFlight.delete(inflightKey)
+    playlistFetchCompletedAt.set(inflightKey, Date.now())
   }
 }
 
