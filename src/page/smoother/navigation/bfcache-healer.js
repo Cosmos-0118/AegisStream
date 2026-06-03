@@ -196,19 +196,7 @@
 
       HealingWebSocket.prototype = OriginalWebSocket.prototype
       Object.setPrototypeOf(HealingWebSocket, OriginalWebSocket)
-      for (const key of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) {
-        if (!(key in OriginalWebSocket)) continue
-        try {
-          Object.defineProperty(HealingWebSocket, key, {
-            value: OriginalWebSocket[key],
-            writable: true,
-            configurable: true,
-            enumerable: true
-          })
-        } catch {
-          // Static properties may be read-only on some engines; prototype chain still works.
-        }
-      }
+      // CONNECTING/OPEN/CLOSING/CLOSED are read-only on native WebSocket; inherit via [[Prototype]].
 
       window.WebSocket = HealingWebSocket
     }

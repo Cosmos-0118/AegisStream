@@ -277,7 +277,7 @@ function AegisXHR() {
     }
 
     let settled = false
-    const CACHE_LOOKUP_TIMEOUT_MS = 3000
+    const CACHE_LOOKUP_TIMEOUT_MS = 300
 
     const lookupPromise = requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,
@@ -290,14 +290,28 @@ function AegisXHR() {
     const timeoutId = setTimeout(() => {
       if (settled) return
       settled = true
+      ns.reportRuntimeMetric("cache_lookup_timeout", { transport: "xhr", timeoutMs: CACHE_LOOKUP_TIMEOUT_MS })
       originalSend(body)
     }, CACHE_LOOKUP_TIMEOUT_MS)
 
-    // If the player aborts while we're waiting for cache, clean up.
-    xhr.addEventListener("abort", () => {
-      settled = true
-      clearTimeout(timeoutId)
-    }, { once: true })
+    const originalAbort = xhr.abort.bind(xhr)
+    xhr.abort = function () {
+      if (!settled) {
+        settled = true
+        clearTimeout(timeoutId)
+        ns.reportRuntimeMetric("xhr_abort_during_lookup", { transport: "xhr" })
+        // Player called send(), but we held it back.
+        // Native abort won't fire events if send() wasn't natively called.
+        // We synthesize them to satisfy the player's state machine.
+        setTimeout(() => {
+          const abortEvent = new Event("abort")
+          const loadendEvent = new Event("loadend")
+          xhr.dispatchEvent(abortEvent)
+          xhr.dispatchEvent(loadendEvent)
+        }, 0)
+      }
+      return originalAbort()
+    }
 
     lookupPromise.then((lookup) => {
       clearTimeout(timeoutId)

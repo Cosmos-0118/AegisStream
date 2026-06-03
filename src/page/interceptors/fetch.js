@@ -38,11 +38,17 @@ const UMP_STORE_RACE_RETRY_MS = 120
 const EXTENSION_STREAM_META_TIMEOUT_MS = 8000
 
 async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk) {
-  let lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
-    url: cacheLookupUrl,
-    method: cacheLookupMethod,
-    hasRange: false
-  })
+  let lookup = await Promise.race([
+    requestRuntime("CACHE_LOOKUP_REQUEST", {
+      url: cacheLookupUrl,
+      method: cacheLookupMethod,
+      hasRange: false
+    }),
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), 300))
+  ])
+  if (lookup?.timeout) {
+    ns.reportRuntimeMetric("cache_lookup_timeout", { transport: "fetch", timeoutMs: 300 })
+  }
   let lookupBytes = resolveLookupBytes(lookup)
   if (lookup?.ok && lookup.hit && lookupBytes) {
     return { lookup, lookupBytes }

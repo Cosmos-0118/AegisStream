@@ -108,6 +108,16 @@ function normalizePrefetchUrl(url) {
   return stripHash(url)
 }
 
+function clearPrefetchTrackingForUrls(urls) {
+  if (!Array.isArray(urls)) return
+  for (const url of urls) {
+    const normalized = normalizePrefetchUrl(url)
+    if (!normalized) continue
+    state.inflightPrefetches.delete(normalized)
+    state.failedPrefetches.delete(normalized)
+  }
+}
+
 function classifyPrefetchError(errorText, authFailure, tabState, options = {}) {
   if (options.rateLimit === true) return "rateLimit"
   if (authFailure === true) return "auth"
@@ -566,6 +576,15 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   const playlistChanged = structureChanged
   const segmentCountChanged =
     !previous?.segments || previous.segments.length !== normalizedSegments.length
+  const qualityVariantSwitch =
+    urlsChanged && !segmentCountChanged && structureChanged
+
+  if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0) {
+    clearPrefetchTrackingForUrls(previous.segments)
+    if (qualityVariantSwitch) {
+      state.tabAnchorJumps.delete(tabId)
+    }
+  }
 
   let hasAnchor = false
   let anchorIndex = null
@@ -666,6 +685,13 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     )
   }
 
+  if (qualityVariantSwitch) {
+    addLog(
+      "INFO",
+      `HLS quality variant switch on tab ${tabId} — cleared stale prefetch tracking and resuming from anchor ${anchorIndex ?? "?"}`
+    )
+  }
+
   const tabState = {
     segments: normalizedSegments,
     manifestSignatures,
@@ -682,8 +708,10 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     lastScheduledFromIndex,
     lastScheduledAt: previous?.lastScheduledAt || 0,
     lastSkipLogAt: previous?.lastSkipLogAt || 0,
-    highChurnMode: previous?.highChurnMode === true,
-    prefetchCooldownUntil: Number(previous?.prefetchCooldownUntil || 0),
+    highChurnMode: qualityVariantSwitch ? false : previous?.highChurnMode === true,
+    prefetchCooldownUntil: qualityVariantSwitch
+      ? 0
+      : Number(previous?.prefetchCooldownUntil || 0),
     playlistRefreshedAt: urlsChanged
       ? Date.now()
       : Number(previous?.playlistRefreshedAt || 0),
@@ -701,8 +729,15 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     anchorRetainedByRefresh:
       anchorRetainedByRefresh || previous?.anchorRetainedByRefresh === true,
     prefetchFailureWindow: previous?.prefetchFailureWindow || null,
-    recentAnchorChanges: segmentCountChanged ? [] : previous?.recentAnchorChanges || [],
-    rapidSeekUntil: segmentCountChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
+    recentAnchorChanges:
+      qualityVariantSwitch || segmentCountChanged ? [] : previous?.recentAnchorChanges || [],
+    rapidSeekUntil:
+      qualityVariantSwitch || segmentCountChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
+    lastQualityVariantSwitchAt: qualityVariantSwitch
+      ? Date.now()
+      : Number(previous?.lastQualityVariantSwitchAt || 0),
+    prefetchInflightRetryTimer: previous?.prefetchInflightRetryTimer || null,
+    prefetchInflightRetryPending: previous?.prefetchInflightRetryPending || null,
     lastKnownSyncAt: previous?.lastKnownSyncAt || 0,
     lastKnownSyncSignature: previous?.lastKnownSyncSignature || "",
     lastUpsertUrlsChanged: urlsChanged,
@@ -761,16 +796,18 @@ function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex)
   return playlistGrace || rotationGrace || retained
 }
 
-function maybeRequestPrefetchForTab(tabId, segments, startIndex, source) {
+function maybeRequestPrefetchForTab(tabId, segments, startIndex, source, options = {}) {
   if (isReactivePrefetchTab(tabId)) {
     addLog("DEBUG", `Reactive media mode: forward prefetch disabled (${source}, tab ${tabId})`)
     return
   }
   const tabState = state.playlistByTab.get(tabId)
   if (isPrefetchBlocked(tabState)) return
-  if (isTabInRapidSeek(tabState)) return
-  if (isTabInAnchorCooldown(tabState)) return
-  requestPrefetchForTab(tabId, segments, startIndex, source)
+  if (!options.force) {
+    if (isTabInRapidSeek(tabState)) return
+    if (isTabInAnchorCooldown(tabState)) return
+  }
+  requestPrefetchForTab(tabId, segments, startIndex, source, options)
 }
 
 function resolveEffectivePrefetchWindow(tabId) {
@@ -778,10 +815,12 @@ function resolveEffectivePrefetchWindow(tabId) {
   const baseWindow = Math.max(1, Number(state.settings.prefetchWindow) || 1)
   const jumps = getAnchorJumpCount(tabId)
   let windowSize = baseWindow
-  if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD) {
+  const tabState = state.playlistByTab.get(tabId)
+  const recentVariantSwitch =
+    Date.now() - Number(tabState?.lastQualityVariantSwitchAt || 0) < 5000
+  if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD && !recentVariantSwitch) {
     windowSize = Math.min(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
   }
-  const tabState = state.playlistByTab.get(tabId)
   if (isInRefreshRecovery(tabState)) {
     windowSize = Math.min(windowSize, constants.REFRESH_RECOVERY_MAX_CHUNKS)
   }
@@ -864,6 +903,44 @@ function clearPrefetchCapRetry(tabState) {
   tabState.prefetchCapRetryDelayMs = 0
 }
 
+function clearPrefetchInflightRetry(tabState) {
+  if (!tabState) return
+  if (tabState.prefetchInflightRetryTimer) {
+    clearTimeout(tabState.prefetchInflightRetryTimer)
+    tabState.prefetchInflightRetryTimer = null
+  }
+  tabState.prefetchInflightRetryPending = null
+}
+
+function schedulePrefetchInflightRetry(tabId, tabState, segments, startIndex, source = "schedule") {
+  if (!tabState) return
+  const pendingSnapshot = {
+    segments,
+    startIndex,
+    source,
+    queuedAt: Date.now()
+  }
+  tabState.prefetchInflightRetryPending = pendingSnapshot
+  if (tabState.prefetchInflightRetryTimer) {
+    clearTimeout(tabState.prefetchInflightRetryTimer)
+  }
+  tabState.prefetchInflightRetryTimer = setTimeout(() => {
+    tabState.prefetchInflightRetryTimer = null
+    const pending = tabState.prefetchInflightRetryPending
+    if (!pending) return
+    tabState.prefetchInflightRetryPending = null
+    if (isPrefetchWorkStale(tabState, pending)) {
+      dropStalePrefetchWork(tabId, tabState, pending, "inflight-retry-stale")
+      return
+    }
+    void schedulePrefetch(tabId, pending.segments, pending.startIndex, {
+      source: pending.source,
+      force: true,
+      inflightRetry: true
+    })
+  }, constants.PREFETCH_INFLIGHT_RETRY_MS)
+}
+
 function isPrefetchWorkStale(tabState, pending) {
   if (!pending) return true
   const queuedAt = Number(pending.queuedAt || 0)
@@ -884,6 +961,7 @@ function isPrefetchWorkStale(tabState, pending) {
 
 function dropStalePrefetchWork(tabId, tabState, pending, reason) {
   clearPrefetchCapRetry(tabState)
+  clearPrefetchInflightRetry(tabState)
   const ageSec =
     pending?.queuedAt > 0 ? Math.round((Date.now() - pending.queuedAt) / 1000) : null
   addLog(
@@ -1062,11 +1140,22 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
       addLog("INFO", `All ${targets.length} target chunks already cached`)
       tabState.lastSkipLogAt = now
     }
+    if (blockedInflight > 0 && uncached.length > 0 && !options.inflightRetry) {
+      schedulePrefetchInflightRetry(
+        tabId,
+        tabState,
+        normalized,
+        clampedStartIndex,
+        options.source || "schedule"
+      )
+    }
     tabState.lastScheduledFromIndex = clampedStartIndex
     tabState.lastScheduledAt = now
     tabState.updatedAt = now
     return
   }
+
+  clearPrefetchInflightRetry(tabState)
 
   const source = options.source || "schedule"
   const inflightAt = Date.now()
@@ -1101,7 +1190,7 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   }
 }
 
-function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor") {
+function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor", options = {}) {
   if (!Array.isArray(segments) || segments.length === 0) return
   if (!isTabEligibleForPrefetch(tabId)) return
 
@@ -1111,11 +1200,13 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
   const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
   const now = Date.now()
   const minGap =
-    tier === TIER_EMERGENCY
-      ? constants.PREFETCH_EMERGENCY_MIN_GAP_MS
-      : tier === TIER_AGGRESSIVE
-        ? 250
-        : 0
+    options.force
+      ? 0
+      : tier === TIER_EMERGENCY
+        ? constants.PREFETCH_EMERGENCY_MIN_GAP_MS
+        : tier === TIER_AGGRESSIVE
+          ? 250
+          : 0
   if (
     minGap > 0 &&
     tabState?.lastPrefetchRequestAt &&
@@ -1136,7 +1227,8 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
     segments,
     startIndex: clampedStartIndex,
     source,
-    queuedAt
+    queuedAt,
+    options
   }
 
   if (isPrefetchWorkStale(tabState, pendingSnapshot)) {
@@ -1157,7 +1249,7 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
       tabId,
       pending.segments,
       pending.startIndex,
-      { source: pending.source }
+      { source: pending.source, ...(pending.options || {}) }
     )
   }, constants.PREFETCH_BATCH_DEBOUNCE_MS)
 
@@ -1166,7 +1258,8 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
     source,
     startIndex: clampedStartIndex,
     segments,
-    queuedAt
+    queuedAt,
+    options
   })
 }
 
@@ -1359,7 +1452,16 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
       syncKnownSegmentsToPage(tabId, tabState.segments)
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Captured HLS refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
-        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "captured-playlist")
+        const forcePrefetch =
+          tabState.anchorRetainedByRefresh === true ||
+          Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 3000
+        maybeRequestPrefetchForTab(
+          tabId,
+          tabState.segments,
+          tabState.anchorIndex + 1,
+          "captured-playlist",
+          { force: forcePrefetch }
+        )
       } else {
         const startSeconds = extractStartSecondsFromPageUrl(pageUrl)
         if (startSeconds !== null) {
@@ -1396,7 +1498,16 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
     syncKnownSegmentsToPage(tabId, tabState.segments)
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `Captured DASH refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
-      maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "captured-playlist")
+      const forcePrefetch =
+        tabState.anchorRetainedByRefresh === true ||
+        Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 3000
+      maybeRequestPrefetchForTab(
+        tabId,
+        tabState.segments,
+        tabState.anchorIndex + 1,
+        "captured-playlist",
+        { force: forcePrefetch }
+      )
     } else {
       addLog("INFO", "Awaiting player segment request to anchor captured DASH prefetch (JIT mode)")
     }

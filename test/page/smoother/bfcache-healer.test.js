@@ -34,6 +34,27 @@ const sandbox = {
 }
 sandbox.self = sandbox
 
+function NativeWebSocket(url, protocols) {
+  this.url = url
+  this.protocols = protocols
+  this.readyState = NativeWebSocket.CONNECTING
+}
+NativeWebSocket.prototype = {
+  addEventListener() {},
+  removeEventListener() {},
+  close() {},
+  send() {},
+  dispatchEvent() {
+    return false
+  }
+}
+for (const [key, value] of Object.entries({ CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 })) {
+  Object.defineProperty(NativeWebSocket, key, { value, writable: false, configurable: false })
+}
+window.WebSocket = NativeWebSocket
+window.EventSource = function EventSource() {}
+window.EventSource.prototype = { addEventListener() {}, close() {} }
+
 vm.runInContext(fs.readFileSync(path.join(srcDir, "bfcache-healer.js"), "utf8"), vm.createContext(sandbox))
 
 const onUnload = () => {}
@@ -60,6 +81,11 @@ const cleared = !window._listeners.some(
 )
 if (!cleared) {
   throw new Error("window.onunload = null did not remove pagehide listener")
+}
+
+const WrappedWebSocket = window.WebSocket
+if (WrappedWebSocket.CONNECTING !== 0 || WrappedWebSocket.OPEN !== 1) {
+  throw new Error("HealingWebSocket should inherit static readyState constants")
 }
 
 console.log("bfcache-healer.test.js: ok")
