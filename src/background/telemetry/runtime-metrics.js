@@ -276,6 +276,12 @@ function handleRuntimeMetric(message, sender) {
     durationMs >= 1000 ? "WARN" : "INFO",
     `Playback stall ${Math.round(durationMs)}ms (${reason}) on ${tabLabel} at ${atSeconds}s`
   )
+  if (
+    Number.isFinite(tabId) &&
+    typeof ns.recordPlaybackResumedAfterStall === "function"
+  ) {
+    ns.recordPlaybackResumedAfterStall(tabId)
+  }
   if (state.stats.videoStalls % 5 === 0) {
     maybeLogUmpHealthSummary(true)
   }

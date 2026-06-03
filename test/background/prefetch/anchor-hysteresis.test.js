@@ -37,4 +37,9 @@ tabState.anchorPendingCount = 0
 resolved = evaluatePassiveAnchorSignal(tabState, 51, 50)
 assert(resolved === 51, "nearby +1 segment should pass immediately")
 
+tabState.anchorIndex = 31
+tabState.mutePassiveHysteresisUntil = Date.now() + 5_000
+resolved = evaluatePassiveAnchorSignal(tabState, 43, 31)
+assert(resolved === 31, "passive lane should stay locked while hysteresis is muted")
+
 console.log("anchor-hysteresis.test.js: all assertions passed")

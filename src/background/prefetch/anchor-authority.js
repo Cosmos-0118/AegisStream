@@ -28,6 +28,11 @@ function shouldPurgePrefetchQueues(jump) {
   return jump >= threshold
 }
 
+function isScrubbingTrainActive(tabState, now = Date.now()) {
+  if (!tabState) return false
+  return now < Number(tabState.scrubbingTrainUntil || 0)
+}
+
 /**
  * Whether an authoritative (non-network) anchor commit is allowed and how
  * aggressively to reset prefetch tracking.
@@ -44,6 +49,10 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
 
     if (typeof current !== "number") {
       return { allow: true, reason: null, jump: 0, purgeQueues: false }
+    }
+
+    if (isScrubbingTrainActive(tabState, now)) {
+      return { allow: true, reason: null, jump, purgeQueues: true }
     }
 
     if (jump < minJump) {
@@ -90,4 +99,5 @@ ns.anchorJump = anchorJump
 ns.evaluateAuthorityCommit = evaluateAuthorityCommit
 ns.authorityLabel = authorityLabel
 ns.shouldPurgePrefetchQueues = shouldPurgePrefetchQueues
+ns.isScrubbingTrainActive = isScrubbingTrainActive
 })()

@@ -9,11 +9,20 @@ const NEARBY_DELTA = 2
  * Passive (network) anchor lane: debounce extreme jumps unless the player
  * proves the new neighborhood with monotonic consecutive segment requests.
  */
+function isPassiveHysteresisMuted(tabState, now = Date.now()) {
+  if (!tabState) return false
+  return now < Number(tabState.mutePassiveHysteresisUntil || 0)
+}
+
 function evaluatePassiveAnchorSignal(tabState, observedIndex, currentAnchor) {
   const current =
     typeof currentAnchor === "number" ? currentAnchor : tabState.anchorIndex
   if (typeof current !== "number" || typeof observedIndex !== "number") {
     return observedIndex
+  }
+
+  if (isPassiveHysteresisMuted(tabState)) {
+    return current
   }
 
   const delta = Math.abs(observedIndex - current)
@@ -58,4 +67,5 @@ function resetPassiveAnchorDeferral(tabState) {
 
 ns.evaluatePassiveAnchorSignal = evaluatePassiveAnchorSignal
 ns.resetPassiveAnchorDeferral = resetPassiveAnchorDeferral
+ns.isPassiveHysteresisMuted = isPassiveHysteresisMuted
 })()

@@ -5,7 +5,11 @@ if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("video
 const { notifyRuntime, logBridge } = ns
 
 const TELEPORT_DEBOUNCE_MS = 40
+const SCRUB_SEEK_INTERVAL_MS = 800
+const SCRUB_IDLE_MS = 1_000
+
 const lastTeleportAtByVideo = new WeakMap()
+const scrubStateByVideo = new WeakMap()
 
 function resolveManifestMapper() {
   const hint = ns.playbackManifestHint
@@ -23,7 +27,48 @@ function resolveManifestMapper() {
   }
 }
 
-function broadcastForceTeleport(video, manifestMapper) {
+function setScrubbingTrainActive(video, active) {
+  const state = scrubStateByVideo.get(video) || {
+    active: false,
+    lastSeekAt: 0,
+    idleTimer: null
+  }
+  if (state.active === active) {
+    scrubStateByVideo.set(video, state)
+    return
+  }
+  state.active = active
+  scrubStateByVideo.set(video, state)
+  notifyRuntime("SCRUBBING_TRAIN", { active })
+  logBridge?.(
+    active ? "Scrubbing train active (rapid seeking)" : "Scrubbing train idle",
+    "DEBUG"
+  )
+}
+
+function noteSeekingForScrubTrain(video) {
+  if (!(video instanceof HTMLMediaElement)) return
+  const now = Date.now()
+  let state = scrubStateByVideo.get(video)
+  if (!state) {
+    state = { active: false, lastSeekAt: 0, idleTimer: null }
+    scrubStateByVideo.set(video, state)
+  }
+
+  if (state.lastSeekAt > 0 && now - state.lastSeekAt < SCRUB_SEEK_INTERVAL_MS) {
+    if (!state.active) setScrubbingTrainActive(video, true)
+    else notifyRuntime("SCRUBBING_TRAIN", { active: true })
+  }
+
+  state.lastSeekAt = now
+  if (state.idleTimer) clearTimeout(state.idleTimer)
+  state.idleTimer = setTimeout(() => {
+    state.idleTimer = null
+    if (state.active) setScrubbingTrainActive(video, false)
+  }, SCRUB_IDLE_MS)
+}
+
+function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
   if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
   if (!(video instanceof HTMLMediaElement)) return
 
@@ -43,7 +88,8 @@ function broadcastForceTeleport(video, manifestMapper) {
   notifyRuntime("FORCE_TELEPORT_ANCHOR", {
     index: typeof targetedIndex === "number" ? targetedIndex : null,
     currentTimeSec: currentTime,
-    timestamp: now
+    timestamp: now,
+    eventType
   })
 
   if (typeof targetedIndex === "number" && targetedIndex >= 0) {
@@ -59,12 +105,21 @@ function setupVideoElementAnchorBridge(videoElement, manifestMapper) {
   videoElement.__aegisAnchorBridgeHook = true
 
   const mapper = manifestMapper || resolveManifestMapper()
-  const broadcastTeleport = () => broadcastForceTeleport(videoElement, mapper)
-
-  videoElement.addEventListener("seeked", broadcastTeleport, { passive: true })
-  videoElement.addEventListener("playing", () => {
-    if (videoElement.seeking) broadcastTeleport()
-  }, { passive: true })
+  videoElement.addEventListener("seeking", () => noteSeekingForScrubTrain(videoElement), {
+    passive: true
+  })
+  videoElement.addEventListener(
+    "seeked",
+    () => broadcastForceTeleport(videoElement, mapper, "seeked"),
+    { passive: true }
+  )
+  videoElement.addEventListener(
+    "playing",
+    () => {
+      if (videoElement.seeking) broadcastForceTeleport(videoElement, mapper, "playing")
+    },
+    { passive: true }
+  )
 }
 
 function observeVideosForAnchorBridge() {

@@ -27,6 +27,7 @@ const {
   parsePlaylistContentForTab,
   handleChunkObserved,
   handleForceTeleportAnchor,
+  handleScrubbingTrainState,
   isTabInRapidSeek,
   syncKnownSegmentsToPage,
   maybeRequestPrefetchForTab,
@@ -535,13 +536,45 @@ function registerMessageRouter() {
           skipped === "already-inflight" ||
           skipped === "tab-inactive" ||
           skipped === "tab-hidden" ||
-          skipped === "stale-queue"
+          skipped === "stale-queue" ||
+          skipped === "aborted" ||
+          skipped === "generation-stale"
         ) {
+          if (Number.isFinite(tabId)) {
+            const tabState = state.playlistByTab.get(tabId)
+            const normalized = stripHash(message.url)
+            if (tabState && normalized && typeof ns.releasePrefetchDownload === "function") {
+              ns.releasePrefetchDownload(tabState, normalized)
+            }
+          }
           updatePrefetchOutcome(message.url, true)
           sendResponse({ ok: true })
           return
         }
+        if (Number.isFinite(tabId)) {
+          const tabState = state.playlistByTab.get(tabId)
+          if (
+            tabState &&
+            typeof ns.isCurrentNetworkGeneration === "function" &&
+            !ns.isCurrentNetworkGeneration(tabState, message.networkGeneration)
+          ) {
+            const normalized = stripHash(message.url)
+            if (normalized && typeof ns.releasePrefetchDownload === "function") {
+              ns.releasePrefetchDownload(tabState, normalized)
+            }
+            updatePrefetchOutcome(message.url, true)
+            sendResponse({ ok: true })
+            return
+          }
+        }
         if (message.success) {
+          if (Number.isFinite(tabId)) {
+            const tabState = state.playlistByTab.get(tabId)
+            const normalized = stripHash(message.url)
+            if (tabState && normalized && typeof ns.releasePrefetchDownload === "function") {
+              ns.releasePrefetchDownload(tabState, normalized)
+            }
+          }
           updatePrefetchOutcome(message.url, true, "unknown", { tabId })
           bumpActivity("prefetched", 1)
           if (typeof ns.recordSpeculativeCompleted === "function") {
@@ -566,31 +599,42 @@ function registerMessageRouter() {
           }
         }
 
-        const errorText = message.error || "unknown"
+        const errorText =
+          typeof ns.summarizePrefetchErrorForFsm === "function"
+            ? ns.summarizePrefetchErrorForFsm(message)
+            : message.errorMessage || message.error || "unknown"
         const transient =
           message.transient === true ||
           /tab-hidden|tab-not-active|runtime|timeout|serialize|message port/i.test(errorText)
         if (typeof ns.recordSpeculativeCompleted === "function") {
           ns.recordSpeculativeCompleted(message.url, 0, false)
         }
+        if (Number.isFinite(tabId)) {
+          const tabState = state.playlistByTab.get(tabId)
+          const normalized = stripHash(message.url)
+          if (tabState && normalized && typeof ns.releasePrefetchDownload === "function") {
+            ns.releasePrefetchDownload(tabState, normalized)
+          }
+        }
         const outcome = updatePrefetchOutcome(message.url, false, errorText, { transient })
         if (Number.isFinite(tabId)) {
           noteTabPrefetchFailure(tabId, errorText, {
             authFailure: message.authFailure === true,
-            rateLimit: message.rateLimit === true
+            rateLimit: message.rateLimit === true,
+            httpStatus: Number(message.status) || 0
           })
         }
         bumpActivity("prefetchFailed", 1)
-        const retryAfterSec = Math.max(1, Math.ceil((outcome.retryAfter - Date.now()) / 1000))
         const shouldLogFailure =
           outcome.attempts <= 2 ||
           outcome.attempts % 4 === 0 ||
           errorText === "delegate-failed"
         if (shouldLogFailure) {
-          addLog(
-            transient ? "WARN" : "ERROR",
-            `Prefetch failed (attempt ${outcome.attempts}, retry in ${retryAfterSec}s): ${errorText} — ${(message.url || "").slice(-80)}`
-          )
+          const logLine =
+            typeof ns.formatPrefetchFailureLogLine === "function"
+              ? ns.formatPrefetchFailureLogLine(tabId, message, outcome)
+              : `Prefetch failed (attempt ${outcome.attempts}): ${errorText} — ${(message.url || "").slice(-80)}`
+          addLog(transient ? "WARN" : "ERROR", logLine)
         }
         sendResponse({ ok: true })
       })().catch(() => {
@@ -613,6 +657,14 @@ function registerMessageRouter() {
       const tabId = sender?.tab?.id
       if (state.settings.enabled && Number.isFinite(tabId)) {
         handleForceTeleportAnchor(tabId, message.payload || message)
+      }
+      sendResponse({ ok: true })
+      return true
+    }
+    case "AegisStream:ScrubbingTrain": {
+      const tabId = sender?.tab?.id
+      if (state.settings.enabled && Number.isFinite(tabId)) {
+        handleScrubbingTrainState(tabId, message.payload || message)
       }
       sendResponse({ ok: true })
       return true

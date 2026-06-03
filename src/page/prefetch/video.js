@@ -11,6 +11,40 @@ const {
   reportRuntimeMetric
 } = ns
 
+function emitPrefetchFailure(url, details) {
+  const payload =
+    typeof ns.buildPrefetchFailureResult === "function"
+      ? ns.buildPrefetchFailureResult(url, {
+          ...details,
+          networkGeneration: pageNetworkGeneration
+        })
+      : {
+          url,
+          success: false,
+          error: details.errorMessage || details.error || "unknown",
+          networkGeneration: pageNetworkGeneration,
+          transient: details.transient === true,
+          authFailure: details.authFailure === true,
+          rateLimit: details.rateLimit === true
+        }
+  notifyRuntime("PREFETCH_RESULT", payload)
+}
+
+function emitPrefetchSkipped(url, skipped, extra = {}) {
+  notifyRuntime("PREFETCH_RESULT", {
+    url,
+    success: false,
+    skipped,
+    networkGeneration: pageNetworkGeneration,
+    transient: extra.transient === true
+  })
+}
+
+function isUrlGenerationCurrent(url) {
+  const queuedGen = urlQueuedGeneration.get(url)
+  return queuedGen === pageNetworkGeneration
+}
+
 const PREFETCH_CONCURRENCY = 3
 const MAX_PREFETCH_QUEUE_SIZE = 240
 const PREFETCH_QUEUE_MAX_AGE_MS = 15_000
@@ -20,6 +54,8 @@ const prefetchQueuedAt = new Map()
 const prefetchQueue = []
 const prefetchQueueWaiters = []
 const prefetchAbortControllers = new Map()
+const urlQueuedGeneration = new Map()
+let pageNetworkGeneration = 0
 let prefetchWorkersStarted = false
 const observedChunkAt = new Map()
 const knownUmpCacheKeys = new Set()
@@ -93,25 +129,35 @@ function rememberKnownUmpKey(cacheKey) {
   }
 }
 
-function cancelPrefetchRunway(keepUrls = []) {
+function cancelPrefetchRunway(keepUrls = [], options = {}) {
+  if (Number.isFinite(Number(options.networkGeneration))) {
+    pageNetworkGeneration = Number(options.networkGeneration)
+  }
   const keep = new Set(keepUrls.filter(Boolean))
   for (const [url, controller] of prefetchAbortControllers.entries()) {
     if (!keep.has(url)) {
       controller.abort()
       prefetchAbortControllers.delete(url)
+      urlQueuedGeneration.delete(url)
     }
   }
-  prefetchQueue.length = 0
+  const queueSnapshot = prefetchQueue.splice(0, prefetchQueue.length)
+  for (const url of queueSnapshot) {
+    if (keep.has(url)) {
+      prefetchQueue.push(url)
+      continue
+    }
+    queuedPrefetches.delete(url)
+    prefetchQueuedAt.delete(url)
+    urlQueuedGeneration.delete(url)
+    emitPrefetchSkipped(url, "aborted")
+  }
   for (const url of Array.from(queuedPrefetches)) {
     if (keep.has(url)) continue
     queuedPrefetches.delete(url)
     prefetchQueuedAt.delete(url)
-    notifyRuntime("PREFETCH_RESULT", {
-      url,
-      success: false,
-      skipped: "stale-queue",
-      transient: true
-    })
+    urlQueuedGeneration.delete(url)
+    emitPrefetchSkipped(url, "aborted")
   }
 }
 
@@ -287,12 +333,8 @@ function isPrefetchUrlStale(url) {
 function dropStalePrefetchUrl(url) {
   prefetchQueuedAt.delete(url)
   queuedPrefetches.delete(url)
-  notifyRuntime("PREFETCH_RESULT", {
-    url,
-    success: false,
-    skipped: "stale-queue",
-    transient: true
-  })
+  urlQueuedGeneration.delete(url)
+  emitPrefetchSkipped(url, "stale-queue", { transient: true })
 }
 
 function purgeStaleQueuedPrefetches() {
@@ -334,6 +376,13 @@ function dequeuePrefetchUrl() {
       dropStalePrefetchUrl(url)
       continue
     }
+    if (!isUrlGenerationCurrent(url)) {
+      queuedPrefetches.delete(url)
+      prefetchQueuedAt.delete(url)
+      urlQueuedGeneration.delete(url)
+      emitPrefetchSkipped(url, "generation-stale")
+      continue
+    }
     queuedPrefetches.delete(url)
     prefetchQueuedAt.delete(url)
     if (activePrefetches.has(url)) continue
@@ -359,12 +408,11 @@ function notifyPrefetchWorkers() {
 
 async function processPrefetchUrl(url) {
   if (!isPagePrefetchAllowed()) {
-    notifyRuntime("PREFETCH_RESULT", {
-      url,
-      success: false,
-      skipped: "tab-hidden",
-      transient: true
-    })
+    emitPrefetchSkipped(url, "tab-hidden", { transient: true })
+    return
+  }
+  if (!isUrlGenerationCurrent(url)) {
+    emitPrefetchSkipped(url, "generation-stale")
     return
   }
 
@@ -406,16 +454,26 @@ async function processPrefetchUrl(url) {
           requestStatus === 408 ||
           requestStatus === 425 ||
           requestStatus >= 500)
-      notifyRuntime("PREFETCH_RESULT", {
-        url,
-        success: false,
-        error:
-          requestStatus > 0
-            ? `HTTP ${requestStatus}; ${extensionFallback.error}`
-            : extensionFallback.error,
-        transient,
-        authFailure,
-        rateLimit
+      emitPrefetchFailure(url, {
+          fetchMode: "page",
+          fetchPath:
+            extensionFallback.ok === false && requestStatus > 0
+              ? "originalFetch+extension"
+              : requestStatus > 0
+                ? "originalFetch"
+                : "extension",
+          status:
+            requestStatus > 0
+              ? requestStatus
+              : Number(extensionFallback.statusCode) || 0,
+          errorMessage:
+            requestStatus > 0
+              ? `${extensionFallback.error || "extension fallback failed"}`
+              : extensionFallback.error || "fetch failed",
+          errorName: requestStatus > 0 ? "HttpError" : "FetchError",
+          transient,
+          authFailure,
+          rateLimit
       })
       return
     }
@@ -425,7 +483,12 @@ async function processPrefetchUrl(url) {
   }
 
   if (!bytes || bytes.byteLength === 0) {
-    notifyRuntime("PREFETCH_RESULT", { url, success: false, error: "empty response" })
+    emitPrefetchFailure(url, {
+      fetchPath: "originalFetch",
+      status: requestStatus,
+      errorMessage: "empty response",
+      errorName: "EmptyResponse"
+    })
     return
   }
 
@@ -441,29 +504,36 @@ async function processPrefetchUrl(url) {
   })
 
   if (!storeRes?.ok) {
-    notifyRuntime("PREFETCH_RESULT", {
-      url,
-      success: false,
-      error: storeRes?.error ? `store failed: ${storeRes.error}` : "store failed",
+    emitPrefetchFailure(url, {
+      fetchPath: "cache-store",
+      status: requestStatus,
+      errorMessage: storeRes?.error ? `store failed: ${storeRes.error}` : "store failed",
+      errorName: "StoreError",
       transient: isTransientStoreFailure(storeRes)
     })
     return
   }
 
-  notifyRuntime("PREFETCH_RESULT", { url, success: true, size: bytes.byteLength })
+  if (!isUrlGenerationCurrent(url)) {
+    emitPrefetchSkipped(url, "generation-stale")
+    return
+  }
+
+  notifyRuntime("PREFETCH_RESULT", {
+    url,
+    success: true,
+    size: bytes.byteLength,
+    networkGeneration: pageNetworkGeneration
+  })
   } catch (e) {
-    if (e?.name === "AbortError") {
-      notifyRuntime("PREFETCH_RESULT", {
-        url,
-        success: false,
-        skipped: "stale-queue",
-        transient: true
-      })
+    if (e?.name === "AbortError" || controller.signal.aborted) {
+      emitPrefetchSkipped(url, "aborted")
       return
     }
     throw e
   } finally {
     prefetchAbortControllers.delete(url)
+    urlQueuedGeneration.delete(url)
   }
 }
 
@@ -491,18 +561,29 @@ async function runPrefetchWorker() {
     try {
       await processPrefetchUrl(url)
     } catch (e) {
+      if (e?.name === "AbortError") {
+        emitPrefetchSkipped(url, "aborted")
+        return
+      }
+      if (!isUrlGenerationCurrent(url)) {
+        emitPrefetchSkipped(url, "generation-stale")
+        return
+      }
       const message = e?.message || "unknown"
-      const transient = /failed to fetch|aborted|aborterror|networkerror|load failed/i.test(
+      const name = e?.name || "Error"
+      const transient = /failed to fetch|networkerror|load failed/i.test(
         String(message).toLowerCase()
       )
-      notifyRuntime("PREFETCH_RESULT", {
-        url,
-        success: false,
-        error: message,
+      emitPrefetchFailure(url, {
+        fetchPath: "originalFetch",
+        status: 0,
+        errorName: name,
+        errorMessage: message,
         transient
       })
     } finally {
       activePrefetches.delete(url)
+      urlQueuedGeneration.delete(url)
       activePrefetchWorkerCount = Math.max(0, activePrefetchWorkerCount - 1)
     }
   }
@@ -516,9 +597,18 @@ function ensurePrefetchWorkers() {
   }
 }
 
-async function prefetchSegmentsFromPage(urls) {
+async function prefetchSegmentsFromPage(urls, options = {}) {
   if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
     return
+  }
+  const msgGen = Number(options.networkGeneration)
+  if (Number.isFinite(msgGen)) {
+    if (msgGen < pageNetworkGeneration) return
+    if (msgGen > pageNetworkGeneration) {
+      cancelPrefetchRunway([], { networkGeneration: msgGen })
+    } else {
+      pageNetworkGeneration = msgGen
+    }
   }
   const unique = []
   const seen = new Set()
@@ -565,12 +655,11 @@ async function prefetchSegmentsFromPage(urls) {
 
   if (!toQueue.length) return
 
-  cancelPrefetchRunway(unique)
-
   const now = Date.now()
   for (const url of toQueue) {
     queuedPrefetches.add(url)
     prefetchQueuedAt.set(url, now)
+    urlQueuedGeneration.set(url, pageNetworkGeneration)
     prefetchQueue.push(url)
   }
   trimPrefetchQueue()

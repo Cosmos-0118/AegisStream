@@ -114,7 +114,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     window.postMessage({
       __aegisstream: true,
       type: "PREFETCH_SEGMENTS",
-      urls: message.urls
+      urls: message.urls,
+      networkGeneration: message.networkGeneration
     }, "*")
     sendResponse({ ok: true })
     return true
@@ -123,7 +124,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "AegisStream:CancelPrefetch") {
     window.postMessage({
       __aegisstream: true,
-      type: "CANCEL_PREFETCH"
+      type: "CANCEL_PREFETCH",
+      networkGeneration: message.networkGeneration
     }, "*")
     sendResponse({ ok: true })
     return true
@@ -403,10 +405,19 @@ window.addEventListener("message", (event) => {
         success: data.success,
         size: data.size,
         error: data.error,
+        errorName: data.errorName || null,
+        errorMessage: data.errorMessage || data.error || null,
+        status: Number.isFinite(Number(data.status)) ? Number(data.status) : 0,
+        fetchMode: data.fetchMode || "page",
+        fetchPath: data.fetchPath || null,
         transient: data.transient === true,
         authFailure: data.authFailure === true,
+        rateLimit: data.rateLimit === true,
         skipped: data.skipped || null,
-        source: data.source || null
+        source: data.source || null,
+        networkGeneration: Number.isFinite(Number(data.networkGeneration))
+          ? Number(data.networkGeneration)
+          : null
       })
     } catch {
       // Extension context may be invalidated
@@ -463,8 +474,21 @@ window.addEventListener("message", (event) => {
           index: data.index,
           currentTimeSec: data.currentTimeSec,
           timestamp: data.timestamp,
-          source: data.source || "dom-seeked"
+          source: data.source || "dom-seeked",
+          eventType: data.eventType || "seeked"
         }
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "SCRUBBING_TRAIN") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:ScrubbingTrain",
+        payload: { active: data.active === true }
       })
     } catch {
       // Extension context may be invalidated

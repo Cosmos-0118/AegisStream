@@ -49,6 +49,12 @@ ns.constants = {
   PREFETCH_CONSECUTIVE_MAYBE_AUTH_THRESHOLD: 6,
   PREFETCH_CONSECUTIVE_MAYBE_WITH_AUTH: 4,
   PREFETCH_PAUSE_AFTER_REFRESH_MS: 8_000,
+  /** After an episode fingerprint change, do not trigger manifest refresh from prefetch failures. */
+  EPISODE_TRANSITION_AUTH_GRACE_MS: 15_000,
+  /** Shorter prefetch retry base while episode transition grace is active. */
+  EPISODE_PREFETCH_RETRY_BASE_MS: 600,
+  /** Shorter refresh timeout while episode transition grace is active. */
+  EPISODE_MANIFEST_REFRESH_TIMEOUT_MS: 8_000,
   PREFETCH_EMERGENCY_MIN_GAP_MS: 450,
   PREFETCH_INFLIGHT_RETRY_MS: 450,
   PREFETCH_RATE_LIMIT_PAUSE_MS: 45_000,
@@ -103,6 +109,19 @@ ns.constants = {
   DOM_TELEPORT_MIN_JUMP: 10,
   DOM_TELEPORT_COOLDOWN_MS: 500,
   DOM_ANCHOR_COALESCE_MS: 40,
+  /** Rapid timeline scrubbing: seeks closer than this apart activate the scrubbing train. */
+  SCRUBBING_TRAIN_SEEK_INTERVAL_MS: 800,
+  /** Keep scrubbing train active until no rapid seek for this long. */
+  SCRUBBING_TRAIN_IDLE_MS: 1_000,
+  /** After a DOM hard commit during scrubbing, ignore passive lane anchor drift. */
+  PASSIVE_HYSTERESIS_MUTE_MS: 1_500,
+  /** Prefetch ring radius while scrubbing train is active. */
+  SCRUBBING_TRAIN_PREFETCH_RADIUS: 2,
+  /** Wide forward buffer immediately when the user releases the slider (seeked). */
+  SCRUB_SNAP_BACK_RADIUS: 15,
+  SCRUB_SNAP_BACK_MS: 5_000,
+  /** Let the page playlist delegate run before the extension background fetch. */
+  MANIFEST_REFRESH_PAGE_FIRST_MS: 300,
   VARIANT_SWITCH_COOLDOWN_MS: 2_000,
   TELEPORT_QUEUE_PURGE_THRESHOLD: 20,
   TELEPORT_MODE_JUMP_THRESHOLD: 20,

@@ -61,13 +61,17 @@ window.addEventListener("message", (event) => {
   // Handle prefetch commands from background (via content script)
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
     if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
-    void prefetchSegmentsFromPage(data.urls)
+    void prefetchSegmentsFromPage(data.urls, {
+      networkGeneration: data.networkGeneration
+    })
     return
   }
 
   if (data.type === "CANCEL_PREFETCH") {
     if (typeof cancelPrefetchRunway === "function") {
-      cancelPrefetchRunway()
+      cancelPrefetchRunway([], {
+        networkGeneration: data.networkGeneration
+      })
     }
     return
   }

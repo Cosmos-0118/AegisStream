@@ -84,6 +84,9 @@ function registerChromeEventListeners() {
       void refreshActivePrefetchTab()
     }
     state.playlistByTab.delete(tabId)
+    if (typeof ns.clearEpisodeTransitionTelemetry === "function") {
+      ns.clearEpisodeTransitionTelemetry(tabId)
+    }
     state.bridgeHeartbeatByTab.delete(tabId)
     state.tabPageHostByTab?.delete(tabId)
     state.tabPageUrlFingerprintByTab?.delete(tabId)

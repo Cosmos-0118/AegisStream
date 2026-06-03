@@ -49,4 +49,18 @@ decision = evaluateAuthorityCommit(tabState, 14, AnchorAuthority.DOM_SEEKED)
 assert(decision.allow === true, "first DOM anchor allowed")
 assert(decision.purgeQueues === false, "first DOM anchor should not purge queues")
 
+const scrubState = {
+  hasAnchor: true,
+  anchorIndex: 40,
+  lastDomTeleportAt: Date.now(),
+  scrubbingTrainUntil: Date.now() + 5_000
+}
+decision = evaluateAuthorityCommit(scrubState, 43, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === true, "scrubbing train allows small DOM seek")
+assert(decision.purgeQueues === true, "scrubbing train hard-purges queues")
+
+decision = evaluateAuthorityCommit(scrubState, 44, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === true, "scrubbing train bypasses DOM cooldown")
+assert(decision.reason === null, "no skip reason during scrubbing train")
+
 console.log("anchor-authority.test.js: all assertions passed")
