@@ -22,7 +22,8 @@ const {
   isPlaylistUrl,
   isPlaylistContentType,
   looksLikePlaylistBody,
-  relayedPlaylists,
+  canRelayPlaylist,
+  markPlaylistRelayed,
   smoother
 } = ns
 
@@ -154,9 +155,8 @@ function AegisXHR() {
               text = xhr.response
             }
             if (text && looksLikePlaylistBody(text)) {
-              const key = _url.split("?")[0]
-              if (!relayedPlaylists.has(key)) {
-                relayedPlaylists.add(key)
+              if (canRelayPlaylist(_url)) {
+                markPlaylistRelayed(_url)
                 notifyRuntime("PLAYLIST_CONTENT", { url: _url, text })
               }
             }

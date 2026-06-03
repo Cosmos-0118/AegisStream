@@ -405,13 +405,15 @@ async function processPrefetchUrl(url) {
     if (controller.signal.aborted) return
     const extensionFallback = await fetchPrefetchBytesWithExtension(url)
     if (!extensionFallback.ok) {
+      const authFailure = requestStatus === 403 || requestStatus === 401
       const transient =
-        extensionFallback.transient === true ||
-        requestStatus === 0 ||
-        requestStatus === 408 ||
-        requestStatus === 425 ||
-        requestStatus === 429 ||
-        requestStatus >= 500
+        !authFailure &&
+        (extensionFallback.transient === true ||
+          requestStatus === 0 ||
+          requestStatus === 408 ||
+          requestStatus === 425 ||
+          requestStatus === 429 ||
+          requestStatus >= 500)
       notifyRuntime("PREFETCH_RESULT", {
         url,
         success: false,
@@ -419,7 +421,8 @@ async function processPrefetchUrl(url) {
           requestStatus > 0
             ? `HTTP ${requestStatus}; ${extensionFallback.error}`
             : extensionFallback.error,
-        transient
+        transient,
+        authFailure
       })
       return
     }
@@ -592,5 +595,6 @@ ns.CHUNK_OBSERVED_DEBOUNCE_MS = CHUNK_OBSERVED_DEBOUNCE_MS
 ns.rememberKnownUmpKey = rememberKnownUmpKey
 ns.notifyChunkObserved = notifyChunkObserved
 ns.prefetchSegmentsFromPage = prefetchSegmentsFromPage
+ns.cancelPrefetchRunway = cancelPrefetchRunway
 
 })()

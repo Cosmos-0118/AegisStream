@@ -101,6 +101,111 @@ function normalizePrefetchUrl(url) {
   return stripHash(url)
 }
 
+function isAuthRelatedPrefetchError(errorText, authFailure) {
+  if (authFailure === true) return true
+  return /HTTP 403|HTTP 401|403 forbidden|401 unauthorized|token|expired|signature|auth/i.test(
+    String(errorText || "")
+  )
+}
+
+function clearTabFailedPrefetches(tabState) {
+  if (!tabState?.segments?.length) return
+  for (const url of tabState.segments) {
+    const normalized = normalizePrefetchUrl(url)
+    if (!normalized) continue
+    state.failedPrefetches.delete(normalized)
+    state.inflightPrefetches.delete(normalized)
+  }
+}
+
+async function delegatePlaylistRefreshToPage(tabId, playlistUrl) {
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "AegisStream:RefreshPlaylist",
+      url: playlistUrl
+    })
+    return true
+  } catch (e) {
+    addLog("WARN", `Page playlist refresh delegate failed on tab ${tabId}: ${e.message}`)
+    return false
+  }
+}
+
+function finishManifestRefreshIfPending(tabId, tabState, urlsChanged) {
+  if (!tabState?.manifestRefreshPending || !urlsChanged) return
+  tabState.manifestRefreshPending = false
+  clearTabFailedPrefetches(tabState)
+  tabState.lastScheduledFromIndex = -1
+  addLog("INFO", `Manifest refresh healed segment URLs on tab ${tabId}`)
+  if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+    maybeRequestPrefetchForTab(
+      tabId,
+      tabState.segments,
+      tabState.anchorIndex + 1,
+      "manifest-refresh"
+    )
+  }
+}
+
+async function requestManifestRefreshForTab(tabId, reason) {
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.mediaPlaylistUrl) return false
+  const now = Date.now()
+  if (tabState.manifestRefreshPending) return false
+  if (now - Number(tabState.lastManifestRefreshAt || 0) < constants.MANIFEST_REFRESH_DEBOUNCE_MS) {
+    return false
+  }
+
+  tabState.manifestRefreshPending = true
+  tabState.lastManifestRefreshAt = now
+  addLog("INFO", `Manifest refresh requested (${reason}) on tab ${tabId}`)
+
+  const pending = state.pendingPrefetchByTab.get(tabId)
+  if (pending?.timerId) clearTimeout(pending.timerId)
+  state.pendingPrefetchByTab.delete(tabId)
+
+  await delegatePlaylistRefreshToPage(tabId, tabState.mediaPlaylistUrl)
+  void parseAndPrefetchFromPlaylist(tabId, tabState.mediaPlaylistUrl, 0)
+  return true
+}
+
+function noteTabPrefetchFailure(tabId, errorText, options = {}) {
+  if (!Number.isFinite(tabId)) return
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState) return
+
+  const now = Date.now()
+  const windowMs = constants.PREFETCH_AUTH_FAILURE_WINDOW_MS
+  if (
+    !tabState.prefetchFailureWindow ||
+    now - tabState.prefetchFailureWindow.startedAt > windowMs
+  ) {
+    tabState.prefetchFailureWindow = { count: 0, authCount: 0, startedAt: now }
+  }
+  const windowState = tabState.prefetchFailureWindow
+  windowState.count += 1
+  if (isAuthRelatedPrefetchError(errorText, options.authFailure)) {
+    windowState.authCount += 1
+  }
+
+  const authThreshold = Math.max(2, Number(constants.PREFETCH_AUTH_FAILURE_THRESHOLD) || 3)
+  if (
+    windowState.authCount >= authThreshold ||
+    (windowState.authCount >= 2 && windowState.count >= 5) ||
+    windowState.count >= 8
+  ) {
+    windowState.count = 0
+    windowState.authCount = 0
+    void requestManifestRefreshForTab(tabId, "prefetch-auth-failures")
+  }
+}
+
+function rememberMediaPlaylistUrl(tabState, playlistUrl) {
+  if (!tabState || typeof playlistUrl !== "string" || !playlistUrl) return
+  const normalized = stripHash(playlistUrl)
+  if (normalized) tabState.mediaPlaylistUrl = normalized
+}
+
 async function delegatePrefetchToPage(tabId, urls) {
   if (!urls.length) return true
   try {
@@ -118,12 +223,18 @@ function upsertPlaylistState(tabId, normalizedSegments) {
   const previous = state.playlistByTab.get(tabId)
   const { signatures: manifestSignatures, signatureToIndex } =
     buildManifestSequenceIndex(normalizedSegments)
-  const playlistChanged =
+  const structureChanged =
     !previous?.segments ||
     previous.segments.length !== normalizedSegments.length ||
-    previous.segments[0] !== normalizedSegments[0] ||
-    previous.segments[previous.segments.length - 1] !==
-      normalizedSegments[normalizedSegments.length - 1]
+    normalizedSegments.some(
+      (url, i) => getManifestUrlSignature(url) !== getManifestUrlSignature(previous.segments[i])
+    )
+  const urlsChanged =
+    !previous?.segments ||
+    previous.segments.length !== normalizedSegments.length ||
+    normalizedSegments.some((url, i) => url !== previous.segments[i])
+  const tokensRefreshed = urlsChanged && !structureChanged
+  const playlistChanged = structureChanged
 
   let hasAnchor = false
   let anchorIndex = null
@@ -168,13 +279,21 @@ function upsertPlaylistState(tabId, normalizedSegments) {
     lastSkipLogAt: previous?.lastSkipLogAt || 0,
     highChurnMode: previous?.highChurnMode === true,
     prefetchCooldownUntil: Number(previous?.prefetchCooldownUntil || 0),
-    playlistRefreshedAt: playlistChanged
+    playlistRefreshedAt: urlsChanged
       ? Date.now()
       : Number(previous?.playlistRefreshedAt || 0),
+    tokensRefreshedAt: tokensRefreshed
+      ? Date.now()
+      : Number(previous?.tokensRefreshedAt || 0),
+    mediaPlaylistUrl: previous?.mediaPlaylistUrl || null,
+    manifestRefreshPending: previous?.manifestRefreshPending === true,
+    lastManifestRefreshAt: Number(previous?.lastManifestRefreshAt || 0),
+    prefetchFailureWindow: previous?.prefetchFailureWindow || null,
     recentAnchorChanges: playlistChanged ? [] : previous?.recentAnchorChanges || [],
     rapidSeekUntil: playlistChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
     lastKnownSyncAt: previous?.lastKnownSyncAt || 0,
-    lastKnownSyncSignature: previous?.lastKnownSyncSignature || ""
+    lastKnownSyncSignature: previous?.lastKnownSyncSignature || "",
+    lastUpsertUrlsChanged: urlsChanged
   }
   state.playlistByTab.set(tabId, tabState)
   return tabState
@@ -668,6 +787,8 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedPlaylistUrl.slice(-60)}`)
         return
       }
+      rememberMediaPlaylistUrl(tabState, normalizedPlaylistUrl)
+      finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
       syncKnownSegmentsToPage(tabId, tabState.segments)
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Playlist refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
@@ -690,6 +811,8 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
     addLog("INFO", `DASH manifest parsed: ${segments.length} segments`)
     const tabState = upsertPlaylistState(tabId, normalizeSegments(segments))
     if (!tabState?.segments?.length) return
+    rememberMediaPlaylistUrl(tabState, normalizedPlaylistUrl)
+    finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
     syncKnownSegmentsToPage(tabId, tabState.segments)
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `DASH playlist refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
@@ -736,6 +859,8 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
         addLog("WARN", `HLS media playlist had 0 usable segments: ${normalizedUrl.slice(-60)}`)
         return
       }
+      rememberMediaPlaylistUrl(tabState, normalizedUrl)
+      finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
       syncKnownSegmentsToPage(tabId, tabState.segments)
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Captured HLS refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
@@ -761,6 +886,8 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
     if (!segments.length) return
     const tabState = upsertPlaylistState(tabId, normalizeSegments(segments))
     if (!tabState?.segments?.length) return
+    rememberMediaPlaylistUrl(tabState, normalizedUrl)
+    finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
     syncKnownSegmentsToPage(tabId, tabState.segments)
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `Captured DASH refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
@@ -843,4 +970,6 @@ ns.requestPrefetchForTab = requestPrefetchForTab
 ns.maybeRequestPrefetchForTab = maybeRequestPrefetchForTab
 ns.syncKnownSegmentsToPage = syncKnownSegmentsToPage
 ns.updatePrefetchOutcome = updatePrefetchOutcome
+ns.noteTabPrefetchFailure = noteTabPrefetchFailure
+ns.requestManifestRefreshForTab = requestManifestRefreshForTab
 })()

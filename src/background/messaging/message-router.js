@@ -30,6 +30,7 @@ const {
   noteTabPageUrl,
   noteTwitchAuthFromUrl,
   updatePrefetchOutcome,
+  noteTabPrefetchFailure,
   computeAdaptiveCachePolicy,
   syncPerformanceGemsFromSettings,
   fetchExtensionResponse,
@@ -412,6 +413,7 @@ function registerMessageRouter() {
     }
     case "AegisStream:PrefetchResult":
       ;(async () => {
+        const tabId = sender?.tab?.id
         const skipped = message.skipped
         if (
           skipped === "already-inflight" ||
@@ -447,6 +449,11 @@ function registerMessageRouter() {
           message.transient === true ||
           /tab-hidden|tab-not-active|runtime|timeout|serialize|message port/i.test(errorText)
         const outcome = updatePrefetchOutcome(message.url, false, errorText, { transient })
+        if (Number.isFinite(tabId)) {
+          noteTabPrefetchFailure(tabId, errorText, {
+            authFailure: message.authFailure === true
+          })
+        }
         bumpActivity("prefetchFailed", 1)
         const retryAfterSec = Math.max(1, Math.ceil((outcome.retryAfter - Date.now()) / 1000))
         const shouldLogFailure =

@@ -6,7 +6,36 @@ const originalFetch = window.fetch.bind(window)
 const OriginalXHR = window.XMLHttpRequest
 let reqCounter = 0
 const pending = new Map()
-const relayedPlaylists = new Set() // avoid sending same playlist twice
+const PLAYLIST_RELAY_TTL_MS = 45_000
+const relayedPlaylists = new Map()
+
+function playlistRelayKey(url) {
+  if (typeof url !== "string" || !url) return null
+  return url.split("?")[0]
+}
+
+function canRelayPlaylist(url) {
+  const key = playlistRelayKey(url)
+  if (!key) return false
+  const lastAt = relayedPlaylists.get(key)
+  if (!lastAt) return true
+  return Date.now() - lastAt >= PLAYLIST_RELAY_TTL_MS
+}
+
+function markPlaylistRelayed(url) {
+  const key = playlistRelayKey(url)
+  if (!key) return
+  relayedPlaylists.set(key, Date.now())
+  if (relayedPlaylists.size > 200) {
+    const first = relayedPlaylists.keys().next().value
+    relayedPlaylists.delete(first)
+  }
+}
+
+function clearPlaylistRelayDedup(url) {
+  const key = playlistRelayKey(url)
+  if (key) relayedPlaylists.delete(key)
+}
 
 function nextRequestId() {
   reqCounter += 1
@@ -113,6 +142,10 @@ ns.originalFetch = originalFetch
 ns.OriginalXHR = OriginalXHR
 ns.pending = pending
 ns.relayedPlaylists = relayedPlaylists
+ns.canRelayPlaylist = canRelayPlaylist
+ns.markPlaylistRelayed = markPlaylistRelayed
+ns.clearPlaylistRelayDedup = clearPlaylistRelayDedup
+ns.PLAYLIST_RELAY_TTL_MS = PLAYLIST_RELAY_TTL_MS
 ns.nextRequestId = nextRequestId
 ns.stripHash = stripHash
 ns.getRequestDetails = getRequestDetails

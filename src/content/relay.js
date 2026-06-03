@@ -111,6 +111,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
 
+  if (message?.type === "AegisStream:RefreshPlaylist" && message.url) {
+    window.postMessage({
+      __aegisstream: true,
+      type: "REFRESH_PLAYLIST",
+      url: message.url
+    }, "*")
+    sendResponse({ ok: true })
+    return true
+  }
+
   return false
 })
 
@@ -327,6 +337,7 @@ window.addEventListener("message", (event) => {
         size: data.size,
         error: data.error,
         transient: data.transient === true,
+        authFailure: data.authFailure === true,
         skipped: data.skipped || null
       })
     } catch {

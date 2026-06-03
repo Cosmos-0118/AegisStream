@@ -13,7 +13,10 @@ const {
   reportRuntimeMetric,
   rememberKnownUmpKey,
   knownSegments,
-  relayedPlaylists,
+  canRelayPlaylist,
+  markPlaylistRelayed,
+  clearPlaylistRelayDedup,
+  originalFetch,
   MAX_UMP_CAPTURE_BYTES,
   MAX_ACTIVE_UMP_CAPTURES
 } = ns
@@ -589,21 +592,14 @@ function looksLikePlaylistBody(text) {
 function maybeCapturePlaylist(url, contentType, responseClone) {
   if (!url) return
   if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
-  // Dedupe
-  const key = url.split("?")[0] // rough dedup key
-  if (relayedPlaylists.has(key)) return
+  if (!canRelayPlaylist(url)) return
 
   const isUrlMatch = isPlaylistUrl(url)
   const isCtMatch = isPlaylistContentType(contentType)
 
   if (!isUrlMatch && !isCtMatch) return
 
-  relayedPlaylists.add(key)
-  // Limit dedup set size
-  if (relayedPlaylists.size > 200) {
-    const first = relayedPlaylists.values().next().value
-    relayedPlaylists.delete(first)
-  }
+  markPlaylistRelayed(url)
 
   responseClone.text().then((text) => {
     if (!text || text.length < 10) return
@@ -612,6 +608,25 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 
     notifyRuntime("PLAYLIST_CONTENT", { url, text })
   }).catch(() => {})
+}
+
+async function refreshPlaylistFromPage(url) {
+  if (!url || globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return false
+  clearPlaylistRelayDedup(url)
+  try {
+    let res = await originalFetch(url, { credentials: "include", cache: "no-store" })
+    if (res.status === 403 || res.status === 401) {
+      res = await originalFetch(url, { cache: "no-store" })
+    }
+    if (!res.ok) return false
+    const text = await res.text()
+    if (!text || !looksLikePlaylistBody(text)) return false
+    markPlaylistRelayed(url)
+    notifyRuntime("PLAYLIST_CONTENT", { url, text })
+    return true
+  } catch {
+    return false
+  }
 }
 
 ns.isYoutubeRangeUrl = isYoutubeRangeUrl
@@ -636,4 +651,5 @@ ns.isPlaylistUrl = isPlaylistUrl
 ns.isPlaylistContentType = isPlaylistContentType
 ns.looksLikePlaylistBody = looksLikePlaylistBody
 ns.maybeCapturePlaylist = maybeCapturePlaylist
+ns.refreshPlaylistFromPage = refreshPlaylistFromPage
 })()

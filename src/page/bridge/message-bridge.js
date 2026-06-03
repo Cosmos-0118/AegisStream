@@ -2,7 +2,7 @@
 var ns = (self.AegisPageBridge ||= {})
 if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("message-bridge")) return
 
-const { prefetchSegmentsFromPage, pending } = ns
+const { prefetchSegmentsFromPage, pending, refreshPlaylistFromPage, cancelPrefetchRunway } = ns
 
 const knownSegments = new Set()
 
@@ -27,6 +27,14 @@ window.addEventListener("message", (event) => {
   // Handle prefetch commands from background (via content script)
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
     void prefetchSegmentsFromPage(data.urls)
+    return
+  }
+
+  if (data.type === "REFRESH_PLAYLIST" && data.url) {
+    if (typeof cancelPrefetchRunway === "function") {
+      cancelPrefetchRunway()
+    }
+    void refreshPlaylistFromPage(data.url)
     return
   }
 
