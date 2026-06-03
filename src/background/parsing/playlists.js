@@ -21,10 +21,18 @@ function parseHlsPlaylist(text, playlistUrl) {
   let hasEndList = false
   const segmentDurations = []
   let pendingDuration = null
+  let mediaSequence = null
 
   for (const line of lines) {
     if (line.startsWith("#EXT-X-ENDLIST")) {
       hasEndList = true
+      continue
+    }
+    if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
+      const match = line.match(/^#EXT-X-MEDIA-SEQUENCE:(\d+)/i)
+      if (match?.[1]) {
+        mediaSequence = Number(match[1])
+      }
       continue
     }
     if (line.startsWith("#EXTINF:")) {
@@ -73,11 +81,19 @@ function parseHlsPlaylist(text, playlistUrl) {
       variants: Array.from(new Set(variants)),
       segments: [],
       isLive: false,
-      segmentDurations: []
+      segmentDurations: [],
+      mediaSequence: null
     }
   }
 
-  return { kind: "media", variants: [], segments, isLive: !hasEndList, segmentDurations }
+  return {
+    kind: "media",
+    variants: [],
+    segments,
+    isLive: !hasEndList,
+    segmentDurations,
+    mediaSequence: Number.isFinite(mediaSequence) ? mediaSequence : null
+  }
 }
 
 function parseDashPlaylist(text, playlistUrl) {

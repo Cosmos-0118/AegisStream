@@ -610,7 +610,7 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
   }).catch(() => {})
 }
 
-async function refreshPlaylistFromPage(url) {
+async function refreshPlaylistFromPage(url, generation) {
   if (!url || globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return false
   clearPlaylistRelayDedup(url)
   try {
@@ -618,13 +618,20 @@ async function refreshPlaylistFromPage(url) {
     if (res.status === 403 || res.status === 401) {
       res = await originalFetch(url, { cache: "no-store" })
     }
-    if (!res.ok) return false
+    if (!res.ok) {
+      notifyRuntime("PLAYLIST_REFRESH_FAILED", { url, generation, status: res.status })
+      return false
+    }
     const text = await res.text()
-    if (!text || !looksLikePlaylistBody(text)) return false
+    if (!text || !looksLikePlaylistBody(text)) {
+      notifyRuntime("PLAYLIST_REFRESH_FAILED", { url, generation, status: 0 })
+      return false
+    }
     markPlaylistRelayed(url)
-    notifyRuntime("PLAYLIST_CONTENT", { url, text })
+    notifyRuntime("PLAYLIST_CONTENT", { url, text, generation })
     return true
   } catch {
+    notifyRuntime("PLAYLIST_REFRESH_FAILED", { url, generation, status: 0 })
     return false
   }
 }

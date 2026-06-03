@@ -4,6 +4,18 @@ if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("messa
 
 const { prefetchSegmentsFromPage, pending, refreshPlaylistFromPage, cancelPrefetchRunway } = ns
 
+function applyRuntimeSettings(settings) {
+  if (!settings || typeof settings !== "object") return
+  ns.extensionEnabled = settings.enabled !== false
+  ns.prefetchEnabled = settings.prefetchEnabled !== false
+  ns.serveFromCache = settings.serveFromCache !== false
+  if (ns.extensionEnabled === false || ns.prefetchEnabled === false) {
+    if (typeof cancelPrefetchRunway === "function") {
+      cancelPrefetchRunway()
+    }
+  }
+}
+
 const knownSegments = new Set()
 
 window.addEventListener("message", (event) => {
@@ -26,7 +38,13 @@ window.addEventListener("message", (event) => {
 
   // Handle prefetch commands from background (via content script)
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
+    if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
     void prefetchSegmentsFromPage(data.urls)
+    return
+  }
+
+  if (data.type === "SETTINGS_UPDATED" && data.settings) {
+    applyRuntimeSettings(data.settings)
     return
   }
 
@@ -34,7 +52,7 @@ window.addEventListener("message", (event) => {
     if (typeof cancelPrefetchRunway === "function") {
       cancelPrefetchRunway()
     }
-    void refreshPlaylistFromPage(data.url)
+    void refreshPlaylistFromPage(data.url, data.generation)
     return
   }
 

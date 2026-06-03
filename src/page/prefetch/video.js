@@ -32,6 +32,7 @@ const STORE_RETRY_ATTEMPTS = 2
 const STORE_RETRY_DELAY_MS = 60
 
 function isPagePrefetchAllowed() {
+  if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return false
   return typeof document === "undefined" || document.visibilityState === "visible"
 }
 
@@ -127,6 +128,7 @@ function cancelPrefetchRunway(keepUrls = []) {
 }
 
 function notifyChunkObserved(url) {
+  if (ns.extensionEnabled === false) return
   const normalized = stripHash(url)
   if (!normalized) return
 
@@ -406,13 +408,14 @@ async function processPrefetchUrl(url) {
     const extensionFallback = await fetchPrefetchBytesWithExtension(url)
     if (!extensionFallback.ok) {
       const authFailure = requestStatus === 403 || requestStatus === 401
+      const rateLimit = requestStatus === 429
       const transient =
         !authFailure &&
+        !rateLimit &&
         (extensionFallback.transient === true ||
           requestStatus === 0 ||
           requestStatus === 408 ||
           requestStatus === 425 ||
-          requestStatus === 429 ||
           requestStatus >= 500)
       notifyRuntime("PREFETCH_RESULT", {
         url,
@@ -422,7 +425,8 @@ async function processPrefetchUrl(url) {
             ? `HTTP ${requestStatus}; ${extensionFallback.error}`
             : extensionFallback.error,
         transient,
-        authFailure
+        authFailure,
+        rateLimit
       })
       return
     }

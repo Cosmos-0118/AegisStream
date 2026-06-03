@@ -66,7 +66,48 @@ function applyAnchorJumpCooldown(tabState, previousIndex, nextIndex) {
   if (typeof previousIndex !== "number" || typeof nextIndex !== "number") return
   const threshold = Math.max(state.settings.prefetchWindow * 2, 8)
   if (Math.abs(nextIndex - previousIndex) < threshold) return
-  tabState.prefetchCooldownUntil = Date.now() + constants.PREFETCH_ANCHOR_COOLDOWN_MS
+  const now = Date.now()
+  tabState.prefetchCooldownUntil = now + constants.PREFETCH_ANCHOR_COOLDOWN_MS
+  tabState.rapidSeekUntil = Math.max(
+    Number(tabState.rapidSeekUntil || 0),
+    now + constants.RAPID_SEEK_PAUSE_MS
+  )
+}
+
+function cancelAllPendingPrefetches() {
+  for (const tabId of state.pendingPrefetchByTab.keys()) {
+    cancelPendingPrefetchForTab(tabId)
+  }
+}
+
+async function broadcastSettingsToTabs(settings) {
+  const payload = settings || state.settings
+  if (!payload) return
+  try {
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (!tab?.id || tab.id < 0) continue
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "AegisStream:SettingsUpdated",
+          settings: payload
+        })
+      } catch {
+        // Tab may not have a content script yet
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function stopExtensionActivityOnTabs(settings, reason = "disabled") {
+  cancelAllPendingPrefetches()
+  state.inflightPrefetches.clear()
+  await broadcastSettingsToTabs(settings)
+  if (reason !== "silent") {
+    addLog("INFO", `Extension activity stopped on open tabs (${reason})`)
+  }
 }
 
 function countGlobalInflightPrefetches() {
@@ -88,6 +129,9 @@ ns.isTabEligibleForPrefetch = isTabEligibleForPrefetch
 ns.isTabInAnchorCooldown = isTabInAnchorCooldown
 ns.applyAnchorJumpCooldown = applyAnchorJumpCooldown
 ns.cancelPendingPrefetchForTab = cancelPendingPrefetchForTab
+ns.cancelAllPendingPrefetches = cancelAllPendingPrefetches
+ns.broadcastSettingsToTabs = broadcastSettingsToTabs
+ns.stopExtensionActivityOnTabs = stopExtensionActivityOnTabs
 ns.releaseInflightForTab = releaseInflightForTab
 ns.countGlobalInflightPrefetches = countGlobalInflightPrefetches
 ns.countInflightPrefetchesForTab = countInflightPrefetchesForTab

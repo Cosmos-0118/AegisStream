@@ -138,6 +138,10 @@ function reportRuntimeMetric(metricType, payload = {}) {
   notifyRuntime("RUNTIME_METRIC", { metricType, ...payload })
 }
 
+ns.extensionEnabled = true
+ns.prefetchEnabled = true
+ns.serveFromCache = true
+
 ns.originalFetch = originalFetch
 ns.OriginalXHR = OriginalXHR
 ns.pending = pending

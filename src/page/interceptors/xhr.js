@@ -99,6 +99,10 @@ function AegisXHR() {
 
   const originalSend = xhr.send.bind(xhr)
   xhr.send = function (body) {
+    if (ns.extensionEnabled === false) {
+      return originalSend(body)
+    }
+
     if (_url && globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.(_url)) {
       return originalSend(body)
     }
@@ -157,7 +161,9 @@ function AegisXHR() {
             if (text && looksLikePlaylistBody(text)) {
               if (canRelayPlaylist(_url)) {
                 markPlaylistRelayed(_url)
-                notifyRuntime("PLAYLIST_CONTENT", { url: _url, text })
+                if (ns.extensionEnabled !== false) {
+                  notifyRuntime("PLAYLIST_CONTENT", { url: _url, text })
+                }
               }
             }
           }
@@ -209,23 +215,16 @@ function AegisXHR() {
                 )
               }
 
-              requestRuntime("STORE_CHUNK_REQUEST", {
-                url: cacheLookupUrl,
-                contentType: ct,
-                bytes,
-                status: 200,
-                method: _method,
-                hasRange: false
-              })
-                .then((storeRes) => {
-                  if (!storeRes?.ok && document.visibilityState === "visible") {
-                    logBridge(
-                      `XHR chunk store failed (${storeRes?.error || "unknown"}): ${String(cacheLookupUrl).slice(-80)}`,
-                      "WARN"
-                    )
-                  }
-                })
-                .catch(() => {})
+              if (ns.extensionEnabled !== false && ns.serveFromCache !== false) {
+                requestRuntime("STORE_CHUNK_REQUEST", {
+                  url: cacheLookupUrl,
+                  contentType: ct,
+                  bytes,
+                  status: 200,
+                  method: _method,
+                  hasRange: false
+                }).catch(() => {})
+              }
             }
           }
         }
@@ -234,7 +233,11 @@ function AegisXHR() {
       }
     })
 
-    const shouldIntercept = _method === "GET" && _url && (isLikelyChunk(_url) || Boolean(youtubeChunk))
+    const shouldIntercept =
+      ns.extensionEnabled !== false &&
+      _method === "GET" &&
+      _url &&
+      (isLikelyChunk(_url) || Boolean(youtubeChunk))
     if (shouldIntercept && _url) {
       notifyChunkObserved(_url)
     }

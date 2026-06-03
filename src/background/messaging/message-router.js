@@ -31,6 +31,7 @@ const {
   noteTwitchAuthFromUrl,
   updatePrefetchOutcome,
   noteTabPrefetchFailure,
+  noteManifestRefreshFailed,
   computeAdaptiveCachePolicy,
   syncPerformanceGemsFromSettings,
   fetchExtensionResponse,
@@ -38,7 +39,9 @@ const {
   headersToObject,
   recordLayoutAssets,
   sanitizeRecordedAssetsFromPage,
-  armHeaderHintsForUrl
+  armHeaderHintsForUrl,
+  stopExtensionActivityOnTabs,
+  broadcastSettingsToTabs
 } = ns
 
 const playlistDiscoverThrottleAt = new Map()
@@ -326,14 +329,14 @@ function registerMessageRouter() {
           return true
         }
         const tabState = state.playlistByTab.get(tabId)
-        if (tabState?.segments?.length) {
+        if (state.settings.enabled && tabState?.segments?.length) {
           syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
           if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
             maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "bridge-ready")
           }
         }
       }
-      sendResponse({ ok: true })
+      sendResponse({ ok: true, settings: state.settings })
       return true
     }
     case "AegisStream:ClearLogs":
@@ -341,7 +344,9 @@ function registerMessageRouter() {
       addLog("INFO", "Logs cleared by user")
       sendResponse({ ok: true })
       return true
-    case "AegisStream:UpdateSettings":
+    case "AegisStream:UpdateSettings": {
+      const wasEnabled = state.settings.enabled !== false
+      const wasPrefetchEnabled = state.settings.prefetchEnabled !== false
       state.settings = sanitizeSettings({ ...state.settings, ...(message.payload || {}) })
       addLog(
         "INFO",
@@ -349,6 +354,17 @@ function registerMessageRouter() {
       )
       void computeAdaptiveCachePolicy(true).catch(() => {})
       void syncPerformanceGemsFromSettings().catch(() => {})
+      const disabledNow = state.settings.enabled === false
+      const prefetchOffNow = state.settings.prefetchEnabled === false
+      const shouldStopActivity =
+        (wasEnabled && disabledNow) ||
+        (wasPrefetchEnabled && prefetchOffNow) ||
+        disabledNow
+      if (shouldStopActivity) {
+        void stopExtensionActivityOnTabs(state.settings, disabledNow ? "disabled" : "prefetch-off")
+      } else {
+        void broadcastSettingsToTabs(state.settings)
+      }
       chrome.storage.local
         .set({ settings: state.settings })
         .then(() => sendResponse({ ok: true, settings: state.settings }))
@@ -357,6 +373,7 @@ function registerMessageRouter() {
           sendResponse({ ok: false })
         })
       return true
+    }
     case "AegisStream:CacheLookup":
       handleCacheLookup(message, sendResponse, sender?.tab?.id)
       return true
@@ -401,12 +418,23 @@ function registerMessageRouter() {
     case "AegisStream:PlaylistContent": {
       const tabId = sender?.tab?.id
       if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
-      if (tabId && message.url && message.text) {
+      if (tabId && message.url && message.text && state.settings.enabled) {
         addLog(
           "INFO",
           `Playlist content captured from page (${message.text.length} chars): ${message.url.slice(-80)}`
         )
-        void parsePlaylistContentForTab(tabId, message.url, message.text, message.pageUrl || null)
+        void parsePlaylistContentForTab(tabId, message.url, message.text, {
+          pageUrl: message.pageUrl || null,
+          generation: message.generation
+        })
+      }
+      sendResponse({ ok: true })
+      return true
+    }
+    case "AegisStream:PlaylistRefreshFailed": {
+      const tabId = sender?.tab?.id
+      if (tabId) {
+        noteManifestRefreshFailed(tabId, message.generation, message.status)
       }
       sendResponse({ ok: true })
       return true
@@ -426,7 +454,7 @@ function registerMessageRouter() {
           return
         }
         if (message.success) {
-          updatePrefetchOutcome(message.url, true)
+          updatePrefetchOutcome(message.url, true, "unknown", { tabId })
           bumpActivity("prefetched", 1)
           const sizeKB = message.size ? `(${(message.size / 1024).toFixed(1)} KB)` : ""
           addLog("INFO", `Prefetched ${sizeKB}: ${(message.url || "").slice(-80)}`)
@@ -451,7 +479,8 @@ function registerMessageRouter() {
         const outcome = updatePrefetchOutcome(message.url, false, errorText, { transient })
         if (Number.isFinite(tabId)) {
           noteTabPrefetchFailure(tabId, errorText, {
-            authFailure: message.authFailure === true
+            authFailure: message.authFailure === true,
+            rateLimit: message.rateLimit === true
           })
         }
         bumpActivity("prefetchFailed", 1)
@@ -473,6 +502,10 @@ function registerMessageRouter() {
       return true
     case "AegisStream:ChunkObserved": {
       const tabId = sender?.tab?.id
+      if (!state.settings.enabled) {
+        sendResponse({ ok: true, skipped: true })
+        return true
+      }
       if (tabId && message.url) {
         void handleChunkObserved(tabId, message.url)
       }

@@ -15,6 +15,8 @@ const {
   isTabEligibleForPrefetch,
   isTabInAnchorCooldown,
   applyAnchorJumpCooldown,
+  cancelPendingPrefetchForTab,
+  releaseInflightForTab,
   countGlobalInflightPrefetches,
   resolveBufferAdjustedPrefetchWindow,
   resolveBufferAdjustedGlobalCap,
@@ -29,6 +31,11 @@ const {
 
 const TIER_EMERGENCY = "emergency"
 const TIER_AGGRESSIVE = "aggressive"
+
+const REFRESH_STATE_HEALTHY = "healthy"
+const REFRESH_STATE_REFRESHING = "refreshing"
+const REFRESH_STATE_RECOVERING = "recovering"
+const REFRESH_STATE_AUTH_EXPIRED = "auth_expired"
 
 const chunkObservedDebounceAt = new Map()
 const playlistFetchInFlight = new Set()
@@ -101,11 +108,256 @@ function normalizePrefetchUrl(url) {
   return stripHash(url)
 }
 
-function isAuthRelatedPrefetchError(errorText, authFailure) {
-  if (authFailure === true) return true
-  return /HTTP 403|HTTP 401|403 forbidden|401 unauthorized|token|expired|signature|auth/i.test(
-    String(errorText || "")
+function classifyPrefetchError(errorText, authFailure, tabState, options = {}) {
+  if (options.rateLimit === true) return "rateLimit"
+  if (authFailure === true) return "auth"
+  const text = String(errorText || "")
+  if (/HTTP 429|\b429\b|too many requests|rate limit/i.test(text)) return "rateLimit"
+  if (/HTTP 403|HTTP 401|403 forbidden|401 unauthorized|token|expired|signature|auth/i.test(text)) {
+    return "auth"
+  }
+  if (/failed to fetch/i.test(text) && tabState?.mediaPlaylistUrl) return "maybeAuth"
+  return "other"
+}
+
+function bumpManifestGeneration(tabState) {
+  const next = (Number(tabState.manifestGeneration) || 0) + 1
+  tabState.manifestGeneration = next
+  tabState.pendingManifestGeneration = next
+  return next
+}
+
+function segmentsUrlsChanged(previousSegments, nextSegments) {
+  if (!Array.isArray(previousSegments) || !Array.isArray(nextSegments)) return true
+  if (previousSegments.length !== nextSegments.length) return true
+  return nextSegments.some((url, i) => url !== previousSegments[i])
+}
+
+function isRefreshActive(tabState) {
+  const stateName = tabState?.refreshState || REFRESH_STATE_HEALTHY
+  return stateName === REFRESH_STATE_REFRESHING
+}
+
+function formatTabStateLabel(tabState) {
+  const stateName = tabState?.refreshState || REFRESH_STATE_HEALTHY
+  switch (stateName) {
+    case REFRESH_STATE_REFRESHING: {
+      const gen =
+        Number(tabState.pendingManifestGeneration) || Number(tabState.manifestGeneration) || 0
+      return gen > 0 ? `Refreshing (gen ${gen})` : "Refreshing"
+    }
+    case REFRESH_STATE_RECOVERING: {
+      const done = Number(tabState.refreshRecoverySuccessCount || 0)
+      const target = Number(constants.REFRESH_RECOVERY_SUCCESS_TARGET) || 3
+      return `Recovering (warmup ${done}/${target})`
+    }
+    case REFRESH_STATE_AUTH_EXPIRED:
+      return "Auth expired"
+    case REFRESH_STATE_HEALTHY:
+    default:
+      return "Healthy"
+  }
+}
+
+function logTabState(tabId, tabState, reason, level = "INFO") {
+  const label = formatTabStateLabel(tabState)
+  const suffix = reason ? ` — ${reason}` : ""
+  addLog(level, `STATE: ${label} (tab ${tabId})${suffix}`)
+}
+
+function transitionRefreshState(tabId, tabState, newState, reason) {
+  if (!tabState) return
+  const previous = tabState.refreshState || REFRESH_STATE_HEALTHY
+  if (previous === newState) return
+  tabState.refreshState = newState
+  tabState.manifestRefreshPending = newState === REFRESH_STATE_REFRESHING
+
+  if (newState === REFRESH_STATE_HEALTHY) {
+    tabState.prefetchPausedUntil = 0
+    clearRefreshRecovery(tabState)
+    tabState.refreshRetryAttempt = 0
+    clearManifestRefreshTimeout(tabState)
+    clearManifestRefreshRetryTimer(tabState)
+  } else if (newState === REFRESH_STATE_REFRESHING) {
+    tabState.prefetchPausedUntil = Date.now() + constants.PREFETCH_PAUSE_AFTER_REFRESH_MS
+  } else if (newState === REFRESH_STATE_RECOVERING) {
+    tabState.prefetchPausedUntil = 0
+    tabState.manifestRefreshPending = false
+    clearManifestRefreshTimeout(tabState)
+    clearManifestRefreshRetryTimer(tabState)
+    tabState.refreshRetryAttempt = 0
+    beginRefreshRecovery(tabState)
+  } else if (newState === REFRESH_STATE_AUTH_EXPIRED) {
+    tabState.manifestRefreshPending = false
+    tabState.prefetchPausedUntil = Date.now() + constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS
+    clearManifestRefreshTimeout(tabState)
+    clearManifestRefreshRetryTimer(tabState)
+  }
+
+  logTabState(tabId, tabState, reason)
+}
+
+function snapshotAnchorBeforeRefresh(tabState) {
+  if (!tabState?.hasAnchor || typeof tabState.anchorIndex !== "number") return
+  tabState.lastAnchorBeforeRefresh = tabState.anchorIndex
+  if (typeof tabState.mediaSequence === "number") {
+    tabState.lastAnchorMediaSequenceBeforeRefresh = tabState.mediaSequence + tabState.anchorIndex
+  }
+}
+
+function clearManifestRefreshRetryTimer(tabState) {
+  if (!tabState?.refreshRetryTimer) return
+  clearTimeout(tabState.refreshRetryTimer)
+  tabState.refreshRetryTimer = null
+}
+
+function computeRefreshRetryDelayMs(attempt) {
+  const base = Math.max(500, Number(constants.MANIFEST_REFRESH_RETRY_BASE_MS) || 1_000)
+  const max = Math.max(base, Number(constants.MANIFEST_REFRESH_RETRY_MAX_MS) || 8_000)
+  const exponent = Math.max(0, Number(attempt) - 1)
+  return Math.min(max, Math.round(base * 2 ** exponent))
+}
+
+function scheduleRefreshRetry(tabId, tabState, reason) {
+  if (!tabState || tabState.refreshState !== REFRESH_STATE_REFRESHING) return
+  clearManifestRefreshRetryTimer(tabState)
+  const attempt = Number(tabState.refreshRetryAttempt || 0) + 1
+  tabState.refreshRetryAttempt = attempt
+  const maxRetries = Math.max(1, Number(constants.MANIFEST_REFRESH_MAX_RETRIES) || 5)
+
+  if (attempt > maxRetries) {
+    transitionRefreshState(tabId, tabState, REFRESH_STATE_AUTH_EXPIRED, "retries exhausted")
+    addLog(
+      "WARN",
+      `Soft recovery failed on tab ${tabId} — page authentication may have expired. Playback may resume if the player refreshes its manifest; reload only if it stays broken.`
+    )
+    return
+  }
+
+  const delayMs = computeRefreshRetryDelayMs(attempt)
+  addLog(
+    "DEBUG",
+    `Manifest refresh retry #${attempt}/${maxRetries} on tab ${tabId} in ${Math.round(delayMs / 1000)}s (${reason})`
   )
+  tabState.refreshRetryTimer = setTimeout(() => {
+    tabState.refreshRetryTimer = null
+    void executeManifestRefreshAttempt(tabId, reason)
+  }, delayMs)
+}
+
+async function executeManifestRefreshAttempt(tabId, reason) {
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.mediaPlaylistUrl) return false
+  if (tabState.refreshState !== REFRESH_STATE_REFRESHING) {
+    transitionRefreshState(tabId, tabState, REFRESH_STATE_REFRESHING, reason)
+  }
+
+  snapshotAnchorBeforeRefresh(tabState)
+  const generation = bumpManifestGeneration(tabState)
+  tabState.lastManifestRefreshAt = Date.now()
+
+  cancelPendingPrefetchForTab(tabId)
+  releaseInflightForTab(tabId)
+  clearManifestRefreshTimeout(tabState)
+
+  addLog(
+    "DEBUG",
+    `Manifest refresh attempt (${reason}, gen ${generation}) on tab ${tabId}`
+  )
+
+  scheduleManifestRefreshTimeout(tabId, tabState)
+  const delegated = await delegatePlaylistRefreshToPage(tabId, tabState.mediaPlaylistUrl, generation)
+  if (!delegated) {
+    scheduleRefreshRetry(tabId, tabState, "delegate-failed")
+  }
+  return delegated
+}
+
+function noteManifestRefreshFailed(tabId, generation, status) {
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState || tabState.refreshState !== REFRESH_STATE_REFRESHING) return
+  const pendingGen = Number(tabState.pendingManifestGeneration) || 0
+  const msgGen = Number(generation)
+  if (pendingGen > 0 && Number.isFinite(msgGen) && msgGen !== pendingGen) return
+  const statusLabel = Number.isFinite(Number(status)) ? `HTTP ${status}` : "fetch failed"
+  scheduleRefreshRetry(tabId, tabState, statusLabel)
+}
+
+function shouldAcceptPlaylistCapture(tabState, generation, urlsChanged = false) {
+  if (!tabState) return true
+  const msgGen = Number(generation)
+  const currentGen = Number(tabState.manifestGeneration) || 0
+  const refreshing = isRefreshActive(tabState)
+
+  if (Number.isFinite(msgGen) && msgGen > 0) {
+    if (msgGen < currentGen) return false
+    if (refreshing) {
+      return msgGen === Number(tabState.pendingManifestGeneration)
+    }
+    return true
+  }
+
+  if (refreshing) {
+    return urlsChanged === true
+  }
+  return true
+}
+
+function beginRefreshRecovery(tabState) {
+  if (!tabState) return
+  tabState.refreshRecoveryUntil = Date.now() + constants.REFRESH_RECOVERY_MAX_MS
+  tabState.refreshRecoverySuccessCount = 0
+}
+
+function clearRefreshRecovery(tabState) {
+  if (!tabState) return
+  tabState.refreshRecoveryUntil = 0
+  tabState.refreshRecoverySuccessCount = 0
+}
+
+function isInRefreshRecovery(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.refreshRecoveryUntil || 0)
+}
+
+function noteRefreshRecoverySuccess(tabId, tabState) {
+  if (!isInRefreshRecovery(tabState) && tabState?.refreshState !== REFRESH_STATE_RECOVERING) return
+  tabState.refreshRecoverySuccessCount = Number(tabState.refreshRecoverySuccessCount || 0) + 1
+  if (tabState.refreshRecoverySuccessCount >= constants.REFRESH_RECOVERY_SUCCESS_TARGET) {
+    if (Number.isFinite(tabId)) {
+      transitionRefreshState(tabId, tabState, REFRESH_STATE_HEALTHY, "warmup complete")
+    } else {
+      clearRefreshRecovery(tabState)
+      tabState.refreshState = REFRESH_STATE_HEALTHY
+      tabState.manifestRefreshPending = false
+    }
+  }
+}
+
+function isPrefetchBlocked(tabState) {
+  if (!tabState) return false
+  if (tabState.refreshState === REFRESH_STATE_REFRESHING) return true
+  if (tabState.refreshState === REFRESH_STATE_AUTH_EXPIRED) return true
+  if (tabState.manifestRefreshPending === true) return true
+  const pausedUntil = Number(tabState.prefetchPausedUntil || 0)
+  return Date.now() < pausedUntil
+}
+
+function clearManifestRefreshTimeout(tabState) {
+  if (!tabState?.manifestRefreshTimer) return
+  clearTimeout(tabState.manifestRefreshTimer)
+  tabState.manifestRefreshTimer = null
+}
+
+function scheduleManifestRefreshTimeout(tabId, tabState) {
+  if (!tabState) return
+  clearManifestRefreshTimeout(tabState)
+  tabState.manifestRefreshTimer = setTimeout(() => {
+    tabState.manifestRefreshTimer = null
+    if (tabState.refreshState !== REFRESH_STATE_REFRESHING) return
+    addLog("WARN", `Manifest refresh timed out on tab ${tabId} — scheduling retry`)
+    scheduleRefreshRetry(tabId, tabState, "timeout")
+  }, constants.MANIFEST_REFRESH_TIMEOUT_MS)
 }
 
 function clearTabFailedPrefetches(tabState) {
@@ -118,11 +370,12 @@ function clearTabFailedPrefetches(tabState) {
   }
 }
 
-async function delegatePlaylistRefreshToPage(tabId, playlistUrl) {
+async function delegatePlaylistRefreshToPage(tabId, playlistUrl, generation) {
   try {
     await chrome.tabs.sendMessage(tabId, {
       type: "AegisStream:RefreshPlaylist",
-      url: playlistUrl
+      url: playlistUrl,
+      generation
     })
     return true
   } catch (e) {
@@ -131,12 +384,33 @@ async function delegatePlaylistRefreshToPage(tabId, playlistUrl) {
   }
 }
 
-function finishManifestRefreshIfPending(tabId, tabState, urlsChanged) {
-  if (!tabState?.manifestRefreshPending || !urlsChanged) return
-  tabState.manifestRefreshPending = false
+function finishManifestRefreshIfPending(tabId, tabState, urlsChanged, generation) {
+  if (!urlsChanged) return false
+  const refreshing =
+    tabState?.refreshState === REFRESH_STATE_REFRESHING || tabState?.manifestRefreshPending === true
+  if (!refreshing) return false
+
+  const msgGen = Number(generation)
+  const pendingGen = Number(tabState.pendingManifestGeneration) || 0
+  if (pendingGen > 0 && Number.isFinite(msgGen) && msgGen > 0 && msgGen !== pendingGen) {
+    return false
+  }
+
+  const anchorLabel =
+    tabState.hasAnchor && typeof tabState.anchorIndex === "number"
+      ? `, anchor ${tabState.anchorIndex}`
+      : ""
+  const healReason =
+    pendingGen > 0
+      ? `manifest healed gen ${pendingGen}${anchorLabel}`
+      : `manifest healed piggyback${anchorLabel}`
+
+  transitionRefreshState(tabId, tabState, REFRESH_STATE_RECOVERING, healReason)
+  tabState.anchorRetainedByRefresh = false
   clearTabFailedPrefetches(tabState)
+  resetPrefetchFailureStreak(tabState)
+  tabState.prefetchFailureWindow = null
   tabState.lastScheduledFromIndex = -1
-  addLog("INFO", `Manifest refresh healed segment URLs on tab ${tabId}`)
   if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
     maybeRequestPrefetchForTab(
       tabId,
@@ -145,34 +419,55 @@ function finishManifestRefreshIfPending(tabId, tabState, urlsChanged) {
       "manifest-refresh"
     )
   }
+  return true
 }
 
 async function requestManifestRefreshForTab(tabId, reason) {
   const tabState = state.playlistByTab.get(tabId)
   if (!tabState?.mediaPlaylistUrl) return false
   const now = Date.now()
-  if (tabState.manifestRefreshPending) return false
-  if (now - Number(tabState.lastManifestRefreshAt || 0) < constants.MANIFEST_REFRESH_DEBOUNCE_MS) {
+  const reentrant = tabState.refreshState === REFRESH_STATE_REFRESHING
+  if (
+    tabState.refreshState === REFRESH_STATE_AUTH_EXPIRED &&
+    now - Number(tabState.lastManifestRefreshAt || 0) < constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS
+  ) {
+    return false
+  }
+  if (
+    !reentrant &&
+    tabState.refreshState !== REFRESH_STATE_AUTH_EXPIRED &&
+    now - Number(tabState.lastManifestRefreshAt || 0) < constants.MANIFEST_REFRESH_DEBOUNCE_MS
+  ) {
     return false
   }
 
-  tabState.manifestRefreshPending = true
-  tabState.lastManifestRefreshAt = now
-  addLog("INFO", `Manifest refresh requested (${reason}) on tab ${tabId}`)
+  if (tabState.refreshState === REFRESH_STATE_AUTH_EXPIRED) {
+    transitionRefreshState(tabId, tabState, REFRESH_STATE_HEALTHY, "auth-expired-retry")
+  }
+  if (!reentrant) {
+    transitionRefreshState(tabId, tabState, REFRESH_STATE_REFRESHING, reason)
+  } else {
+    addLog("DEBUG", `Manifest refresh re-entrant (${reason}) on tab ${tabId}`)
+  }
 
-  const pending = state.pendingPrefetchByTab.get(tabId)
-  if (pending?.timerId) clearTimeout(pending.timerId)
-  state.pendingPrefetchByTab.delete(tabId)
+  return executeManifestRefreshAttempt(tabId, reason)
+}
 
-  await delegatePlaylistRefreshToPage(tabId, tabState.mediaPlaylistUrl)
-  void parseAndPrefetchFromPlaylist(tabId, tabState.mediaPlaylistUrl, 0)
-  return true
+function resetPrefetchFailureStreak(tabState) {
+  if (!tabState?.prefetchFailureWindow) return
+  tabState.prefetchFailureWindow.consecutiveAuth = 0
+  tabState.prefetchFailureWindow.consecutiveMaybeAuth = 0
+}
+
+function noteTabPrefetchSuccess(tabId) {
+  if (!Number.isFinite(tabId)) return
+  resetPrefetchFailureStreak(state.playlistByTab.get(tabId))
 }
 
 function noteTabPrefetchFailure(tabId, errorText, options = {}) {
   if (!Number.isFinite(tabId)) return
   const tabState = state.playlistByTab.get(tabId)
-  if (!tabState) return
+  if (!tabState || isRefreshActive(tabState)) return
 
   const now = Date.now()
   const windowMs = constants.PREFETCH_AUTH_FAILURE_WINDOW_MS
@@ -180,22 +475,56 @@ function noteTabPrefetchFailure(tabId, errorText, options = {}) {
     !tabState.prefetchFailureWindow ||
     now - tabState.prefetchFailureWindow.startedAt > windowMs
   ) {
-    tabState.prefetchFailureWindow = { count: 0, authCount: 0, startedAt: now }
+    tabState.prefetchFailureWindow = {
+      count: 0,
+      authCount: 0,
+      maybeAuthCount: 0,
+      consecutiveAuth: 0,
+      consecutiveMaybeAuth: 0,
+      startedAt: now
+    }
   }
   const windowState = tabState.prefetchFailureWindow
   windowState.count += 1
-  if (isAuthRelatedPrefetchError(errorText, options.authFailure)) {
+  const kind = classifyPrefetchError(errorText, options.authFailure, tabState, options)
+
+  if (kind === "auth") {
     windowState.authCount += 1
+    windowState.consecutiveAuth = Number(windowState.consecutiveAuth || 0) + 1
+    windowState.consecutiveMaybeAuth = 0
+  } else if (kind === "maybeAuth") {
+    windowState.maybeAuthCount += 1
+    windowState.consecutiveMaybeAuth = Number(windowState.consecutiveMaybeAuth || 0) + 1
+    windowState.consecutiveAuth = 0
+  } else if (kind === "rateLimit") {
+    resetPrefetchFailureStreak(tabState)
+    tabState.prefetchPausedUntil = Date.now() + constants.PREFETCH_RATE_LIMIT_PAUSE_MS
+    addLog(
+      "WARN",
+      `CDN rate limit on tab ${tabId} — pausing prefetch for ${Math.round(constants.PREFETCH_RATE_LIMIT_PAUSE_MS / 1000)}s`
+    )
+    return
+  } else {
+    resetPrefetchFailureStreak(tabState)
   }
 
   const authThreshold = Math.max(2, Number(constants.PREFETCH_AUTH_FAILURE_THRESHOLD) || 3)
-  if (
-    windowState.authCount >= authThreshold ||
-    (windowState.authCount >= 2 && windowState.count >= 5) ||
-    windowState.count >= 8
-  ) {
-    windowState.count = 0
-    windowState.authCount = 0
+  const maybeThreshold =
+    Number(constants.PREFETCH_CONSECUTIVE_MAYBE_AUTH_THRESHOLD) ||
+    Number(constants.PREFETCH_NETWORK_MAYBE_AUTH_THRESHOLD) ||
+    6
+  const maybeWithAuth =
+    Number(constants.PREFETCH_CONSECUTIVE_MAYBE_WITH_AUTH) ||
+    Number(constants.PREFETCH_NETWORK_MAYBE_AUTH_WITH_AUTH) ||
+    4
+  const shouldRefresh =
+    windowState.consecutiveAuth >= authThreshold ||
+    (windowState.consecutiveAuth >= 1 &&
+      windowState.consecutiveMaybeAuth >= maybeWithAuth) ||
+    (tabState.mediaPlaylistUrl && windowState.consecutiveMaybeAuth >= maybeThreshold)
+
+  if (shouldRefresh) {
+    tabState.prefetchFailureWindow = null
     void requestManifestRefreshForTab(tabId, "prefetch-auth-failures")
   }
 }
@@ -218,7 +547,7 @@ async function delegatePrefetchToPage(tabId, urls) {
   }
 }
 
-function upsertPlaylistState(tabId, normalizedSegments) {
+function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   if (!Array.isArray(normalizedSegments) || normalizedSegments.length === 0) return null
   const previous = state.playlistByTab.get(tabId)
   const { signatures: manifestSignatures, signatureToIndex } =
@@ -235,9 +564,12 @@ function upsertPlaylistState(tabId, normalizedSegments) {
     normalizedSegments.some((url, i) => url !== previous.segments[i])
   const tokensRefreshed = urlsChanged && !structureChanged
   const playlistChanged = structureChanged
+  const segmentCountChanged =
+    !previous?.segments || previous.segments.length !== normalizedSegments.length
 
   let hasAnchor = false
   let anchorIndex = null
+  let anchorRetainedByRefresh = false
   let lastScheduledFromIndex = -1
 
   if (
@@ -259,12 +591,79 @@ function upsertPlaylistState(tabId, normalizedSegments) {
     }
   }
 
+  if (
+    !hasAnchor &&
+    previous?.hasAnchor &&
+    typeof previous.anchorIndex === "number" &&
+    previous.isLive === true &&
+    typeof previous.anchorMediaSequence === "number" &&
+    typeof meta.mediaSequence === "number"
+  ) {
+    const remapped = previous.anchorMediaSequence - meta.mediaSequence
+    if (remapped >= 0 && remapped < normalizedSegments.length) {
+      hasAnchor = true
+      anchorIndex = remapped
+      anchorRetainedByRefresh = true
+    }
+  }
+
+  if (
+    !hasAnchor &&
+    previous?.hasAnchor &&
+    typeof previous.anchorIndex === "number" &&
+    previous.isLive !== true &&
+    urlsChanged
+  ) {
+    const previousCount = previous.segments?.length || 0
+    const countDelta = Math.abs(normalizedSegments.length - previousCount)
+    if (previousCount === normalizedSegments.length || countDelta <= 8) {
+      hasAnchor = true
+      anchorIndex = Math.min(
+        Math.max(0, previous.anchorIndex),
+        normalizedSegments.length - 1
+      )
+      anchorRetainedByRefresh = true
+    }
+  }
+
+  if (!hasAnchor && urlsChanged) {
+    if (
+      typeof previous?.lastAnchorMediaSequenceBeforeRefresh === "number" &&
+      typeof meta.mediaSequence === "number"
+    ) {
+      const remapped = previous.lastAnchorMediaSequenceBeforeRefresh - meta.mediaSequence
+      if (remapped >= 0 && remapped < normalizedSegments.length) {
+        hasAnchor = true
+        anchorIndex = remapped
+        anchorRetainedByRefresh = true
+      }
+    } else if (
+      typeof previous?.lastAnchorBeforeRefresh === "number" &&
+      previous.segments?.length === normalizedSegments.length
+    ) {
+      hasAnchor = true
+      anchorIndex = Math.min(
+        Math.max(0, previous.lastAnchorBeforeRefresh),
+        normalizedSegments.length - 1
+      )
+      anchorRetainedByRefresh = true
+    }
+  }
+
   if (hasAnchor) {
     if (!playlistChanged && typeof previous?.lastScheduledFromIndex === "number") {
       lastScheduledFromIndex = previous.lastScheduledFromIndex
     } else {
       lastScheduledFromIndex = -1
     }
+  }
+
+  if (anchorRetainedByRefresh && typeof anchorIndex === "number") {
+    const via = previous?.isLive === true ? "media-sequence" : "segment-index"
+    addLog(
+      "INFO",
+      `Retained playback anchor at index ${anchorIndex} after signed-URL refresh (${via}, tab ${tabId})`
+    )
   }
 
   const tabState = {
@@ -274,6 +673,12 @@ function upsertPlaylistState(tabId, normalizedSegments) {
     updatedAt: Date.now(),
     hasAnchor,
     anchorIndex,
+    anchorMediaSequence:
+      hasAnchor && typeof meta.mediaSequence === "number" && typeof anchorIndex === "number"
+        ? meta.mediaSequence + anchorIndex
+        : previous?.anchorMediaSequence ?? null,
+    isLive: meta.isLive === true,
+    mediaSequence: Number.isFinite(meta.mediaSequence) ? meta.mediaSequence : null,
     lastScheduledFromIndex,
     lastScheduledAt: previous?.lastScheduledAt || 0,
     lastSkipLogAt: previous?.lastSkipLogAt || 0,
@@ -282,18 +687,40 @@ function upsertPlaylistState(tabId, normalizedSegments) {
     playlistRefreshedAt: urlsChanged
       ? Date.now()
       : Number(previous?.playlistRefreshedAt || 0),
+    anchorRotationGraceUntil: urlsChanged
+      ? Date.now() + constants.PLAYLIST_ROTATION_GRACE_MS
+      : Number(previous?.anchorRotationGraceUntil || 0),
     tokensRefreshedAt: tokensRefreshed
       ? Date.now()
       : Number(previous?.tokensRefreshedAt || 0),
     mediaPlaylistUrl: previous?.mediaPlaylistUrl || null,
     manifestRefreshPending: previous?.manifestRefreshPending === true,
+    manifestRefreshTimer: previous?.manifestRefreshTimer || null,
     lastManifestRefreshAt: Number(previous?.lastManifestRefreshAt || 0),
+    prefetchPausedUntil: Number(previous?.prefetchPausedUntil || 0),
+    anchorRetainedByRefresh:
+      anchorRetainedByRefresh || previous?.anchorRetainedByRefresh === true,
     prefetchFailureWindow: previous?.prefetchFailureWindow || null,
-    recentAnchorChanges: playlistChanged ? [] : previous?.recentAnchorChanges || [],
-    rapidSeekUntil: playlistChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
+    recentAnchorChanges: segmentCountChanged ? [] : previous?.recentAnchorChanges || [],
+    rapidSeekUntil: segmentCountChanged ? 0 : Number(previous?.rapidSeekUntil || 0),
     lastKnownSyncAt: previous?.lastKnownSyncAt || 0,
     lastKnownSyncSignature: previous?.lastKnownSyncSignature || "",
-    lastUpsertUrlsChanged: urlsChanged
+    lastUpsertUrlsChanged: urlsChanged,
+    manifestGeneration: Number(previous?.manifestGeneration) || 0,
+    pendingManifestGeneration: Number(previous?.pendingManifestGeneration) || 0,
+    refreshRecoveryUntil: Number(previous?.refreshRecoveryUntil || 0),
+    refreshRecoverySuccessCount: Number(previous?.refreshRecoverySuccessCount || 0),
+    refreshState: previous?.refreshState || REFRESH_STATE_HEALTHY,
+    refreshRetryAttempt: Number(previous?.refreshRetryAttempt || 0),
+    refreshRetryTimer: previous?.refreshRetryTimer || null,
+    lastAnchorBeforeRefresh:
+      typeof previous?.lastAnchorBeforeRefresh === "number"
+        ? previous.lastAnchorBeforeRefresh
+        : null,
+    lastAnchorMediaSequenceBeforeRefresh:
+      typeof previous?.lastAnchorMediaSequenceBeforeRefresh === "number"
+        ? previous.lastAnchorMediaSequenceBeforeRefresh
+        : null
   }
   state.playlistByTab.set(tabId, tabState)
   return tabState
@@ -320,11 +747,29 @@ function getAnchorJumpCount(tabId) {
   return compacted.length
 }
 
+function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex) {
+  if (typeof previousAnchorIndex !== "number" || typeof chunkIndex !== "number") return false
+  const threshold = Math.max(state.settings.prefetchWindow * 2, 8)
+  if (chunkIndex >= previousAnchorIndex - threshold) return false
+
+  const now = Date.now()
+  const playlistGrace =
+    now - Number(tabState.playlistRefreshedAt || 0) < constants.PLAYLIST_ROTATION_GRACE_MS
+  const rotationGrace = now < Number(tabState.anchorRotationGraceUntil || 0)
+  const retained = tabState.anchorRetainedByRefresh === true
+
+  return playlistGrace || rotationGrace || retained
+}
+
 function maybeRequestPrefetchForTab(tabId, segments, startIndex, source) {
   if (isReactivePrefetchTab(tabId)) {
     addLog("DEBUG", `Reactive media mode: forward prefetch disabled (${source}, tab ${tabId})`)
     return
   }
+  const tabState = state.playlistByTab.get(tabId)
+  if (isPrefetchBlocked(tabState)) return
+  if (isTabInRapidSeek(tabState)) return
+  if (isTabInAnchorCooldown(tabState)) return
   requestPrefetchForTab(tabId, segments, startIndex, source)
 }
 
@@ -335,6 +780,10 @@ function resolveEffectivePrefetchWindow(tabId) {
   let windowSize = baseWindow
   if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD) {
     windowSize = Math.min(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
+  }
+  const tabState = state.playlistByTab.get(tabId)
+  if (isInRefreshRecovery(tabState)) {
+    windowSize = Math.min(windowSize, constants.REFRESH_RECOVERY_MAX_CHUNKS)
   }
   return resolveBufferAdjustedPrefetchWindow(tabId, windowSize)
 }
@@ -364,10 +813,17 @@ function updatePrefetchOutcome(url, success, error = "unknown", options = {}) {
     return { attempts: 0, retryAfter: 0 }
   }
 
+  const inflight = state.inflightPrefetches.get(normalizedUrl)
+  const tabId = options.tabId ?? inflight?.tabId
   state.inflightPrefetches.delete(normalizedUrl)
 
   if (success) {
     state.failedPrefetches.delete(normalizedUrl)
+    if (Number.isFinite(tabId)) {
+      const tabState = state.playlistByTab.get(tabId)
+      noteTabPrefetchSuccess(tabId)
+      noteRefreshRecoverySuccess(tabId, tabState)
+    }
     return { attempts: 0, retryAfter: 0 }
   }
 
@@ -493,6 +949,7 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   if (!normalized.length) return
   const tabState = upsertPlaylistState(tabId, normalized)
   if (!tabState) return
+  if (isPrefetchBlocked(tabState)) return
   if (isTabInAnchorCooldown(tabState)) return
 
   const force = Boolean(options.force)
@@ -648,6 +1105,26 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
   if (!Array.isArray(segments) || segments.length === 0) return
   if (!isTabEligibleForPrefetch(tabId)) return
 
+  const tabState = state.playlistByTab.get(tabId)
+  if (isPrefetchBlocked(tabState)) return
+
+  const tier = typeof getTabBufferTier === "function" ? getTabBufferTier(tabId) : null
+  const now = Date.now()
+  const minGap =
+    tier === TIER_EMERGENCY
+      ? constants.PREFETCH_EMERGENCY_MIN_GAP_MS
+      : tier === TIER_AGGRESSIVE
+        ? 250
+        : 0
+  if (
+    minGap > 0 &&
+    tabState?.lastPrefetchRequestAt &&
+    now - tabState.lastPrefetchRequestAt < minGap
+  ) {
+    return
+  }
+  if (tabState) tabState.lastPrefetchRequestAt = now
+
   const existing = state.pendingPrefetchByTab.get(tabId)
   if (existing?.timerId) {
     clearTimeout(existing.timerId)
@@ -655,7 +1132,6 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
 
   const queuedAt = existing?.queuedAt || Date.now()
   const clampedStartIndex = Math.max(0, Number(startIndex) || 0)
-  const tabState = state.playlistByTab.get(tabId)
   const pendingSnapshot = {
     segments,
     startIndex: clampedStartIndex,
@@ -782,7 +1258,10 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
         return
       }
       bumpActivity("playlistsDetected", 1)
-      const tabState = upsertPlaylistState(tabId, normalizeSegments(parsed.segments))
+      const tabState = upsertPlaylistState(tabId, normalizeSegments(parsed.segments), {
+        isLive: parsed.isLive === true,
+        mediaSequence: parsed.mediaSequence
+      })
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedPlaylistUrl.slice(-60)}`)
         return
@@ -828,8 +1307,11 @@ async function parseAndPrefetchFromPlaylist(tabId, playlistUrl, depth = 0) {
   }
 }
 
-async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = null) {
+async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}) {
+  if (!state.settings.enabled) return
   if (!text || !tabId) return
+  const pageUrl = options.pageUrl || null
+  const generation = options.generation
   if (pageUrl) noteTabPageUrl(tabId, pageUrl)
   const normalizedUrl = stripHash(playlistUrl) || playlistUrl
   try {
@@ -854,13 +1336,26 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
         addLog("WARN", `HLS media playlist had 0 segments: ${normalizedUrl.slice(-60)}`)
         return
       }
-      const tabState = upsertPlaylistState(tabId, normalizeSegments(parsed.segments))
+      const tabStateBefore = state.playlistByTab.get(tabId)
+      const normalizedSegments = normalizeSegments(parsed.segments)
+      const urlsChanged = segmentsUrlsChanged(tabStateBefore?.segments, normalizedSegments)
+      if (!shouldAcceptPlaylistCapture(tabStateBefore, generation, urlsChanged)) {
+        addLog(
+          "DEBUG",
+          `Discarded stale playlist capture on tab ${tabId}${generation ? ` (gen ${generation})` : ""}`
+        )
+        return
+      }
+      const tabState = upsertPlaylistState(tabId, normalizedSegments, {
+        isLive: parsed.isLive === true,
+        mediaSequence: parsed.mediaSequence
+      })
       if (!tabState?.segments?.length) {
         addLog("WARN", `HLS media playlist had 0 usable segments: ${normalizedUrl.slice(-60)}`)
         return
       }
       rememberMediaPlaylistUrl(tabState, normalizedUrl)
-      finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
+      finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged, generation)
       syncKnownSegmentsToPage(tabId, tabState.segments)
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Captured HLS refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
@@ -884,10 +1379,20 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, pageUrl = nu
     bumpActivity("playlistsDetected", 1)
     addLog("INFO", `DASH parsed from page capture: ${segments.length} segments`)
     if (!segments.length) return
-    const tabState = upsertPlaylistState(tabId, normalizeSegments(segments))
+    const tabStateBefore = state.playlistByTab.get(tabId)
+    const normalizedSegments = normalizeSegments(segments)
+    const urlsChanged = segmentsUrlsChanged(tabStateBefore?.segments, normalizedSegments)
+    if (!shouldAcceptPlaylistCapture(tabStateBefore, generation, urlsChanged)) {
+      addLog(
+        "DEBUG",
+        `Discarded stale playlist capture on tab ${tabId}${generation ? ` (gen ${generation})` : ""}`
+      )
+      return
+    }
+    const tabState = upsertPlaylistState(tabId, normalizedSegments)
     if (!tabState?.segments?.length) return
     rememberMediaPlaylistUrl(tabState, normalizedUrl)
-    finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
+    finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged, generation)
     syncKnownSegmentsToPage(tabId, tabState.segments)
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `Captured DASH refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
@@ -914,8 +1419,27 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
 
   const hadAnchor = tabState.hasAnchor === true
   const previousAnchorIndex = tabState.anchorIndex
+  const wasRetainedAnchor = tabState.anchorRetainedByRefresh === true
+
+  if (
+    hadAnchor &&
+    typeof previousAnchorIndex === "number" &&
+    shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex)
+  ) {
+    addLog(
+      "DEBUG",
+      `Ignored spurious anchor regression ${previousAnchorIndex} -> ${chunkIndex} during playlist rotation (tab ${tabId})`
+    )
+    return
+  }
+
   tabState.hasAnchor = true
   tabState.anchorIndex = chunkIndex
+  tabState.anchorRetainedByRefresh = false
+  if (typeof tabState.mediaSequence === "number") {
+    tabState.anchorMediaSequence = tabState.mediaSequence + chunkIndex
+  }
+  noteRefreshRecoverySuccess(tabId, tabState)
   if (hadAnchor && typeof previousAnchorIndex === "number" && chunkIndex !== previousAnchorIndex) {
     noteAnchorChange(tabState, previousAnchorIndex, chunkIndex)
   }
@@ -931,13 +1455,16 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   ) {
     const playlistJustRefreshed =
       Date.now() - Number(tabState.playlistRefreshedAt || 0) < 8_000
+    const retainedDrift =
+      wasRetainedAnchor ||
+      (playlistJustRefreshed && Math.abs(chunkIndex - previousAnchorIndex) <= 4)
     if (chunkIndex < previousAnchorIndex) {
       tabState.lastScheduledFromIndex = -1
     }
-    if (playlistJustRefreshed) {
+    if (retainedDrift) {
       addLog(
         "INFO",
-        `Playlist reset anchor ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId}); skipping seek-churn handling`
+        `Playlist refresh anchor drift ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId}); skipping seek-churn handling`
       )
     } else {
       noteAnchorJump(tabId)
@@ -972,4 +1499,12 @@ ns.syncKnownSegmentsToPage = syncKnownSegmentsToPage
 ns.updatePrefetchOutcome = updatePrefetchOutcome
 ns.noteTabPrefetchFailure = noteTabPrefetchFailure
 ns.requestManifestRefreshForTab = requestManifestRefreshForTab
+ns.noteManifestRefreshFailed = noteManifestRefreshFailed
+ns.transitionTabRefreshState = transitionRefreshState
+ns.getTabRefreshState = (tabId) => state.playlistByTab.get(tabId)?.refreshState || REFRESH_STATE_HEALTHY
+ns.formatTabStateLabel = (tabState) => formatTabStateLabel(tabState)
+ns.REFRESH_STATE_HEALTHY = REFRESH_STATE_HEALTHY
+ns.REFRESH_STATE_REFRESHING = REFRESH_STATE_REFRESHING
+ns.REFRESH_STATE_RECOVERING = REFRESH_STATE_RECOVERING
+ns.REFRESH_STATE_AUTH_EXPIRED = REFRESH_STATE_AUTH_EXPIRED
 })()

@@ -63,6 +63,15 @@ function updateTabBufferHealth(tabId, payload) {
   tabState.bufferNetFillRate = payload.netFillRate
   tabState.bufferUpdatedAt = Date.now()
 
+  if (
+    Number.isFinite(runwaySec) &&
+    runwaySec >= 20 &&
+    tabState.refreshState === "recovering" &&
+    typeof ns.transitionTabRefreshState === "function"
+  ) {
+    ns.transitionTabRefreshState(tabId, tabState, "healthy", "runway restored")
+  }
+
   if (previousTier !== tier) {
     const scoreLabel = Number.isFinite(healthScore) ? `${healthScore}%` : "n/a"
     const reactive =
@@ -89,6 +98,21 @@ function updateTabBufferHealth(tabId, payload) {
 function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
   if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) {
     return 0
+  }
+  const tabState = state.playlistByTab.get(tabId)
+  if (
+    tabState &&
+    typeof ns.isTabInRapidSeek === "function" &&
+    ns.isTabInRapidSeek(tabState)
+  ) {
+    return Math.max(1, Math.min(baseWindow, 2))
+  }
+  if (
+    tabState &&
+    typeof ns.isTabInAnchorCooldown === "function" &&
+    ns.isTabInAnchorCooldown(tabState)
+  ) {
+    return Math.max(1, Math.min(baseWindow, 2))
   }
   const tier = getTabBufferTier(tabId)
   if (!tier) return baseWindow

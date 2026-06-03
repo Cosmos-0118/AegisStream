@@ -36,13 +36,32 @@ if (typeof globalThis.claimAegisContentSlot === "function") {
 // (prefetch commands, etc.)
 // ---------------------------------------------------------------------------
 
+function relaySettingsToPage(settings) {
+  if (!settings || typeof settings !== "object") return
+  window.postMessage(
+    {
+      __aegisstream: true,
+      type: "SETTINGS_UPDATED",
+      settings
+    },
+    "*"
+  )
+}
+
 function notifyBridgeReady(reason = "startup") {
   try {
-    chrome.runtime.sendMessage({
-      type: "AegisStream:BridgeReady",
-      reason,
-      pageUrl: location.href
-    })
+    chrome.runtime.sendMessage(
+      {
+        type: "AegisStream:BridgeReady",
+        reason,
+        pageUrl: location.href
+      },
+      (response) => {
+        if (response?.settings) {
+          relaySettingsToPage(response.settings)
+        }
+      }
+    )
   } catch {
     // Extension context may be invalidated
   }
@@ -115,8 +134,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     window.postMessage({
       __aegisstream: true,
       type: "REFRESH_PLAYLIST",
-      url: message.url
+      url: message.url,
+      generation: message.generation
     }, "*")
+    sendResponse({ ok: true })
+    return true
+  }
+
+  if (message?.type === "AegisStream:SettingsUpdated" && message.settings) {
+    relaySettingsToPage(message.settings)
     sendResponse({ ok: true })
     return true
   }
@@ -319,7 +345,22 @@ window.addEventListener("message", (event) => {
         type: "AegisStream:PlaylistContent",
         url: data.url,
         text: data.text,
-        pageUrl: location.href
+        pageUrl: location.href,
+        generation: data.generation
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
+  if (data.type === "PLAYLIST_REFRESH_FAILED") {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:PlaylistRefreshFailed",
+        url: data.url,
+        generation: data.generation,
+        status: data.status
       })
     } catch {
       // Extension context may be invalidated

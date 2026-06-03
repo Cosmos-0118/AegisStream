@@ -86,6 +86,10 @@ async function aegisFetch(input, init) {
   const { url, method, hasRange, requestHeaders } = getRequestDetails(input, init)
   const requestStartedAt = monotonicNow()
 
+  if (ns.extensionEnabled === false) {
+    return originalFetch(input, init)
+  }
+
   if (url && globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.(url)) {
     return originalFetch(input, init)
   }

@@ -14,8 +14,22 @@ const TIER_AGGRESSIVE = "aggressive"
 const TIER_NORMAL = "normal"
 const TIER_MAINTENANCE = "maintenance"
 const TIER_IDLE = "idle"
+const SEEK_IDLE_MS_DEFAULT = 450
+const SEEK_IDLE_MS_TOUCH = 550
+
+function resolveSeekIdleMs() {
+  try {
+    if (window.matchMedia?.("(pointer: coarse)").matches) return SEEK_IDLE_MS_TOUCH
+  } catch {
+    // ignore
+  }
+  return SEEK_IDLE_MS_DEFAULT
+}
 
 let lastSample = null
+let lastSeekEventAt = 0
+let seekActivityActive = false
+let seekSettleTimer = null
 let lastReportedTier = null
 let lastReportedScore = null
 let samplesSinceReport = 0
@@ -121,12 +135,36 @@ function computeHealthScore(runwaySec, netFillRate, paused, playbackRate = 1) {
   return Math.min(100, Math.max(0, Math.round(raw)))
 }
 
+function isSeekSettling() {
+  if (seekActivityActive) return true
+  return Date.now() - lastSeekEventAt < resolveSeekIdleMs()
+}
+
+function bumpSeekActivity() {
+  const idleMs = resolveSeekIdleMs()
+  lastSeekEventAt = Date.now()
+  seekActivityActive = true
+  if (seekSettleTimer) clearTimeout(seekSettleTimer)
+  seekSettleTimer = setTimeout(() => {
+    seekSettleTimer = null
+    if (Date.now() - lastSeekEventAt >= idleMs) {
+      seekActivityActive = false
+    }
+  }, idleMs)
+}
+
 function classifyTier(runwaySec, healthScore) {
-  if (runwaySec < 5 || healthScore < 22) return TIER_EMERGENCY
-  if (runwaySec < 15 || healthScore < 42) return TIER_AGGRESSIVE
-  if (runwaySec < 30) return TIER_NORMAL
-  if (runwaySec < 60) return TIER_MAINTENANCE
-  return TIER_IDLE
+  let tier
+  if (runwaySec < 5 || healthScore < 22) tier = TIER_EMERGENCY
+  else if (runwaySec < 15 || healthScore < 42) tier = TIER_AGGRESSIVE
+  else if (runwaySec < 30) tier = TIER_NORMAL
+  else if (runwaySec < 60) tier = TIER_MAINTENANCE
+  else tier = TIER_IDLE
+
+  if (isSeekSettling() && (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE)) {
+    return TIER_MAINTENANCE
+  }
+  return tier
 }
 
 function shouldReportNow(tier, healthScore) {
@@ -166,6 +204,7 @@ function publishBufferState(state) {
 }
 
 function tick() {
+  if (ns.extensionEnabled === false) return
   if (typeof document !== "undefined" && document.visibilityState === "hidden") {
     return
   }
@@ -214,10 +253,17 @@ function tick() {
   publishBufferState(state)
 }
 
+function noteSeekActivity() {
+  bumpSeekActivity()
+}
+
 function attachStallObserver(video) {
   if (!(video instanceof HTMLMediaElement) || video.__aegisBufferStallHook) return
   video.__aegisBufferStallHook = true
   let waitingSince = null
+
+  video.addEventListener("seeking", noteSeekActivity)
+  video.addEventListener("seeked", noteSeekActivity)
 
   video.addEventListener("waiting", () => {
     if (video.paused || video.ended) return
