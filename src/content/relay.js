@@ -404,6 +404,18 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "CACHE_SERVE_HIT" && data.url) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:CacheServeHit",
+        url: data.url
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
   if (data.type === "SPECULATIVE_REGISTER" && data.url) {
     try {
       chrome.runtime.sendMessage({

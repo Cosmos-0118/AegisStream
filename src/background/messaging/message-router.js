@@ -18,6 +18,8 @@ const {
   handleRuntimeMetric,
   bumpActivity,
   bumpLookupMetric,
+  recordCacheServeHit,
+  recordCacheLookupMiss,
   buildDisplayStats,
   refreshCacheEntryCount,
   enqueueStoreWrite,
@@ -206,7 +208,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
           bumpLookupMetric("cacheWarmups", lookupUrl, 1)
           bumpActivity("youtubeUmpWarmups", 1)
         } else if (!rapidSeek) {
-          bumpLookupMetric("cacheMisses", lookupUrl, 1)
+          recordCacheLookupMiss(lookupUrl)
         }
         if (isFirstSeenUmpKey) {
           bumpActivity("youtubeUmpLookupMisses", 1)
@@ -214,7 +216,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         }
         maybeLogUmpHealthSummary()
       } else if (!rapidSeek) {
-        bumpLookupMetric("cacheMisses", lookupUrl, 1)
+        recordCacheLookupMiss(lookupUrl)
       }
       sendResponse({
         ok: true,
@@ -224,7 +226,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       return
     }
 
-    bumpLookupMetric("cacheHits", lookupUrl, 1)
+    recordCacheServeHit(lookupUrl)
     if (isUmpLookup) {
       bumpActivity("youtubeUmpLookupHits", 1)
       rememberUmpLookupKey(lookupUrl)
@@ -477,6 +479,13 @@ function registerMessageRouter() {
       const tabId = sender?.tab?.id
       if (tabId) {
         noteManifestRefreshFailed(tabId, message.generation, message.status)
+      }
+      sendResponse({ ok: true })
+      return true
+    }
+    case "AegisStream:CacheServeHit": {
+      if (message.url) {
+        recordCacheServeHit(message.url)
       }
       sendResponse({ ok: true })
       return true

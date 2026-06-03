@@ -28,17 +28,18 @@ function getTabBufferTier(tabId) {
 }
 
 function classifyTierFromRunway(runwaySec, healthScore = 50) {
-  const healthEmergency = healthScore < 22 && runwaySec < 20
-  const healthAggressive = healthScore < 42 && runwaySec < 25
-  if (runwaySec < constants.BUFFER_RUNWAY_EMERGENCY_SEC || healthEmergency) {
-    return TIER_EMERGENCY
+  const secureRunway = Number(constants.BUFFER_HEALTH_SECURE_RUNWAY_SEC) || 15
+  let tier
+  if (runwaySec < constants.BUFFER_RUNWAY_EMERGENCY_SEC) tier = TIER_EMERGENCY
+  else if (runwaySec < constants.BUFFER_RUNWAY_AGGRESSIVE_SEC) tier = TIER_AGGRESSIVE
+  else if (runwaySec < constants.BUFFER_RUNWAY_NORMAL_SEC) tier = TIER_NORMAL
+  else if (runwaySec < constants.BUFFER_RUNWAY_MAINTENANCE_SEC) tier = TIER_MAINTENANCE
+  else tier = TIER_IDLE
+
+  if (runwaySec >= secureRunway && (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE)) {
+    tier = runwaySec < constants.BUFFER_RUNWAY_NORMAL_SEC ? TIER_NORMAL : TIER_MAINTENANCE
   }
-  if (runwaySec < constants.BUFFER_RUNWAY_AGGRESSIVE_SEC || healthAggressive) {
-    return TIER_AGGRESSIVE
-  }
-  if (runwaySec < constants.BUFFER_RUNWAY_NORMAL_SEC) return TIER_NORMAL
-  if (runwaySec < constants.BUFFER_RUNWAY_MAINTENANCE_SEC) return TIER_MAINTENANCE
-  return TIER_IDLE
+  return tier
 }
 
 function updateTabBufferHealth(tabId, payload) {

@@ -10,6 +10,7 @@ importScripts(
   "./media/site-policy.js",
   "./media/twitch-session.js",
   "./parsing/playlists.js",
+  "./cache/guard-ring.js",
   "./cache/db.js",
   "./cache/store-queue.js",
   "./telemetry/activity-metrics.js",

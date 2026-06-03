@@ -203,7 +203,6 @@ async function aegisFetchInner(input, init) {
       if (youtubeChunk?.type === "ump") {
         rememberKnownUmpKey(cacheLookupUrl)
       }
-
       reportRuntimeMetric("request_first_byte", {
         source: "cache",
         transport: "fetch",

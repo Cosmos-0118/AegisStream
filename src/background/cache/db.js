@@ -279,12 +279,29 @@ async function runEvictionPass(force = false) {
       let overflowBytes = summary.totalBytes - policy.maxBytes
       if (overflowEntries <= 0 && overflowBytes <= 0) return
 
+      const protectedSet =
+        typeof ns.collectGuardRingProtectedUrls === "function"
+          ? ns.collectGuardRingProtectedUrls()
+          : new Set()
+      const evictionOrder =
+        typeof ns.sortEvictionCandidates === "function"
+          ? ns.sortEvictionCandidates(summary.oldestFirst, protectedSet)
+          : summary.oldestFirst
+
       const keysToDelete = []
+      let skippedGuardRing = 0
       let reclaimedBytes = 0
       const maxDeletes = Math.max(1, Number(constants.CACHE_MAX_EVICTION_BATCH || 120))
-      for (const item of summary.oldestFirst) {
+      for (const item of evictionOrder) {
         if (overflowEntries <= 0 && overflowBytes <= 0) break
         if (keysToDelete.length >= maxDeletes) break
+        if (
+          typeof ns.isUrlGuardRingProtected === "function" &&
+          ns.isUrlGuardRingProtected(item.url, protectedSet)
+        ) {
+          skippedGuardRing += 1
+          continue
+        }
         keysToDelete.push(item.url)
         overflowEntries -= 1
         overflowBytes -= item.byteLength
@@ -293,9 +310,11 @@ async function runEvictionPass(force = false) {
       if (keysToDelete.length > 0) {
         await evictOldestEntries(db, keysToDelete)
         void cleanupAliasesForTargets(keysToDelete).catch(() => {})
+        const guardNote =
+          skippedGuardRing > 0 ? `, ${skippedGuardRing} guard-ring protected` : ""
         addLog(
           "INFO",
-          `Adaptive cache eviction removed ${keysToDelete.length} chunks (~${(reclaimedBytes / (1024 * 1024)).toFixed(1)} MB)`
+          `Adaptive cache eviction removed ${keysToDelete.length} chunks (~${(reclaimedBytes / (1024 * 1024)).toFixed(1)} MB${guardNote})`
         )
       }
       if (overflowEntries > 0 || overflowBytes > 0) {

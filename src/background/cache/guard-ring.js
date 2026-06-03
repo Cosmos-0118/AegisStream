@@ -1,0 +1,77 @@
+(() => {
+var ns = (self.AegisBackground ||= {})
+const { constants, state, stripHash, buildCacheKeyVariants, resolveSegmentIndexInManifest } = ns
+
+function addUrlToProtectedSet(url, protectedSet) {
+  const normalized = stripHash(url)
+  if (!normalized) return
+  protectedSet.add(normalized)
+  for (const variant of buildCacheKeyVariants(normalized)) {
+    protectedSet.add(variant)
+  }
+}
+
+/**
+ * URLs inside [anchor - past, anchor + future] for every tab with a known anchor.
+ */
+function collectGuardRingProtectedUrls() {
+  const protectedSet = new Set()
+  const past = Math.max(0, Number(constants.CACHE_GUARD_RING_PAST_SEGMENTS) || 2)
+  const future = Math.max(0, Number(constants.CACHE_GUARD_RING_FUTURE_SEGMENTS) || 12)
+
+  for (const tabState of state.playlistByTab.values()) {
+    if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue
+    const anchor = tabState.anchorIndex
+    const start = Math.max(0, anchor - past)
+    const end = Math.min(tabState.segments.length - 1, anchor + future)
+    for (let index = start; index <= end; index += 1) {
+      addUrlToProtectedSet(tabState.segments[index], protectedSet)
+    }
+  }
+
+  return protectedSet
+}
+
+function isUrlGuardRingProtected(url, protectedSet = null) {
+  const set = protectedSet || collectGuardRingProtectedUrls()
+  const normalized = stripHash(url)
+  if (!normalized) return false
+  if (set.has(normalized)) return true
+  for (const variant of buildCacheKeyVariants(normalized)) {
+    if (set.has(variant)) return true
+  }
+  return false
+}
+
+function scoreEvictionCandidate(item, protectedSet) {
+  if (!item?.url) return Number.POSITIVE_INFINITY
+  if (isUrlGuardRingProtected(item.url, protectedSet)) return Number.POSITIVE_INFINITY
+
+  let bestDistance = -1
+  for (const tabState of state.playlistByTab.values()) {
+    if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue
+    const index = resolveSegmentIndexInManifest(item.url, tabState)
+    if (typeof index !== "number") continue
+    const distance =
+      index < tabState.anchorIndex
+        ? tabState.anchorIndex - index + 1000
+        : index - tabState.anchorIndex
+    if (distance > bestDistance) bestDistance = distance
+  }
+
+  return bestDistance < 0 ? 0 : bestDistance
+}
+
+function sortEvictionCandidates(items, protectedSet) {
+  return [...items].sort((a, b) => {
+    const scoreA = scoreEvictionCandidate(a, protectedSet)
+    const scoreB = scoreEvictionCandidate(b, protectedSet)
+    if (scoreA !== scoreB) return scoreB - scoreA
+    return Number(a.createdAt || 0) - Number(b.createdAt || 0)
+  })
+}
+
+ns.collectGuardRingProtectedUrls = collectGuardRingProtectedUrls
+ns.isUrlGuardRingProtected = isUrlGuardRingProtected
+ns.sortEvictionCandidates = sortEvictionCandidates
+})()

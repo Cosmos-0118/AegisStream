@@ -66,6 +66,20 @@ function bumpLookupMetric(metric, url, amount = 1) {
   bumpActivity(metric, amount)
 }
 
+/** Always count player-facing cache serves (no per-URL dedupe). */
+function recordCacheServeHit(url) {
+  bumpActivity("cacheHits", 1)
+  bumpActivity("cacheLookups", 1)
+  if (url && typeof url === "string") {
+    pruneLookupMetricDedupe()
+    recentLookupMetricAt.set(`cacheHits:${url}`, Date.now())
+  }
+}
+
+function recordCacheLookupMiss(url) {
+  bumpLookupMetric("cacheMisses", url, 1)
+}
+
 function resetActivityMetrics() {
   buckets = []
   cacheCountSnapshot = 0
@@ -101,8 +115,8 @@ async function refreshCacheEntryCount(force = false) {
 async function buildDisplayStats() {
   const windowTotals = sumWindowCounters()
   const cacheEntries = await refreshCacheEntryCount()
-  const hits = windowTotals.cacheHits || 0
-  const misses = windowTotals.cacheMisses || 0
+  const hits = Math.max(windowTotals.cacheHits || 0, Number(state.stats.cacheHits) || 0)
+  const misses = Math.max(windowTotals.cacheMisses || 0, Number(state.stats.cacheMisses) || 0)
   const warmups = windowTotals.cacheWarmups || 0
   const lookups = windowTotals.cacheLookups || 0
   const resolvedLookups = hits + misses + warmups
@@ -176,6 +190,8 @@ async function buildDisplayStats() {
 ns.ACTIVITY_WINDOW_MS = WINDOW_MS
 ns.bumpActivity = bumpActivity
 ns.bumpLookupMetric = bumpLookupMetric
+ns.recordCacheServeHit = recordCacheServeHit
+ns.recordCacheLookupMiss = recordCacheLookupMiss
 ns.resetActivityMetrics = resetActivityMetrics
 ns.buildDisplayStats = buildDisplayStats
 ns.refreshCacheEntryCount = refreshCacheEntryCount

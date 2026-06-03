@@ -39,6 +39,7 @@ function resolveSeekIdleMs() {
 }
 
 let lastSample = null
+let smoothedFillRate = 0
 let lastSeekEventAt = 0
 let seekActivityActive = false
 let seekSettleTimer = null
@@ -110,43 +111,44 @@ function measurePrimaryVideo() {
   return best
 }
 
-function computeNetFillRate(runwaySec, paused, now) {
+function computeInstantFillRate(runwaySec, paused, now) {
   if (!lastSample || paused) return null
   const dtSec = (now - lastSample.at) / 1000
-  if (!Number.isFinite(dtSec) || dtSec < 0.2) return null
+  if (!Number.isFinite(dtSec) || dtSec < 0.35) return null
   const playbackRate = lastSample.playbackRate || 1
-  // Runway change per wall second while playing ≈ fillRate - consumption
   const runwayDelta = runwaySec - lastSample.runwaySec
   return runwayDelta / dtSec + playbackRate
 }
 
-function computeHealthScore(runwaySec, netFillRate, paused, playbackRate = 1) {
-  const targetRunwaySec = getTargetRunwaySec()
-  const comfortRunwaySec = getComfortRunwaySec()
-  const runwayPct = Math.min(100, (runwaySec / targetRunwaySec) * 100)
-  const rate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1
+function updateSmoothedFill(instantFill) {
+  const alpha = 0.2
+  if (instantFill === null || !Number.isFinite(instantFill)) {
+    return smoothedFillRate
+  }
+  const clamped = Math.max(-6, Math.min(6, instantFill))
+  smoothedFillRate = alpha * clamped + (1 - alpha) * (smoothedFillRate || 0)
+  return smoothedFillRate
+}
 
-  let fillPct = 55
-  if (paused) {
-    fillPct = runwaySec >= comfortRunwaySec ? 90 : 70
-  } else if (netFillRate !== null) {
-    if (runwaySec >= comfortRunwaySec) {
-      // Plenty of runway — steady lead or slow drain is healthy, not a crisis.
-      if (netFillRate >= rate * 0.85) {
-        fillPct = 95
-      } else if (netFillRate >= 0) {
-        fillPct = 88
-      } else {
-        fillPct = Math.min(100, Math.max(50, ((netFillRate - 0.35) / 1.15) * 100))
-      }
-    } else {
-      fillPct = Math.min(100, Math.max(0, ((netFillRate - 0.35) / 1.15) * 100))
-    }
+function computeHealthScore(runwaySec, smoothedFill, paused) {
+  const targetRunwaySec = getTargetRunwaySec()
+  const secureRunwaySec = 15
+  const stallPenalty = Math.min(20, recentStallPenaltyMs() / 400)
+
+  if (runwaySec >= secureRunwaySec) {
+    const baseHealth = Math.min(100, (runwaySec / targetRunwaySec) * 100)
+    const drainPenalty =
+      smoothedFill < 0 && !paused ? Math.min(25, Math.abs(smoothedFill) * 0.5) : 0
+    return Math.min(
+      100,
+      Math.max(20, Math.round(baseHealth - drainPenalty - stallPenalty))
+    )
   }
 
-  const stallPenalty = Math.min(35, recentStallPenaltyMs() / 250)
-  const raw = 0.55 * runwayPct + 0.35 * fillPct + 10 - stallPenalty
-  return Math.min(100, Math.max(0, Math.round(raw)))
+  const lowRunwayHealth = Math.max(0, (runwaySec / secureRunwaySec) * 100)
+  const fillAssist =
+    smoothedFill > 0 ? Math.min(15, smoothedFill * 4) : Math.max(-15, smoothedFill * 2)
+  return Math.min(100, Math.max(0, Math.round(lowRunwayHealth + fillAssist - stallPenalty)))
 }
 
 function isSeekSettling() {
@@ -168,15 +170,16 @@ function bumpSeekActivity() {
 }
 
 function classifyTier(runwaySec, healthScore) {
-  // Do not mark emergency/aggressive from fill-rate noise when runway is already ample.
-  const healthEmergency = healthScore < 22 && runwaySec < 20
-  const healthAggressive = healthScore < 42 && runwaySec < Math.min(getComfortRunwaySec(), 25)
   let tier
-  if (runwaySec < 5 || healthEmergency) tier = TIER_EMERGENCY
-  else if (runwaySec < 15 || healthAggressive) tier = TIER_AGGRESSIVE
+  if (runwaySec < 5) tier = TIER_EMERGENCY
+  else if (runwaySec < 15) tier = TIER_AGGRESSIVE
   else if (runwaySec < 30) tier = TIER_NORMAL
   else if (runwaySec < 60) tier = TIER_MAINTENANCE
   else tier = TIER_IDLE
+
+  if (runwaySec >= 15 && (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE)) {
+    tier = runwaySec < 30 ? TIER_NORMAL : TIER_MAINTENANCE
+  }
 
   if (isSeekSettling() && (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE)) {
     return TIER_MAINTENANCE
@@ -215,6 +218,7 @@ function publishBufferState(state) {
     healthScore: state.healthScore,
     tier: state.tier,
     netFillRate: state.netFillRate,
+    smoothedFillRate: state.smoothedFill,
     paused: state.paused,
     pageUrl: location.href
   })
@@ -231,8 +235,9 @@ function tick() {
 
   const now = Date.now()
   const runwaySec = Math.round(video.runway * 10) / 10
-  const netFillRate = computeNetFillRate(runwaySec, video.paused, now)
-  const healthScore = computeHealthScore(runwaySec, netFillRate, video.paused, video.playbackRate)
+  const instantFill = computeInstantFillRate(runwaySec, video.paused, now)
+  const smoothedFill = updateSmoothedFill(instantFill)
+  const healthScore = computeHealthScore(runwaySec, smoothedFill, video.paused)
   const tier = classifyTier(runwaySec, healthScore)
   const runwayPct = Math.min(100, Math.round((runwaySec / getTargetRunwaySec()) * 100))
 
@@ -241,7 +246,8 @@ function tick() {
     runwayPct,
     healthScore,
     tier,
-    netFillRate: netFillRate !== null ? Math.round(netFillRate * 100) / 100 : null,
+    netFillRate: instantFill !== null ? Math.round(instantFill * 100) / 100 : null,
+    smoothedFill,
     paused: video.paused
   }
 
@@ -262,7 +268,7 @@ function tick() {
 
   if (lastReportedTier !== tier) {
     logBridge(
-      `Buffer ${tier} (runway=${runwaySec}s, health=${healthScore}%, fill=${state.netFillRate ?? "n/a"})`,
+      `Buffer ${tier} (runway=${runwaySec}s, health=${healthScore}%, fill=${state.netFillRate ?? "n/a"}, ema=${Math.round((state.smoothedFill || 0) * 100) / 100})`,
       tier === TIER_EMERGENCY ? "WARN" : "DEBUG"
     )
   }

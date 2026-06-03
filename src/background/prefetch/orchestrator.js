@@ -875,6 +875,76 @@ function getAnchorJumpCount(tabId) {
   return compacted.length
 }
 
+function remapChunkIndexViaMediaSequence(tabState, chunkIndex) {
+  if (
+    chunkIndex !== 0 ||
+    typeof tabState?.anchorMediaSequence !== "number" ||
+    typeof tabState?.mediaSequence !== "number"
+  ) {
+    return chunkIndex
+  }
+  const remapped = tabState.anchorMediaSequence - tabState.mediaSequence
+  if (remapped > 10 && remapped < tabState.segments.length) {
+    return remapped
+  }
+  return chunkIndex
+}
+
+function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnchor) {
+  if (!hadAnchor || typeof previousAnchorIndex !== "number") {
+    tabState.anchorPendingIndex = null
+    tabState.anchorPendingCount = 0
+    tabState.anchorLockStartedAt = 0
+    return { accept: true, index: chunkIndex }
+  }
+
+  const jump = Math.abs(chunkIndex - previousAnchorIndex)
+  const isZeroReset = chunkIndex === 0 && previousAnchorIndex > 10
+  const isExtremeJump = jump > Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD || 5)
+  const playlistGrace =
+    Date.now() - Number(tabState.playlistRefreshedAt || 0) < constants.PLAYLIST_ROTATION_GRACE_MS
+
+  if (!isExtremeJump && !isZeroReset) {
+    tabState.anchorPendingIndex = null
+    tabState.anchorPendingCount = 0
+    tabState.anchorLockStartedAt = 0
+    return { accept: true, index: chunkIndex }
+  }
+
+  if (playlistGrace || tabState.anchorRetainedByRefresh === true) {
+    return { accept: true, index: chunkIndex }
+  }
+
+  const confirmMs = Number(constants.ANCHOR_CONFIRM_MS) || 1500
+  const confirmSamples = Number(constants.ANCHOR_CONFIRM_SAMPLES) || 3
+  const now = Date.now()
+
+  if (tabState.anchorPendingIndex !== chunkIndex) {
+    tabState.anchorPendingIndex = chunkIndex
+    tabState.anchorPendingCount = 1
+    tabState.anchorLockStartedAt = now
+  } else {
+    tabState.anchorPendingCount = Number(tabState.anchorPendingCount || 0) + 1
+  }
+
+  const elapsed = now - Number(tabState.anchorLockStartedAt || 0)
+  const confirmed =
+    tabState.anchorPendingCount >= confirmSamples || elapsed >= confirmMs
+
+  if (!confirmed) {
+    return {
+      accept: false,
+      index: previousAnchorIndex,
+      reason: isZeroReset ? "zero-reset-hysteresis" : "teleport-hysteresis"
+    }
+  }
+
+  tabState.anchorPendingIndex = null
+  tabState.anchorPendingCount = 0
+  tabState.anchorLockStartedAt = 0
+  return { accept: true, index: chunkIndex }
+}
+
 function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex) {
   if (typeof previousAnchorIndex !== "number" || typeof chunkIndex !== "number") return false
   const threshold = Math.max(state.settings.prefetchWindow * 2, 8)
@@ -1635,8 +1705,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   const tabState = state.playlistByTab.get(tabId)
   if (!tabState?.segments?.length || !tabState.signatureToIndex) return
   tabState.updatedAt = Date.now()
-  const chunkIndex = resolveSegmentIndexInManifest(normalizedChunkUrl, tabState)
+  let chunkIndex = resolveSegmentIndexInManifest(normalizedChunkUrl, tabState)
   if (typeof chunkIndex !== "number") return
+  chunkIndex = remapChunkIndexViaMediaSequence(tabState, chunkIndex)
 
   const hadAnchor = tabState.hasAnchor === true
   const previousAnchorIndex = tabState.anchorIndex
@@ -1653,6 +1724,16 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
     )
     return
   }
+
+  const anchorDecision = evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnchor)
+  if (!anchorDecision.accept) {
+    addLog(
+      "DEBUG",
+      `Deferred anchor ${previousAnchorIndex} -> ${chunkIndex} (${anchorDecision.reason || "hysteresis"}, tab ${tabId})`
+    )
+    return
+  }
+  chunkIndex = anchorDecision.index
 
   tabState.hasAnchor = true
   tabState.anchorIndex = chunkIndex
@@ -1687,7 +1768,7 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
         "INFO",
         `Playlist refresh anchor drift ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId}); skipping seek-churn handling`
       )
-    } else {
+    } else if (Math.abs(chunkIndex - previousAnchorIndex) > 1) {
       noteAnchorJump(tabId)
       applyAnchorJumpCooldown(tabState, previousAnchorIndex, chunkIndex)
       addLog("INFO", `Player anchor jumped from ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId})`)
