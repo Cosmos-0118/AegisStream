@@ -29,6 +29,7 @@ const {
   buildManifestSequenceIndex,
   buildPlaylistFingerprint,
   buildStructuralPlaylistHash,
+  buildDurationGeometryHash,
   scorePlaylistFingerprintChange,
   resolveSegmentIndexInManifest,
   determinePlaybackTransition,
@@ -47,6 +48,7 @@ const REFRESH_STATE_AUTH_EXPIRED = "auth_expired"
 const chunkObservedDebounceAt = new Map()
 const playlistFetchInFlight = new Set()
 const playlistFetchCompletedAt = new Map()
+const pendingDomAnchorByTab = new Map()
 
 function pruneChunkObservedDebounce(now = Date.now()) {
   const cutoff = now - constants.CHUNK_OBSERVED_DEBOUNCE_MS * 4
@@ -129,7 +131,7 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
     typeof ns.evaluateAuthorityCommit === "function" ? ns.evaluateAuthorityCommit : null
   const decision = evaluate
     ? evaluate(tabState, targetIndex, authority)
-    : { allow: true, reason: null, jump: anchorJumpForTab(tabState, targetIndex), purgeQueues: true }
+    : { allow: true, reason: null, jump: anchorJumpForTab(tabState, targetIndex), purgeQueues: false }
 
   if (!decision.allow) {
     if (authority === ns.AnchorAuthority?.DOM_SEEKED && typeof ns.recordDomSeekSkipped === "function") {
@@ -143,9 +145,35 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
   }
 
   const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
-  const oldAnchor = tabState.hasAnchor ? tabState.anchorIndex : null
+  const previousEffective =
+    typeof ns.getEffectiveAnchorIndex === "function"
+      ? ns.getEffectiveAnchorIndex(tabState)
+      : typeof tabState.anchorIndex === "number"
+        ? tabState.anchorIndex
+        : null
+  const jump =
+    typeof previousEffective === "number" ? Math.abs(clampedTarget - previousEffective) : 0
+  const purgeQueues =
+    typeof ns.shouldPurgePrefetchQueues === "function"
+      ? ns.shouldPurgePrefetchQueues(jump)
+      : jump >= (Number(constants.TELEPORT_QUEUE_PURGE_THRESHOLD) || 20)
+  const oldAnchor = typeof previousEffective === "number" ? previousEffective : null
+
   if (authority === ns.AnchorAuthority?.DOM_SEEKED) {
     tabState.lastDomTeleportAt = Date.now()
+  }
+
+  tabState.hasAnchor = true
+  tabState.anchorIndex = clampedTarget
+  tabState.anchorSource =
+    authority === ns.AnchorAuthority?.DOM_SEEKED
+      ? "DOM_SEEKED"
+      : authority === ns.AnchorAuthority?.SEEK_PREDICTION
+        ? "SEEK_PREDICTION"
+        : "NETWORK"
+  tabState.anchorSourceAt = Date.now()
+  if (typeof tabState.mediaSequence === "number") {
+    tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
   }
 
   if (typeof ns.resetPassiveAnchorDeferral === "function") {
@@ -160,16 +188,16 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
     typeof ns.authorityLabel === "function" ? ns.authorityLabel(authority) : String(authority)
   addLog(
     "INFO",
-    `Anchor authority commit on tab ${tabId} (${label}, ${source}): ${oldAnchor ?? "?"} -> ${clampedTarget}, purgeQueues=${decision.purgeQueues === true}`
+    `Anchor authority commit on tab ${tabId} (${label}, ${source}): ${oldAnchor ?? "none"} -> ${clampedTarget}, jump=${jump}, purgeQueues=${purgeQueues}`
   )
 
   if (typeof ns.recordAnchorCommit === "function") {
     ns.recordAnchorCommit(authority, {
-      teleport: decision.purgeQueues === true ? "hard" : "soft"
+      teleport: purgeQueues ? "hard" : "soft"
     })
   }
 
-  if (decision.purgeQueues === true) {
+  if (purgeQueues) {
     enterTeleportMode(tabId, tabState, clampedTarget, source, { purgeQueues: true })
   } else {
     softCommitAnchor(tabId, tabState, clampedTarget, source)
@@ -178,9 +206,54 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
 }
 
 function anchorJumpForTab(tabState, targetIndex) {
-  const current = tabState?.hasAnchor ? tabState.anchorIndex : null
-  if (typeof current !== "number" || typeof targetIndex !== "number") return Number.POSITIVE_INFINITY
+  if (typeof ns.anchorJump === "function") {
+    return ns.anchorJump(tabState, targetIndex)
+  }
+  if (typeof ns.getEffectiveAnchorIndex === "function") {
+    const current = ns.getEffectiveAnchorIndex(tabState)
+    if (typeof current !== "number" || typeof targetIndex !== "number") return 0
+    return Math.abs(targetIndex - current)
+  }
+  const current = typeof tabState?.anchorIndex === "number" ? tabState.anchorIndex : null
+  if (typeof current !== "number" || typeof targetIndex !== "number") return 0
   return Math.abs(targetIndex - current)
+}
+
+function flushPendingDomAnchorCommit(tabId) {
+  const pending = pendingDomAnchorByTab.get(tabId)
+  if (!pending) return
+  pendingDomAnchorByTab.delete(tabId)
+  if (pending.timer) {
+    clearTimeout(pending.timer)
+    pending.timer = null
+  }
+  const authority = ns.AnchorAuthority?.DOM_SEEKED ?? 3
+  const targetIndex = pending.targetIndex
+  if (typeof targetIndex !== "number") return
+  if (pending.coalescedCount > 1) {
+    addLog(
+      "DEBUG",
+      `Coalesced DOM anchor commit on tab ${tabId}: ${pending.coalescedCount} seeked events -> index ${targetIndex}`
+    )
+  }
+  commitAnchorFromAuthority(tabId, targetIndex, authority, pending.source || "dom-seeked")
+}
+
+function scheduleDomAnchorCommit(tabId, targetIndex, payload = {}) {
+  if (!Number.isFinite(tabId) || typeof targetIndex !== "number") return
+  let pending = pendingDomAnchorByTab.get(tabId)
+  if (!pending) {
+    pending = { targetIndex, source: payload.source, timer: null, coalescedCount: 0 }
+    pendingDomAnchorByTab.set(tabId, pending)
+  }
+  pending.targetIndex = targetIndex
+  pending.source = payload.source || pending.source
+  pending.coalescedCount = Number(pending.coalescedCount || 0) + 1
+  if (pending.timer) clearTimeout(pending.timer)
+  const delay = Number(constants.DOM_ANCHOR_COALESCE_MS) || 40
+  pending.timer = setTimeout(() => {
+    flushPendingDomAnchorCommit(tabId)
+  }, delay)
 }
 
 function handleForceTeleportAnchor(tabId, payload = {}) {
@@ -197,8 +270,7 @@ function handleForceTeleportAnchor(tabId, payload = {}) {
     })
   }
   if (!Number.isFinite(targetIndex)) return
-  const authority = ns.AnchorAuthority?.DOM_SEEKED ?? 3
-  commitAnchorFromAuthority(tabId, targetIndex, authority, payload.source || "dom-seeked")
+  scheduleDomAnchorCommit(tabId, targetIndex, payload)
 }
 
 function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", options = {}) {
@@ -839,23 +911,53 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   const contentChangedByFingerprint = fingerprintAssessment.contentChanged
   const fingerprintReason = fingerprintAssessment.fingerprintReason
   const fingerprintScore = fingerprintAssessment.score
+  const pageUnchanged = fingerprintAssessment.pageChanged !== true
 
-  const structureChanged =
-    !previous?.segments ||
-    previous.segments.length !== normalizedSegments.length ||
-    normalizedSegments.some(
-      (url, i) => getManifestUrlSignature(url) !== getManifestUrlSignature(previous.segments[i])
-    )
+  const segmentCountChanged =
+    !previous?.segments || previous.segments.length !== normalizedSegments.length
   const urlsChanged =
     !previous?.segments ||
     previous.segments.length !== normalizedSegments.length ||
     normalizedSegments.some((url, i) => url !== previous.segments[i])
+  const durationsForGeometry = Array.isArray(meta.segmentDurations) && meta.segmentDurations.length
+    ? meta.segmentDurations
+    : previous?.segmentDurations
+  const durationGeometryHash =
+    typeof buildDurationGeometryHash === "function"
+      ? buildDurationGeometryHash(durationsForGeometry, normalizedSegments.length)
+      : null
+  const durationGeometryMatches =
+    Boolean(previous?.durationGeometryHash) &&
+    Boolean(durationGeometryHash) &&
+    previous.durationGeometryHash === durationGeometryHash
+  const timelineGeometryUnchanged =
+    !segmentCountChanged && pageUnchanged && durationGeometryMatches
+
+  if (durationGeometryMatches && !pageUnchanged && urlsChanged) {
+    addLog(
+      "DEBUG",
+      `Duration geometry matches previous playlist but page identity changed — not classifying as token refresh (tab ${tabId})`
+    )
+  }
+
+  const structureChanged = timelineGeometryUnchanged
+    ? false
+    : !previous?.segments ||
+      previous.segments.length !== normalizedSegments.length ||
+      normalizedSegments.some(
+        (url, i) => getManifestUrlSignature(url) !== getManifestUrlSignature(previous.segments[i])
+      )
   const tokensRefreshed = urlsChanged && !structureChanged && !contentChangedByFingerprint
   const playlistChanged = structureChanged || contentChangedByFingerprint
   const episodeChangedByFingerprint =
     urlsChanged && !structureChanged && contentChangedByFingerprint
-  const segmentCountChanged =
-    !previous?.segments || previous.segments.length !== normalizedSegments.length
+  const isRoutinePlaylistRefresh =
+    urlsChanged &&
+    !segmentCountChanged &&
+    !episodeChangedByFingerprint &&
+    pageUnchanged &&
+    (timelineGeometryUnchanged ||
+      (!contentChangedByFingerprint && !structureChanged))
   const structuralHash = buildStructuralPlaylistHash({
     segmentDurations: meta.segmentDurations ?? previous?.segmentDurations,
     segments: normalizedSegments,
@@ -865,17 +967,38 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     segmentCount: normalizedSegments.length
   })
   const playbackTransition = determinePlaybackTransition(previous, {
-    structuralHash,
+    structuralHash: timelineGeometryUnchanged ? previous?.structuralHash || structuralHash : structuralHash,
     activeRungLabel: meta.activeRungLabel || previous?.activeRungLabel || null,
     mediaPlaylistPath,
     episodeChanged: episodeChangedByFingerprint,
-    urlsChanged
+    urlsChanged,
+    timelineGeometryUnchanged
   })
   const playbackState = playbackTransition.state
-  const qualityVariantSwitch = playbackTransition.qualitySwitch === true
+  let qualityVariantSwitch = playbackTransition.qualitySwitch === true
+  let shouldClearPrefetch = playbackTransition.clearPrefetch === true
+
+  const variantCooldownMs = Number(constants.VARIANT_SWITCH_COOLDOWN_MS) || 2000
+  const sinceLastVariantSwitch = Date.now() - Number(previous?.lastQualityVariantSwitchAt || 0)
+  if (shouldClearPrefetch && sinceLastVariantSwitch < variantCooldownMs) {
+    shouldClearPrefetch = false
+    qualityVariantSwitch = false
+    addLog(
+      "DEBUG",
+      `Blocked variant-switch prefetch purge on tab ${tabId} (${sinceLastVariantSwitch}ms since last, cooldown=${variantCooldownMs}ms)`
+    )
+    if (typeof ns.recordVariantSwitchCascadeBlocked === "function") {
+      ns.recordVariantSwitchCascadeBlocked()
+    }
+  }
+
+  if (isRoutinePlaylistRefresh) {
+    shouldClearPrefetch = false
+    qualityVariantSwitch = false
+  }
 
   if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0) {
-    if (playbackTransition.clearPrefetch) {
+    if (shouldClearPrefetch) {
       clearPrefetchTrackingForUrls(previous.segments)
       if (qualityVariantSwitch || episodeChangedByFingerprint) {
         state.tabAnchorJumps.delete(tabId)
@@ -883,18 +1006,21 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     }
   }
 
-  if (playbackState === PlaybackStates.TOKEN_REFRESHING && urlsChanged) {
+  if (isRoutinePlaylistRefresh && typeof previous?.anchorIndex === "number") {
     addLog(
       "DEBUG",
-      `HLS playlist token refresh on tab ${tabId} (structural hash stable, anchor retained)`
+      `Routine playlist refresh on tab ${tabId} — preserving anchor ${previous.anchorIndex} and prefetch state`
     )
-    if (
-      playbackTransition.retainAnchor &&
-      !playbackTransition.clearPrefetch &&
-      typeof ns.recordTokenRefreshRetention === "function"
-    ) {
-      ns.recordTokenRefreshRetention()
-    }
+  }
+
+  if (
+    playbackState === PlaybackStates.TOKEN_REFRESHING &&
+    urlsChanged &&
+    playbackTransition.retainAnchor &&
+    !playbackTransition.clearPrefetch &&
+    typeof ns.recordTokenRefreshRetention === "function"
+  ) {
+    ns.recordTokenRefreshRetention()
   }
 
   if (episodeChangedByFingerprint) {
@@ -1016,6 +1142,31 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     }
   }
 
+  const authoritativeAnchor =
+    previous?.anchorSource === "DOM_SEEKED" || previous?.anchorSource === "SEEK_PREDICTION"
+  if (
+    authoritativeAnchor &&
+    typeof previous?.anchorIndex === "number" &&
+    pageUnchanged &&
+    !episodeChangedByFingerprint
+  ) {
+    if (!hasAnchor || typeof anchorIndex !== "number") {
+      hasAnchor = true
+      anchorIndex = Math.min(
+        Math.max(0, previous.anchorIndex),
+        normalizedSegments.length - 1
+      )
+      anchorRetainedByRefresh = true
+      addLog(
+        "DEBUG",
+        `DOM anchor supremacy preserved index ${anchorIndex} across playlist refresh (tab ${tabId})`
+      )
+      if (typeof ns.recordDomAnchorSupremacyPreserved === "function") {
+        ns.recordDomAnchorSupremacyPreserved()
+      }
+    }
+  }
+
   if (anchorRetainedByRefresh && typeof anchorIndex === "number") {
     const via = previous?.isLive === true ? "media-sequence" : "segment-index"
     addLog(
@@ -1024,14 +1175,32 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     )
   }
 
-  if (qualityVariantSwitch) {
+  if (qualityVariantSwitch && playbackTransition.clearPrefetch) {
     const matrixNote = previous?.playlistMatrix?.rows?.length ? " (matrix O(1) anchor)" : ""
-    const queueNote = playbackTransition.clearPrefetch
-      ? "cleared stale prefetch tracking"
-      : "retained prefetch queue/inflight"
+    const logAnchor =
+      typeof anchorIndex === "number"
+        ? anchorIndex
+        : typeof previous?.anchorIndex === "number"
+          ? previous.anchorIndex
+          : "pending"
     addLog(
       "INFO",
-      `HLS quality variant switch on tab ${tabId}${matrixNote} — ${queueNote}, resuming from anchor ${anchorIndex ?? "?"}`
+      `HLS quality variant switch on tab ${tabId}${matrixNote} — cleared stale prefetch tracking, resuming from anchor ${logAnchor}`
+    )
+  } else if (
+    playbackState === PlaybackStates.TOKEN_REFRESHING &&
+    urlsChanged &&
+    !playbackTransition.clearPrefetch
+  ) {
+    const logAnchor =
+      typeof anchorIndex === "number"
+        ? anchorIndex
+        : typeof previous?.anchorIndex === "number"
+          ? previous.anchorIndex
+          : "pending"
+    addLog(
+      "DEBUG",
+      `HLS playlist token refresh on tab ${tabId} — retained prefetch queue/inflight, anchor ${logAnchor}`
     )
   }
 
@@ -1074,6 +1243,7 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     prefetchFailureWindow: previous?.prefetchFailureWindow || null,
     playlistFingerprint,
     structuralHash,
+    durationGeometryHash,
     segmentDurations: Array.isArray(meta.segmentDurations)
       ? meta.segmentDurations
       : previous?.segmentDurations || null,
@@ -1151,7 +1321,10 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       : Number(previous?.lastQualitySwitchAt || 0),
     lastQualitySwitchFromRung: qualityVariantSwitch
       ? previous?.activeRungLabel || null
-      : previous?.lastQualitySwitchFromRung || null
+      : previous?.lastQualitySwitchFromRung || null,
+    anchorSource: previous?.anchorSource || null,
+    anchorSourceAt: Number(previous?.anchorSourceAt || 0),
+    lastDomTeleportAt: Number(previous?.lastDomTeleportAt || 0)
   }
   if (
     meta.mediaPlaylistUrl &&
@@ -2101,6 +2274,10 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
       }
     } else if (typeof ns.recordAnchorCommit === "function") {
       ns.recordAnchorCommit(ns.AnchorAuthority?.NETWORK ?? 1)
+    }
+    if (!tabState.anchorSource || tabState.anchorSource === "NETWORK") {
+      tabState.anchorSource = "NETWORK"
+      tabState.anchorSourceAt = Date.now()
     }
   }
 

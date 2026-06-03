@@ -102,6 +102,8 @@ ns.constants = {
   ANCHOR_TELEPORT_JUMP_THRESHOLD: 5,
   DOM_TELEPORT_MIN_JUMP: 10,
   DOM_TELEPORT_COOLDOWN_MS: 500,
+  DOM_ANCHOR_COALESCE_MS: 40,
+  VARIANT_SWITCH_COOLDOWN_MS: 2_000,
   TELEPORT_QUEUE_PURGE_THRESHOLD: 20,
   TELEPORT_MODE_JUMP_THRESHOLD: 20,
   TELEPORT_MODE_RADIUS: 5,
@@ -230,7 +232,9 @@ ns.constants = {
       monotonicBreakthroughs: 0,
       tokenRefreshRetentions: 0,
       anchorDeferred: 0,
-      domSeekSkipped: 0
+      domSeekSkipped: 0,
+      variantSwitchCascadeBlocked: 0,
+      domAnchorSupremacyPreserved: 0
     }
   }
 }

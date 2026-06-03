@@ -1,6 +1,11 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { state, bumpActivity } = ns
+
+function bump(metric, amount = 1) {
+  if (typeof ns.bumpActivity === "function") {
+    ns.bumpActivity(metric, amount)
+  }
+}
 
 const STAT = {
   anchorCommitsNetwork: "anchorCommitsNetwork",
@@ -11,63 +16,84 @@ const STAT = {
   monotonicBreakthroughs: "monotonicBreakthroughs",
   tokenRefreshRetentions: "tokenRefreshRetentions",
   anchorDeferred: "anchorDeferred",
-  domSeekSkipped: "domSeekSkipped"
+  domSeekSkipped: "domSeekSkipped",
+  variantSwitchCascadeBlocked: "variantSwitchCascadeBlocked",
+  domAnchorSupremacyPreserved: "domAnchorSupremacyPreserved"
 }
 
 function recordAnchorCommit(authority, options = {}) {
   const teleport = options.teleport || null
   if (authority === ns.AnchorAuthority?.DOM_SEEKED) {
-    bumpActivity(STAT.anchorCommitsDomSeeked, 1)
+    bump(STAT.anchorCommitsDomSeeked, 1)
   } else if (authority === ns.AnchorAuthority?.SEEK_PREDICTION) {
-    bumpActivity(STAT.anchorCommitsSeekPrediction, 1)
+    bump(STAT.anchorCommitsSeekPrediction, 1)
   } else {
-    bumpActivity(STAT.anchorCommitsNetwork, 1)
+    bump(STAT.anchorCommitsNetwork, 1)
   }
-  if (teleport === "hard") bumpActivity(STAT.teleportsHard, 1)
-  if (teleport === "soft") bumpActivity(STAT.teleportsSoft, 1)
+  if (teleport === "hard") bump(STAT.teleportsHard, 1)
+  if (teleport === "soft") bump(STAT.teleportsSoft, 1)
 }
 
 function recordMonotonicBreakthrough() {
-  bumpActivity(STAT.monotonicBreakthroughs, 1)
-  bumpActivity(STAT.anchorCommitsNetwork, 1)
+  bump(STAT.monotonicBreakthroughs, 1)
+  bump(STAT.anchorCommitsNetwork, 1)
 }
 
 function recordTokenRefreshRetention() {
-  bumpActivity(STAT.tokenRefreshRetentions, 1)
+  bump(STAT.tokenRefreshRetentions, 1)
 }
 
 function recordAnchorDeferred() {
-  bumpActivity(STAT.anchorDeferred, 1)
+  bump(STAT.anchorDeferred, 1)
 }
 
 function recordDomSeekSkipped() {
-  bumpActivity(STAT.domSeekSkipped, 1)
+  bump(STAT.domSeekSkipped, 1)
 }
 
 function recordTeleportHard() {
-  bumpActivity(STAT.teleportsHard, 1)
+  bump(STAT.teleportsHard, 1)
 }
 
 function recordTeleportSoft() {
-  bumpActivity(STAT.teleportsSoft, 1)
+  bump(STAT.teleportsSoft, 1)
+}
+
+function recordVariantSwitchCascadeBlocked() {
+  bump(STAT.variantSwitchCascadeBlocked, 1)
+}
+
+function recordDomAnchorSupremacyPreserved() {
+  bump(STAT.domAnchorSupremacyPreserved, 1)
+}
+
+function readMetric(name) {
+  const s = ns.state?.stats || {}
+  let total = Number(s[name]) || 0
+  if (typeof ns.sumWindowCounters === "function") {
+    const windowTotals = ns.sumWindowCounters()
+    total = Math.max(total, Number(windowTotals[name]) || 0)
+  }
+  return total
 }
 
 function getAnchorOwnershipSummary() {
-  const s = state.stats || {}
   return {
     anchorCommits: {
-      network: Number(s[STAT.anchorCommitsNetwork]) || 0,
-      seekPrediction: Number(s[STAT.anchorCommitsSeekPrediction]) || 0,
-      domSeeked: Number(s[STAT.anchorCommitsDomSeeked]) || 0
+      network: readMetric(STAT.anchorCommitsNetwork),
+      seekPrediction: readMetric(STAT.anchorCommitsSeekPrediction),
+      domSeeked: readMetric(STAT.anchorCommitsDomSeeked)
     },
     teleports: {
-      hard: Number(s[STAT.teleportsHard]) || 0,
-      soft: Number(s[STAT.teleportsSoft]) || 0
+      hard: readMetric(STAT.teleportsHard),
+      soft: readMetric(STAT.teleportsSoft)
     },
-    monotonicBreakthroughs: Number(s[STAT.monotonicBreakthroughs]) || 0,
-    tokenRefreshRetentions: Number(s[STAT.tokenRefreshRetentions]) || 0,
-    anchorDeferred: Number(s[STAT.anchorDeferred]) || 0,
-    domSeekSkipped: Number(s[STAT.domSeekSkipped]) || 0
+    monotonicBreakthroughs: readMetric(STAT.monotonicBreakthroughs),
+    tokenRefreshRetentions: readMetric(STAT.tokenRefreshRetentions),
+    anchorDeferred: readMetric(STAT.anchorDeferred),
+    domSeekSkipped: readMetric(STAT.domSeekSkipped),
+    variantSwitchCascadeBlocked: readMetric(STAT.variantSwitchCascadeBlocked),
+    domAnchorSupremacyPreserved: readMetric(STAT.domAnchorSupremacyPreserved)
   }
 }
 
@@ -79,14 +105,17 @@ function formatAnchorOwnershipLine(summary = null) {
     `anchor(net=${commits.network || 0}/pred=${commits.seekPrediction || 0}/dom=${commits.domSeeked || 0}, ` +
     `teleport hard=${teleports.hard || 0}/soft=${teleports.soft || 0}, ` +
     `mono=${data.monotonicBreakthroughs || 0}, tokenRetain=${data.tokenRefreshRetentions || 0}, ` +
-    `deferred=${data.anchorDeferred || 0}, domSkip=${data.domSeekSkipped || 0})`
+    `deferred=${data.anchorDeferred || 0}, domSkip=${data.domSkip || 0}, ` +
+    `variantBlock=${data.variantSwitchCascadeBlocked || 0}, domSupreme=${data.domAnchorSupremacyPreserved || 0})`
   )
 }
 
 function resetAnchorTelemetry() {
+  const stats = ns.state?.stats
+  if (!stats) return
   for (const key of Object.values(STAT)) {
-    if (typeof state.stats[key] === "number") {
-      state.stats[key] = 0
+    if (typeof stats[key] === "number") {
+      stats[key] = 0
     }
   }
 }
@@ -98,6 +127,8 @@ ns.recordAnchorDeferred = recordAnchorDeferred
 ns.recordDomSeekSkipped = recordDomSeekSkipped
 ns.recordTeleportHard = recordTeleportHard
 ns.recordTeleportSoft = recordTeleportSoft
+ns.recordVariantSwitchCascadeBlocked = recordVariantSwitchCascadeBlocked
+ns.recordDomAnchorSupremacyPreserved = recordDomAnchorSupremacyPreserved
 ns.getAnchorOwnershipSummary = getAnchorOwnershipSummary
 ns.formatAnchorOwnershipLine = formatAnchorOwnershipLine
 ns.resetAnchorTelemetry = resetAnchorTelemetry

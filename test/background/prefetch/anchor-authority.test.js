@@ -38,8 +38,15 @@ assert(decision.reason === "dom-seek-cooldown", "cooldown reason")
 
 tabState.lastDomTeleportAt = 0
 tabState.anchorIndex = 50
+tabState.hasAnchor = true
 decision = evaluateAuthorityCommit(tabState, 65, AnchorAuthority.DOM_SEEKED)
 assert(decision.allow === true, "moderate DOM seek allowed")
 assert(decision.purgeQueues === false, "15-segment jump should retain overlap")
+
+tabState.anchorIndex = undefined
+tabState.hasAnchor = false
+decision = evaluateAuthorityCommit(tabState, 14, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === true, "first DOM anchor allowed")
+assert(decision.purgeQueues === false, "first DOM anchor should not purge queues")
 
 console.log("anchor-authority.test.js: all assertions passed")

@@ -156,4 +156,10 @@ const timeIdx = api.estimateManifestIndexFromTime(9, [4, 4, 4, 4, 4], {
 })
 assert(timeIdx === 2, "manifest index estimated from segment durations")
 
+const geometryA = api.buildDurationGeometryHash([4.01, 4.02, 3.98, 4], 4)
+const geometryB = api.buildDurationGeometryHash([4.01, 4.02, 3.98, 4], 4)
+assert(geometryA === geometryB, "identical duration geometry hashes match")
+const geometryC = api.buildDurationGeometryHash([2, 2, 2, 2], 4)
+assert(geometryA !== geometryC, "different duration geometry hashes differ")
+
 console.log("manifest-mapper.test.js: ok")

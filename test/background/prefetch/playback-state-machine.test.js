@@ -69,4 +69,19 @@ assert(
 )
 assert(quality.clearPrefetch === true, "structural quality switch clears stale prefetch")
 
+const geometryStable = determinePlaybackTransition(
+  { structuralHash: "aaa", segments: ["a"] },
+  {
+    structuralHash: "bbb",
+    urlsChanged: true,
+    timelineGeometryUnchanged: true
+  }
+)
+assert(
+  geometryStable.state === PlaybackStates.TOKEN_REFRESHING,
+  "unchanged duration geometry is token refresh"
+)
+assert(geometryStable.clearPrefetch === false, "geometry-stable refresh keeps prefetch")
+assert(geometryStable.qualitySwitch === false, "geometry-stable refresh is not quality switch")
+
 console.log("playback-state-machine.test.js: all passed")

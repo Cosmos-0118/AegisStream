@@ -162,6 +162,22 @@ function buildDiscontinuityProfile(markers) {
  * Timeline anatomy only: counts, durations, relative path tails, discontinuity slots.
  * Ignores playlist comments, CDN hosts, and signed query tokens.
  */
+/**
+ * Timeline fingerprint from segment durations only (ignores signed URLs and paths).
+ */
+function buildDurationGeometryHash(segmentDurations, segmentCount) {
+  const durations = Array.isArray(segmentDurations) ? segmentDurations : []
+  const count = Number.isFinite(segmentCount) ? segmentCount : durations.length
+  if (count <= 0 && durations.length === 0) return null
+  const parts = []
+  const limit = count > 0 ? Math.min(count, durations.length) : durations.length
+  for (let i = 0; i < limit; i += 1) {
+    parts.push(roundDurationMs(durations[i]))
+  }
+  if (!parts.length) return fnv1aHashHex(`count:${count}`)
+  return fnv1aHashHex(`${count}|${parts.join(",")}`)
+}
+
 function buildStructuralPlaylistHash({
   segmentDurations,
   segments,
@@ -349,6 +365,7 @@ ns.getSequentialPrefetchTargets = getSequentialPrefetchTargets
 ns.getPageUrlFingerprint = getPageUrlFingerprint
 ns.getRelativePathTail = getRelativePathTail
 ns.buildStructuralPlaylistHash = buildStructuralPlaylistHash
+ns.buildDurationGeometryHash = buildDurationGeometryHash
 ns.estimateManifestIndexFromTime = estimateManifestIndexFromTime
 ns.buildPlaylistFingerprint = buildPlaylistFingerprint
 ns.scorePlaylistFingerprintChange = scorePlaylistFingerprintChange

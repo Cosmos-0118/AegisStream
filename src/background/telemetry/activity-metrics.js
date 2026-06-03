@@ -230,4 +230,5 @@ ns.recordCacheLookupMiss = recordCacheLookupMiss
 ns.resetActivityMetrics = resetActivityMetrics
 ns.buildDisplayStats = buildDisplayStats
 ns.refreshCacheEntryCount = refreshCacheEntryCount
+ns.sumWindowCounters = sumWindowCounters
 })()

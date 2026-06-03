@@ -8,14 +8,22 @@ const AnchorAuthority = {
   DOM_SEEKED: 3
 }
 
+function getEffectiveAnchorIndex(tabState) {
+  if (!tabState) return null
+  if (typeof tabState.anchorIndex === "number") return tabState.anchorIndex
+  if (typeof tabState.teleportTargetIndex === "number") return tabState.teleportTargetIndex
+  if (typeof tabState.predictedAnchorIndex === "number") return tabState.predictedAnchorIndex
+  return null
+}
+
 function anchorJump(tabState, targetIndex) {
-  const current = tabState?.hasAnchor ? tabState.anchorIndex : null
-  if (typeof current !== "number") return Number.POSITIVE_INFINITY
-  if (typeof targetIndex !== "number") return 0
+  const current = getEffectiveAnchorIndex(tabState)
+  if (typeof current !== "number" || typeof targetIndex !== "number") return 0
   return Math.abs(targetIndex - current)
 }
 
 function shouldPurgePrefetchQueues(jump) {
+  if (!Number.isFinite(jump) || jump <= 0) return false
   const threshold = Number(constants.TELEPORT_QUEUE_PURGE_THRESHOLD) || 20
   return jump >= threshold
 }
@@ -32,8 +40,13 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
     const minJump = Number(constants.DOM_TELEPORT_MIN_JUMP) || 10
     const cooldownMs = Number(constants.DOM_TELEPORT_COOLDOWN_MS) || 500
     const now = Date.now()
+    const current = getEffectiveAnchorIndex(tabState)
 
-    if (Number.isFinite(jump) && jump < minJump) {
+    if (typeof current !== "number") {
+      return { allow: true, reason: null, jump: 0, purgeQueues: false }
+    }
+
+    if (jump < minJump) {
       return {
         allow: false,
         reason: "dom-seek-below-min-jump",
@@ -72,6 +85,8 @@ function authorityLabel(authority) {
 }
 
 ns.AnchorAuthority = AnchorAuthority
+ns.getEffectiveAnchorIndex = getEffectiveAnchorIndex
+ns.anchorJump = anchorJump
 ns.evaluateAuthorityCommit = evaluateAuthorityCommit
 ns.authorityLabel = authorityLabel
 ns.shouldPurgePrefetchQueues = shouldPurgePrefetchQueues

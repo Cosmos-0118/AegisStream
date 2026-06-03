@@ -36,6 +36,15 @@ function determinePlaybackTransition(previous, next) {
     }
   }
 
+  if (next.timelineGeometryUnchanged === true && next.urlsChanged === true) {
+    return {
+      state: PlaybackStates.TOKEN_REFRESHING,
+      clearPrefetch: false,
+      retainAnchor: true,
+      qualitySwitch: false
+    }
+  }
+
   const structuralHashChanged =
     Boolean(previous?.structuralHash) &&
     Boolean(next?.structuralHash) &&
@@ -49,7 +58,10 @@ function determinePlaybackTransition(previous, next) {
     Boolean(next?.mediaPlaylistPath) &&
     previous.mediaPlaylistPath !== next.mediaPlaylistPath
   const isUrlMutationOnly =
-    next.urlsChanged === true && !structuralHashChanged && !rungLabelChanged
+    next.urlsChanged === true &&
+    !structuralHashChanged &&
+    !rungLabelChanged &&
+    !mediaPathChanged
 
   if (isUrlMutationOnly) {
     return {
