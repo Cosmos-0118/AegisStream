@@ -1,0 +1,188 @@
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-md) 0;
+  border-bottom: 1px solid var(--setting-row-divider);
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.setting-row:first-of-type {
+  padding-top: 0;
+}
+
+.setting-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-right: var(--space-lg);
+}
+
+.setting-info label {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.setting-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.setting-desc,
+.setting-info > span:not(.setting-badge) {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.setting-info code {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  background: var(--setting-code-bg);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+
+.setting-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 3px 9px 3px 7px;
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--badge-experimental-text);
+  background: linear-gradient(
+    135deg,
+    var(--badge-experimental-bg-start),
+    var(--badge-experimental-bg-end)
+  );
+  border: 1px solid var(--badge-experimental-border);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-card);
+  cursor: help;
+  user-select: none;
+}
+
+.setting-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--badge-experimental-dot);
+  box-shadow: 0 0 6px var(--badge-experimental-dot);
+  flex-shrink: 0;
+}
+
+.setting-row-nested {
+  margin-top: var(--space-sm);
+  padding: var(--space-md) 0 var(--space-md) var(--space-lg);
+  border-left: 2px solid var(--setting-nested-border);
+  border-bottom: none;
+}
+
+.setting-row-experimental {
+  border-left-color: var(--badge-experimental-row-border);
+  background: linear-gradient(
+    90deg,
+    var(--badge-experimental-row-bg-start) 0%,
+    transparent 48%
+  );
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-left: -4px;
+  padding-left: 20px;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch input:focus-visible + .slider {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--switch-track);
+  transition: background var(--motion-duration-normal) var(--motion-easing-default);
+  border-radius: var(--radius-pill);
+}
+
+.slider::before {
+  position: absolute;
+  content: "";
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--switch-thumb);
+  transition: transform var(--motion-duration-normal) var(--motion-easing-default);
+  border-radius: 50%;
+  box-shadow: var(--shadow-card);
+}
+
+input:checked + .slider {
+  background-color: var(--switch-track-active);
+}
+
+input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
+input:disabled + .slider {
+  opacity: var(--button-disabled-opacity);
+  cursor: not-allowed;
+}
+
+.input-group input {
+  background: var(--input-background);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  width: 60px;
+  font-family: inherit;
+  font-size: var(--font-size-md);
+  text-align: center;
+  transition: all var(--motion-duration-fast) var(--motion-easing-default);
+}
+
+.input-group input:hover {
+  border-color: var(--border-strong);
+}
+
+.input-group input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background: var(--input-focus-background);
+  box-shadow: 0 0 0 2px var(--input-focus-ring);
+}
+
+.input-group input:disabled {
+  opacity: var(--button-disabled-opacity);
+  cursor: not-allowed;
+}

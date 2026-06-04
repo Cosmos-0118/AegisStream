@@ -1,3 +1,5 @@
+import { mountThemeMenu } from "./themes/theme-picker.js"
+
 const el = {
   enabled: document.getElementById("enabled"),
   prefetchEnabled: document.getElementById("prefetchEnabled"),
@@ -45,6 +47,7 @@ const el = {
   logsContainer: document.getElementById("logsContainer"),
   clearLogs: document.getElementById("clearLogs"),
   copyLogs: document.getElementById("copyLogs"),
+  themeMenu: document.getElementById("themeMenu"),
 }
 
 let statsPollId = null
@@ -315,12 +318,17 @@ function renderStats(stats) {
     })
 
     setMetricCount(el.statSpecSwitch, spec.qualitySwitchHits || 0)
+    el.statSpecMode.classList.remove(
+      "speculative-mode--warning",
+      "speculative-mode--success",
+      "speculative-mode--muted"
+    )
     if (spec.adaptiveMode === "minimal") {
-      el.statSpecMode.style.color = "var(--warning)"
+      el.statSpecMode.classList.add("speculative-mode--warning")
     } else if (spec.adaptiveMode === "full") {
-      el.statSpecMode.style.color = "var(--success)"
+      el.statSpecMode.classList.add("speculative-mode--success")
     } else {
-      el.statSpecMode.style.color = "var(--text-muted)"
+      el.statSpecMode.classList.add("speculative-mode--muted")
     }
   }
 }
@@ -582,6 +590,7 @@ function bindChangeHandlers() {
 // ---------------------------------------------------------------------------
 
 async function init() {
+  mountThemeMenu(el.themeMenu)
   setupTabs()
   bindChangeHandlers()
   

@@ -1,0 +1,164 @@
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.theme-menu {
+  position: relative;
+}
+
+.theme-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--header-status-border);
+  border-radius: var(--radius-pill);
+  background: var(--header-status-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    color var(--motion-duration-fast) var(--motion-easing-default),
+    border-color var(--motion-duration-fast) var(--motion-easing-default),
+    background var(--motion-duration-fast) var(--motion-easing-default),
+    box-shadow var(--motion-duration-fast) var(--motion-easing-default);
+}
+
+.theme-menu__trigger:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.theme-menu__trigger:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.theme-menu__trigger.is-open {
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+  background: var(--input-focus-background);
+  box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+.theme-menu__icon {
+  width: 16px;
+  height: 16px;
+}
+
+.theme-menu__popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  width: 188px;
+  padding: var(--space-md);
+  background: var(--surface-default);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.theme-mode-light .theme-menu__popover {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.theme-menu__heading {
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-sm);
+}
+
+.theme-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.theme-picker__option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: var(--space-sm) 6px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-duration-fast) var(--motion-easing-default),
+    background var(--motion-duration-fast) var(--motion-easing-default),
+    color var(--motion-duration-fast) var(--motion-easing-default),
+    box-shadow var(--motion-duration-fast) var(--motion-easing-default);
+}
+
+.theme-picker__option:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.theme-picker__option:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.theme-picker__option.is-active {
+  border-color: var(--accent-primary);
+  background: var(--input-focus-background);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+.theme-picker__swatch {
+  width: 100%;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.theme-picker__swatch[data-theme-preview="obsidian"] {
+  background: linear-gradient(90deg, #09090b 40%, #3b82f6 100%);
+}
+
+.theme-picker__swatch[data-theme-preview="aurora"] {
+  background: linear-gradient(90deg, #0a0f1a 35%, #2dd4bf 70%, #a78bfa 100%);
+}
+
+.theme-picker__swatch[data-theme-preview="paper"] {
+  background: linear-gradient(90deg, #f8fafc 45%, #4f46e5 100%);
+}
+
+.theme-picker__swatch[data-theme-preview="ember"] {
+  background: linear-gradient(90deg, #14100e 40%, #ea580c 75%, #facc15 100%);
+}
+
+.theme-picker__label {
+  line-height: 1.2;
+  text-align: center;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

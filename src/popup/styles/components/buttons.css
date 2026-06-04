@@ -1,0 +1,59 @@
+.btn-primary,
+.btn-secondary {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+  transition: all var(--motion-duration-fast) var(--motion-easing-default);
+  padding: 6px var(--space-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-sm);
+}
+
+.btn-primary {
+  background: var(--button-primary-bg);
+  color: var(--button-primary-fg);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--button-primary-hover);
+  box-shadow: var(--shadow-button);
+}
+
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.btn-primary.copied {
+  background: var(--status-success);
+  box-shadow: 0 4px 12px var(--status-success-muted-border);
+}
+
+.btn-secondary {
+  background: var(--button-secondary-bg);
+  color: var(--button-secondary-fg);
+  border-color: var(--button-secondary-border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--button-secondary-hover-bg);
+  color: var(--button-secondary-hover-fg);
+  border-color: var(--button-secondary-hover-border);
+}
+
+.btn-secondary:disabled,
+.btn-primary:disabled {
+  opacity: var(--button-disabled-opacity);
+  cursor: not-allowed;
+}
