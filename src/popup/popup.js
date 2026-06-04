@@ -128,14 +128,100 @@ function renderLogs(logs) {
   }
 }
 
-function animateValue(element, newValue) {
-  const current = parseInt(element.textContent, 10) || 0
-  if (current !== newValue) {
-    element.textContent = newValue
-    element.style.transition = "transform 0.2s ease"
-    element.style.transform = "scale(1.15)"
-    setTimeout(() => { element.style.transform = "scale(1)" }, 200)
+const METRIC_SIZE_CLASSES = [
+  "metric-value--md",
+  "metric-value--sm",
+  "metric-value--xs",
+  "metric-value--xxs"
+]
+
+function coerceFiniteNumber(value, fallback = null) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function formatCountFull(value) {
+  const n = coerceFiniteNumber(value, null)
+  if (n === null) return "—"
+  return n.toLocaleString("en-US", { maximumFractionDigits: 0 })
+}
+
+/** Compact display for large counters; full value in tooltip. */
+function formatCount(value) {
+  const n = coerceFiniteNumber(value, null)
+  if (n === null) return "—"
+  const abs = Math.abs(n)
+  const sign = n < 0 ? "-" : ""
+  if (abs >= 1e12) return `${sign}${trimCompact(abs / 1e12)}T`
+  if (abs >= 1e9) return `${sign}${trimCompact(abs / 1e9)}B`
+  if (abs >= 1e6) return `${sign}${trimCompact(abs / 1e6)}M`
+  if (abs >= 1e4) return `${sign}${trimCompact(abs / 1e3)}K`
+  return formatCountFull(n)
+}
+
+function trimCompact(scaled) {
+  const s = scaled >= 100 ? scaled.toFixed(0) : scaled >= 10 ? scaled.toFixed(1) : scaled.toFixed(2)
+  return s.replace(/\.0+$/, "").replace(/(\.\d)0$/, "$1")
+}
+
+function formatMs(value) {
+  const ms = coerceFiniteNumber(value, null)
+  if (ms === null) return "n/a"
+  const abs = Math.abs(ms)
+  if (abs >= 60000) return `${trimCompact(abs / 60000)}m`
+  if (abs >= 1000) return `${trimCompact(abs / 1000)}s`
+  return `${Math.round(ms)} ms`
+}
+
+function formatBytesShort(bytes) {
+  const n = coerceFiniteNumber(bytes, 0)
+  const mb = n / (1024 * 1024)
+  const abs = Math.abs(mb)
+  if (abs >= 1024 * 1024) return `${trimCompact(abs / (1024 * 1024))} TB`
+  if (abs >= 1024) return `${trimCompact(abs / 1024)} GB`
+  if (abs >= 100) return `${Math.round(mb)} MB`
+  return `${mb.toFixed(1)} MB`
+}
+
+function formatRatioPair(left, right, separator = "/") {
+  return `${formatCount(left)}${separator}${formatCount(right)}`
+}
+
+function formatRatioPairTitle(left, right, separator = " / ") {
+  return `${formatCountFull(left)}${separator}${formatCountFull(right)}`
+}
+
+function fitMetricValue(element) {
+  if (!element) return
+  const len = (element.textContent || "").length
+  element.classList.remove(...METRIC_SIZE_CLASSES)
+  if (len > 18) element.classList.add("metric-value--xxs")
+  else if (len > 14) element.classList.add("metric-value--xs")
+  else if (len > 10) element.classList.add("metric-value--sm")
+  else if (len > 7) element.classList.add("metric-value--md")
+}
+
+function setMetricValue(element, display, options = {}) {
+  if (!element) return
+  const { title, pulse = false, raw } = options
+  const prev = element.textContent
+  element.textContent = display
+  const fullTitle = title ?? (raw != null ? formatCountFull(raw) : null)
+  if (fullTitle && fullTitle !== display && fullTitle !== "—") {
+    element.title = fullTitle
+  } else {
+    element.removeAttribute("title")
   }
+  fitMetricValue(element)
+  if (pulse && prev !== display) {
+    element.classList.add("metric-pulse")
+    setTimeout(() => element.classList.remove("metric-pulse"), 200)
+  }
+}
+
+function setMetricCount(element, value, options = {}) {
+  const n = coerceFiniteNumber(value, 0)
+  setMetricValue(element, formatCount(n), { ...options, raw: n, pulse: options.pulse !== false })
 }
 
 function renderStats(stats) {
@@ -151,33 +237,47 @@ function renderStats(stats) {
         : 0
   const resolvedLookups = hits + misses + warmups
 
-  animateValue(el.statHits, hits)
-  animateValue(el.statMisses, misses)
+  setMetricCount(el.statHits, hits)
+  setMetricCount(el.statMisses, misses)
   const inCache = Number.isFinite(safeStats.cacheEntries)
     ? safeStats.cacheEntries
     : (safeStats.cachedChunks || safeStats.prefetched || 0)
-  animateValue(el.statPrefetched, inCache)
-  animateValue(el.statFailures, safeStats.prefetchFailed)
-  animateValue(el.statPlaylists, safeStats.playlistsDetected)
-  animateValue(el.statChunks, safeStats.chunksObserved)
-  animateValue(el.statLookups, safeStats.cacheLookups || resolvedLookups)
-  animateValue(el.statWarmups, safeStats.cacheWarmups)
+  setMetricCount(el.statPrefetched, inCache)
+  setMetricCount(el.statFailures, safeStats.prefetchFailed)
+  setMetricCount(el.statPlaylists, safeStats.playlistsDetected)
+  setMetricCount(el.statChunks, safeStats.chunksObserved)
+  setMetricCount(el.statLookups, safeStats.cacheLookups || resolvedLookups)
+  setMetricCount(el.statWarmups, safeStats.cacheWarmups)
 
-  const p95 = Number.isFinite(safeStats.requestFirstByteP95Ms)
-    ? `${safeStats.requestFirstByteP95Ms} ms`
-    : "n/a"
-  el.statTtfb.textContent = p95
+  const p95Ms = coerceFiniteNumber(safeStats.requestFirstByteP95Ms, null)
+  setMetricValue(el.statTtfb, p95Ms === null ? "n/a" : formatMs(p95Ms), {
+    title: p95Ms === null ? undefined : `${formatCountFull(Math.round(p95Ms))} ms`,
+    pulse: false
+  })
 
-  const stallSeconds = ((safeStats.videoStallMsTotal || 0) / 1000).toFixed(1)
-  el.statStalls.textContent = `${safeStats.videoStalls || 0} / ${stallSeconds}s`
+  const stalls = coerceFiniteNumber(safeStats.videoStalls, 0)
+  const stallMs = coerceFiniteNumber(safeStats.videoStallMsTotal, 0)
+  const stallSec = stallMs / 1000
+  const stallDisplay =
+    stallSec >= 1000
+      ? `${formatCount(stalls)} / ${trimCompact(stallSec / 60)}m`
+      : stallSec >= 60
+        ? `${formatCount(stalls)} / ${trimCompact(stallSec)}s`
+        : `${formatCount(stalls)} / ${stallSec.toFixed(1)}s`
+  setMetricValue(el.statStalls, stallDisplay, {
+    title: `${formatCountFull(stalls)} stalls · ${formatCountFull(Math.round(stallMs))} ms total`,
+    pulse: false
+  })
   
   el.statHitrate.textContent = `${hitRate}%`
   el.statHitrateBar.style.width = `${hitRate}%`
 
   if (el.statsScope) {
     const windowLabel = safeStats.activityWindowLabel || "Last 5 min"
-    const stored = safeStats.chunksStoredInWindow || 0
-    el.statsScope.textContent = `${windowLabel} · ${stored} stored · JIT playback`
+    const stored = coerceFiniteNumber(safeStats.chunksStoredInWindow, 0)
+    el.statsScope.textContent = `${windowLabel} · ${formatCount(stored)} stored · JIT playback`
+    if (stored >= 1e4) el.statsScope.title = `${formatCountFull(stored)} chunks stored`
+    else el.statsScope.removeAttribute("title")
   }
 
   // Make operating mode explicit so UMP behavior is not misread as "broken cache".
@@ -189,15 +289,32 @@ function renderStats(stats) {
 
   const spec = safeStats.speculative
   if (spec && el.statSpecMode) {
-    el.statSpecMode.textContent = spec.adaptiveMode || "—"
-    const bytesHit =
-      spec.bytesHitRatePercent != null ? `${spec.bytesHitRatePercent}%` : "—"
-    el.statSpecHit.textContent = bytesHit
-    el.statSpecUsed.textContent = `${spec.used || 0}/${spec.completed || 0}`
-    const downMb = ((spec.bytesDownloaded || 0) / (1024 * 1024)).toFixed(1)
-    const useMb = ((spec.bytesConsumed || 0) / (1024 * 1024)).toFixed(1)
-    el.statSpecMb.textContent = `${useMb} / ${downMb} MB`
-    el.statSpecSwitch.textContent = String(spec.qualitySwitchHits || 0)
+    const mode = (spec.adaptiveMode || "—").slice(0, 12)
+    el.statSpecMode.textContent = mode
+    el.statSpecMode.title = spec.adaptiveMode && spec.adaptiveMode !== mode ? spec.adaptiveMode : ""
+
+    const hitPct = coerceFiniteNumber(spec.bytesHitRatePercent, null)
+    const bytesHit = hitPct === null ? "—" : `${trimCompact(hitPct)}%`
+    setMetricValue(el.statSpecHit, bytesHit, {
+      title: hitPct === null ? undefined : `${hitPct}% bytes hit rate`,
+      pulse: false
+    })
+
+    const used = coerceFiniteNumber(spec.used, 0)
+    const completed = coerceFiniteNumber(spec.completed, 0)
+    setMetricValue(el.statSpecUsed, formatRatioPair(used, completed), {
+      title: formatRatioPairTitle(used, completed),
+      pulse: false
+    })
+
+    const consumed = coerceFiniteNumber(spec.bytesConsumed, 0)
+    const downloaded = coerceFiniteNumber(spec.bytesDownloaded, 0)
+    setMetricValue(el.statSpecMb, `${formatBytesShort(consumed)} / ${formatBytesShort(downloaded)}`, {
+      title: `${formatBytesShort(consumed)} consumed · ${formatBytesShort(downloaded)} downloaded`,
+      pulse: false
+    })
+
+    setMetricCount(el.statSpecSwitch, spec.qualitySwitchHits || 0)
     if (spec.adaptiveMode === "minimal") {
       el.statSpecMode.style.color = "var(--warning)"
     } else if (spec.adaptiveMode === "full") {

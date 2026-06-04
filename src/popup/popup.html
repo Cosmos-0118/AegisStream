@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>AegisStream</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
@@ -89,87 +92,13 @@
 
         <div class="card stats-card">
           <div class="card-header">
-            <div class="card-header-title">
-              <h2>Activity</h2>
-              <span class="stats-scope" id="statsScope">Last 5 min</span>
-            </div>
+            <h2>Activity</h2>
             <div class="stats-actions">
               <button id="resetStats" class="btn-secondary btn-sm" type="button">Reset</button>
               <button id="clearCache" class="btn-secondary btn-sm" type="button">Clear Cache</button>
             </div>
           </div>
-          
-          <div class="stats-grid">
-            <div class="stat-box">
-              <span class="stat-value" id="stat-hits">0</span>
-              <span class="stat-label">Cache Hits</span>
-            </div>
-            <div class="stat-box">
-              <span class="stat-value" id="stat-misses">0</span>
-              <span class="stat-label">Lookup Misses</span>
-            </div>
-            <div class="stat-box">
-              <span class="stat-value" id="stat-prefetched">0</span>
-              <span class="stat-label">In Cache Now</span>
-            </div>
-            <div class="stat-box">
-              <span class="stat-value" id="stat-failures">0</span>
-              <span class="stat-label">Failures</span>
-            </div>
-            <div class="stat-box">
-              <span class="stat-value" id="stat-playlists">0</span>
-              <span class="stat-label">Playlists</span>
-            </div>
-            <div class="stat-box">
-              <span class="stat-value" id="stat-chunks">0</span>
-              <span class="stat-label">Segments Req.</span>
-            </div>
-          </div>
-
-          <div class="health-grid">
-            <div class="health-box">
-              <span class="health-value" id="stat-lookups">0</span>
-              <span class="health-label">Lookups</span>
-            </div>
-            <div class="health-box">
-              <span class="health-value" id="stat-warmups">0</span>
-              <span class="health-label">Warmups</span>
-            </div>
-            <div class="health-box">
-              <span class="health-value" id="stat-ttfb">0 ms</span>
-              <span class="health-label">TTFB P95</span>
-            </div>
-            <div class="health-box">
-              <span class="health-value" id="stat-stalls">0 / 0.0s</span>
-              <span class="health-label">Stalls</span>
-            </div>
-          </div>
-
-          <div class="speculative-panel">
-            <div class="speculative-header">
-              <span class="speculative-title">Speculative prefetch</span>
-              <span class="speculative-mode" id="stat-spec-mode">full</span>
-            </div>
-            <div class="health-grid speculative-grid">
-              <div class="health-box">
-                <span class="health-value" id="stat-spec-hit">—</span>
-                <span class="health-label">Bytes hit rate</span>
-              </div>
-              <div class="health-box">
-                <span class="health-value" id="stat-spec-used">0/0</span>
-                <span class="health-label">Used / completed</span>
-              </div>
-              <div class="health-box">
-                <span class="health-value" id="stat-spec-mb">0 / 0 MB</span>
-                <span class="health-label">Consumed / downloaded</span>
-              </div>
-              <div class="health-box">
-                <span class="health-value" id="stat-spec-switch">0</span>
-                <span class="health-label">Switch hits</span>
-              </div>
-            </div>
-          </div>
-          
+          <!-- Lookup Hit Rate Hero Metric -->
           <div class="progress-container">
             <div class="progress-labels">
               <span>Lookup Hit Rate</span>
@@ -177,6 +106,91 @@
             </div>
             <div class="progress-bar-bg">
               <div class="progress-bar-fill" id="stat-hitrate-bar" style="width: 0%;"></div>
+            </div>
+            <div class="stats-scope-container">
+              <span class="stats-scope" id="statsScope">Last 5 min</span>
+            </div>
+          </div>
+          
+          <hr class="metrics-section-divider" />
+
+          <div class="metrics-grid-3col">
+            <div class="metric-card">
+              <span class="metric-label">Cache Hits</span>
+              <span class="metric-value" id="stat-hits">0</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Lookup Misses</span>
+              <span class="metric-value" id="stat-misses">0</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">In Cache Now</span>
+              <span class="metric-value" id="stat-prefetched">0</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Failures</span>
+              <span class="metric-value" id="stat-failures">0</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Playlists</span>
+              <span class="metric-value" id="stat-playlists">0</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Segments Req.</span>
+              <span class="metric-value" id="stat-chunks">0</span>
+            </div>
+          </div>
+
+          <hr class="metrics-section-divider" />
+
+          <div class="metrics-section">
+            <div class="metrics-subheader">
+              <h3>System Health</h3>
+            </div>
+            <div class="metrics-grid-2col">
+              <div class="metric-card">
+                <span class="metric-label">Lookups</span>
+                <span class="metric-value" id="stat-lookups">0</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Warmups</span>
+                <span class="metric-value" id="stat-warmups">0</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">TTFB P95</span>
+                <span class="metric-value" id="stat-ttfb">0 ms</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Stalls</span>
+                <span class="metric-value" id="stat-stalls">0 / 0.0s</span>
+              </div>
+            </div>
+          </div>
+
+          <hr class="metrics-section-divider" />
+
+          <div class="metrics-section speculative-section">
+            <div class="metrics-subheader">
+              <h3>Speculative Prefetch</h3>
+              <span class="speculative-mode" id="stat-spec-mode">full</span>
+            </div>
+            <div class="metrics-grid-2col">
+              <div class="metric-card">
+                <span class="metric-label">Bytes hit rate</span>
+                <span class="metric-value" id="stat-spec-hit">—</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Used / completed</span>
+                <span class="metric-value" id="stat-spec-used">0/0</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Consumed / downloaded</span>
+                <span class="metric-value" id="stat-spec-mb">0 / 0 MB</span>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Switch hits</span>
+                <span class="metric-value" id="stat-spec-switch">0</span>
+              </div>
             </div>
           </div>
         </div>
@@ -243,13 +257,16 @@
               <span class="slider round"></span>
             </label>
           </div>
-          <div class="setting-row setting-row-nested">
+          <div class="setting-row setting-row-nested setting-row-experimental">
             <div class="setting-info">
-              <label for="aggressiveScriptDefuserEnabled">
-                Aggressive Script Defuser
-                <span class="setting-badge">Experimental</span>
-              </label>
-              <span>Also defuses Mixpanel, GA, Segment, and related SDKs</span>
+              <div class="setting-title-row">
+                <label for="aggressiveScriptDefuserEnabled">Aggressive Script Defuser</label>
+                <span class="setting-badge" title="May affect analytics and third-party SDK behavior on some sites">
+                  <span class="setting-badge-dot" aria-hidden="true"></span>
+                  Experimental
+                </span>
+              </div>
+              <span class="setting-desc">Also defuses Mixpanel, GA, Segment, and related SDKs</span>
             </div>
             <label class="switch">
               <input type="checkbox" id="aggressiveScriptDefuserEnabled" data-performance-control>
