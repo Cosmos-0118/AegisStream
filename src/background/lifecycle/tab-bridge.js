@@ -188,7 +188,16 @@ async function handleExtensionInstall() {
   engineReady = false
   engineInFlight = null
   await ensureBackgroundEngineReady()
-  return bootstrapActiveTabOnly(true)
+  await bootstrapActiveTabOnly(true)
+  try {
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (!tab?.id || tab.id < 0 || !isScriptInjectionAllowedUrl(tab?.url)) continue
+      void ensureTabBridgeReady(tab.id, "extension-update", true)
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /** Browser cold start: engine only; manifest content_scripts own tab injection. */

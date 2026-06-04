@@ -327,6 +327,15 @@ function startBufferHealthMonitor() {
 
 ns.recordBufferStall = recordStall
 
+function requestBufferHealthTick(reason = "manual") {
+  tick()
+  if (typeof ns.logBridge === "function") {
+    ns.logBridge(`Buffer health tick (${reason})`, "DEBUG")
+  }
+}
+
+ns.requestBufferHealthTick = requestBufferHealthTick
+
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", startBufferHealthMonitor, { once: true })
 } else {

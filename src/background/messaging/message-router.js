@@ -467,7 +467,18 @@ function registerMessageRouter() {
         if (state.settings.enabled && tabState?.segments?.length) {
           syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
           if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-            maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "bridge-ready")
+            const reason = String(message.reason || "bridge-ready")
+            const recovery =
+              reason === "store-recovery" ||
+              reason === "extension-update" ||
+              reason.startsWith("reinject:") ||
+              reason === "visible"
+            const start = recovery
+              ? Math.max(0, tabState.anchorIndex)
+              : tabState.anchorIndex + 1
+            maybeRequestPrefetchForTab(tabId, tabState.segments, start, recovery ? reason : "bridge-ready", {
+              force: recovery
+            })
           }
         }
         if (typeof ns.syncCacheRegistryToTab === "function") {

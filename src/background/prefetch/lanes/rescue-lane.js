@@ -13,11 +13,31 @@
     return Date.now() < Number(tabState.scrubbingTrainUntil || 0)
   }
 
+  function isVariantSwitchRecovery(tabState, now = Date.now()) {
+    if (!tabState) return false
+    const graceUntil = Number(tabState.variantSwitchGraceUntil || 0)
+    if (now >= graceUntil) return false
+    const deferMs = Number(constants.VARIANT_SWITCH_RESCUE_DEFER_MS) || 4_000
+    const switchedAt = Number(tabState.lastQualityVariantSwitchAt || 0)
+    return switchedAt > 0 && now - switchedAt < deferMs
+  }
+
   function shouldEnterRescue(tabState) {
     const runway = Number(tabState.bufferRunwaySec)
     const health = Number(tabState.bufferHealthScore)
     const enterRunway = Number(constants.RESCUE_ENTER_RUNWAY_SEC ?? constants.RESCUE_RUNWAY_SEC) || 3
     const enterHealth = Number(constants.RESCUE_ENTER_HEALTH_PCT ?? constants.RESCUE_HEALTH_PCT) || 5
+    if (isVariantSwitchRecovery(tabState)) {
+      const hardRunway = Math.min(enterRunway, 1)
+      const hardHealth = Math.min(enterHealth, 2)
+      if (tabState.bufferTier === "emergency" && Number.isFinite(runway) && runway < hardRunway) {
+        return true
+      }
+      if (Number.isFinite(health) && health < hardHealth && Number.isFinite(runway) && runway < hardRunway) {
+        return true
+      }
+      return false
+    }
     if (tabState.bufferTier === "emergency") return true
     if (Number.isFinite(runway) && runway < enterRunway) return true
     if (Number.isFinite(health) && health < enterHealth) return true
@@ -113,6 +133,9 @@
 
   function armRescueLane(tabId, tabState, reason = "rescue") {
     if (!tabState) return
+    if (isVariantSwitchRecovery(tabState)) {
+      return
+    }
     const now = Date.now()
     tabState.speculativeAllowed = false
     if (typeof ns.cancelPendingPrefetchForTab === "function") {
@@ -169,7 +192,10 @@
     }
     tabState.lastRescuePrefetchAt = now
     const normalized = Array.isArray(segments) ? segments : tabState.segments
-    armRescueLane(tabId, tabState, options.source || "rescue-lane")
+    const variantRecovery = isVariantSwitchRecovery(tabState, now)
+    if (!variantRecovery) {
+      armRescueLane(tabId, tabState, options.source || "rescue-lane")
+    }
     const targets = resolveRescuePlayheadTargets(tabState, normalized)
     if (!targets.length) return false
 
@@ -179,14 +205,17 @@
     tabState.updatedAt = now
 
     if (typeof ns.delegatePrefetchToPage === "function") {
+      const rescueSource = variantRecovery ? "variant-switch-rescue" : "rescue-lane"
       addLog(
         "INFO",
-        `Engine mode: ${EngineModes.RESCUE} — delegated rescue prefetch of ${targets.length} segment(s) (tab ${tabId}, priority=high)`
+        variantRecovery
+          ? `Variant-switch recovery prefetch of ${targets.length} segment(s) (tab ${tabId}, non-destructive)`
+          : `Engine mode: ${EngineModes.RESCUE} — delegated rescue prefetch of ${targets.length} segment(s) (tab ${tabId}, priority=high)`
       )
       const ok = await ns.delegatePrefetchToPage(tabId, targets, {
-        source: "rescue-lane",
+        source: rescueSource,
         priority: "high",
-        replaceDelegated: true
+        replaceDelegated: variantRecovery ? false : true
       })
       if (ok && typeof ns.noteRescuePrefetchDelegated === "function") {
         ns.noteRescuePrefetchDelegated(targets.length)

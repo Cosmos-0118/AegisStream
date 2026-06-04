@@ -37,6 +37,27 @@ function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
   const currentTime = Number(video.currentTime)
   if (!Number.isFinite(currentTime)) return
 
+  const graceUntil = Number(ns.variantSwitchGraceUntil || 0)
+  const retainedAnchor = ns.variantSwitchAnchorIndex
+  if (
+    graceUntil > Date.now() &&
+    typeof retainedAnchor === "number" &&
+    currentTime < (Number(ns.variantSwitchTeleportSuppressSec) || 20)
+  ) {
+    const mapper = manifestMapper || resolveManifestMapper()
+    let mappedIndex = null
+    if (mapper && typeof mapper.getSegmentIndexFromTime === "function") {
+      mappedIndex = mapper.getSegmentIndexFromTime(currentTime)
+    }
+    if (typeof mappedIndex === "number" && mappedIndex < retainedAnchor - 2) {
+      logBridge?.(
+        `Skipped variant-switch DOM teleport at ${currentTime.toFixed(2)}s (mapped ${mappedIndex}, retained ${retainedAnchor})`,
+        "DEBUG"
+      )
+      return
+    }
+  }
+
   let targetedIndex = null
   if (manifestMapper && typeof manifestMapper.getSegmentIndexFromTime === "function") {
     targetedIndex = manifestMapper.getSegmentIndexFromTime(currentTime)
@@ -113,16 +134,14 @@ function setupVisibilityLifecycleGuards() {
     ns.pageVisibilitySleep = hidden === true
     if (hidden) {
       notifyRuntime("TAB_VISIBILITY_PAUSE", { hidden: true })
-      logBridge?.("Tab hidden — pausing background prefetch engine", "INFO")
-      if (typeof ns.cancelPrefetchRunway === "function") {
-        ns.cancelPrefetchRunway([], { reason: "visibility-pause" })
-      } else if (typeof ns.cancelInflightChunkStores === "function") {
-        ns.cancelInflightChunkStores("visibility-pause")
-      }
+      logBridge?.("Tab hidden — pausing new prefetch (in-flight retained)", "DEBUG")
       return
     }
     notifyRuntime("TAB_VISIBILITY_RESUME", { hidden: false })
     logBridge?.("Tab visible — re-warming buffer pipelines", "DEBUG")
+    if (typeof ns.requestBufferHealthTick === "function") {
+      ns.requestBufferHealthTick("visibility-resume")
+    }
   }
 
   document.addEventListener("visibilitychange", () => {

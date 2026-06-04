@@ -76,7 +76,6 @@ function pauseTabPrefetchForVisibility(tabId, reason = "tab-hidden") {
   tabState.visibilitySleepAt = Date.now()
   tabState.speculativeAllowed = false
   cancelPendingPrefetchForTab(tabId)
-  releaseInflightForTab(tabId, { reason: reason || "visibility-pause" })
   if (tabState.prefetchCapRetryTimer) {
     clearTimeout(tabState.prefetchCapRetryTimer)
     tabState.prefetchCapRetryTimer = null
@@ -111,13 +110,14 @@ function resumeTabPrefetchForVisibility(tabId, reason = "tab-visible") {
     tabState.segments.length &&
     typeof ns.maybeRequestPrefetchForTab === "function"
   ) {
-    ns.maybeRequestPrefetchForTab(
-      tabId,
-      tabState.segments,
-      tabState.anchorIndex + 1,
-      "visibility-resume",
-      { force: true }
-    )
+    const start = Math.max(0, tabState.anchorIndex)
+    ns.maybeRequestPrefetchForTab(tabId, tabState.segments, start, "visibility-resume", {
+      force: true,
+      prefetchWindowOverride: Math.max(
+        Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12,
+        Number(state.settings.prefetchWindow) || 8
+      )
+    })
   }
 }
 

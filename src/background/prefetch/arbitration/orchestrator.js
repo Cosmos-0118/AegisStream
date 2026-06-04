@@ -107,6 +107,41 @@ function isTabInSeekChurnAggressive(tabState) {
   return Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)
 }
 
+function isTabInVariantSwitchGrace(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.variantSwitchGraceUntil || 0)
+}
+
+function shouldSuppressVariantSwitchTeleport(tabState, targetIndex, payload = {}) {
+  if (!isTabInVariantSwitchGrace(tabState)) return false
+  const retained = tabState.variantSwitchAnchorIndex
+  if (typeof retained !== "number" || typeof targetIndex !== "number") return false
+  if (targetIndex >= retained - 2) return false
+  const currentTime = Number(payload.currentTimeSec)
+  const suppressSec = Number(constants.VARIANT_SWITCH_TELEPORT_SUPPRESS_SEC) || 20
+  if (Number.isFinite(currentTime)) {
+    return currentTime < suppressSec
+  }
+  const earlyBound = Math.max(2, Math.floor(retained * 0.1))
+  return targetIndex <= earlyBound
+}
+
+function scheduleVariantSwitchWarmPrefetch(tabId, tabState) {
+  if (!tabState?.segments?.length) return
+  const anchor =
+    typeof tabState.variantSwitchAnchorIndex === "number"
+      ? tabState.variantSwitchAnchorIndex
+      : typeof tabState.anchorIndex === "number"
+        ? tabState.anchorIndex
+        : null
+  if (typeof anchor !== "number") return
+  markSeekChurnAggressive(tabState)
+  maybeRequestPrefetchForTab(tabId, tabState.segments, Math.max(0, anchor), "quality-switch-warm", {
+    force: true,
+    prefetchWindowOverride: Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12
+  })
+}
+
 function isTabInTeleportMode(tabState) {
   if (!tabState) return false
   return Date.now() < Number(tabState.teleportModeUntil || 0)
@@ -504,10 +539,19 @@ function handleForceTeleportAnchor(tabId, payload = {}) {
     })
   }
   if (!Number.isFinite(targetIndex)) return
-  if (typeof ns.armTeleportPriorityLane === "function") {
-    ns.armTeleportPriorityLane(tabState, targetIndex)
+  const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
+  if (shouldSuppressVariantSwitchTeleport(tabState, clampedTarget, payload)) {
+    addLog(
+      "DEBUG",
+      `Suppressed variant-switch DOM teleport on tab ${tabId}: index ${clampedTarget} (retained ${tabState.variantSwitchAnchorIndex}, t=${Number(payload.currentTimeSec).toFixed?.(2) ?? payload.currentTimeSec}s)`
+    )
+    scheduleVariantSwitchWarmPrefetch(tabId, tabState)
+    return
   }
-  scheduleDomAnchorCommit(tabId, targetIndex, payload)
+  if (typeof ns.armTeleportPriorityLane === "function") {
+    ns.armTeleportPriorityLane(tabState, clampedTarget)
+  }
+  scheduleDomAnchorCommit(tabId, clampedTarget, payload)
 }
 
 function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", options = {}) {
@@ -2012,7 +2056,9 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     )
     notifyPageSeekingStateReset(tabId, {
       reason: "variant-switch",
-      anchorIndex: typeof anchorIndex === "number" ? anchorIndex : previous?.anchorIndex
+      anchorIndex: typeof anchorIndex === "number" ? anchorIndex : previous?.anchorIndex,
+      variantSwitchGraceUntil:
+        Date.now() + (Number(constants.VARIANT_SWITCH_GRACE_MS) || 8_000)
     })
   } else if (
     playbackState === PlaybackStates.TOKEN_REFRESHING &&
@@ -2119,6 +2165,18 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     lastQualityVariantSwitchAt: qualityVariantSwitch
       ? Date.now()
       : Number(previous?.lastQualityVariantSwitchAt || 0),
+    variantSwitchGraceUntil: qualityVariantSwitch
+      ? Date.now() + (Number(constants.VARIANT_SWITCH_GRACE_MS) || 8_000)
+      : Number(previous?.variantSwitchGraceUntil || 0),
+    variantSwitchAnchorIndex: qualityVariantSwitch
+      ? typeof anchorIndex === "number"
+        ? anchorIndex
+        : typeof previous?.anchorIndex === "number"
+          ? previous.anchorIndex
+          : null
+      : typeof previous?.variantSwitchAnchorIndex === "number"
+        ? previous.variantSwitchAnchorIndex
+        : null,
     prefetchInflightRetryTimer: previous?.prefetchInflightRetryTimer || null,
     prefetchInflightRetryPending: previous?.prefetchInflightRetryPending || null,
     lastKnownSyncAt: previous?.lastKnownSyncAt || 0,
@@ -2207,6 +2265,19 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       reason: "playback-generation",
       log: false
     })
+  }
+  if (qualityVariantSwitch && tabState.segments?.length) {
+    syncKnownSegmentsToPage(tabId, tabState.segments, {
+      resetSeeking: true,
+      anchorIndex:
+        typeof tabState.variantSwitchAnchorIndex === "number"
+          ? tabState.variantSwitchAnchorIndex
+          : typeof tabState.anchorIndex === "number"
+            ? tabState.anchorIndex
+            : null,
+      reason: "quality-switch"
+    })
+    scheduleVariantSwitchWarmPrefetch(tabId, tabState)
   }
   return tabState
 }
@@ -2396,12 +2467,18 @@ function notifyPageSeekingStateReset(tabId, options = {}) {
   if (typeof ns.recordKalmanStateReset === "function") {
     ns.recordKalmanStateReset()
   }
+  const variantGraceUntil =
+    options.reason === "variant-switch"
+      ? Number(options.variantSwitchGraceUntil) ||
+        Date.now() + (Number(constants.VARIANT_SWITCH_GRACE_MS) || 8_000)
+      : 0
   chrome.tabs
     .sendMessage(tabId, {
       type: "AegisStream:ResetSeekingState",
       reason: options.reason || "manifest-reset",
       anchorIndex:
-        typeof options.anchorIndex === "number" ? Math.round(options.anchorIndex) : null
+        typeof options.anchorIndex === "number" ? Math.round(options.anchorIndex) : null,
+      variantSwitchGraceUntil: variantGraceUntil > 0 ? variantGraceUntil : null
     })
     .catch(() => {})
 }
@@ -2434,7 +2511,12 @@ function resolveEffectivePrefetchWindow(tabId) {
   const tabState = state.playlistByTab.get(tabId)
   const recentVariantSwitch =
     Date.now() - Number(tabState?.lastQualityVariantSwitchAt || 0) < 5000
-  if (tabState && isTabInSeekChurnAggressive(tabState)) {
+  if (tabState && isTabInVariantSwitchGrace(tabState)) {
+    windowSize = Math.max(
+      windowSize,
+      Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12
+    )
+  } else if (tabState && isTabInSeekChurnAggressive(tabState)) {
     windowSize = Math.max(
       windowSize,
       Number(constants.SEEK_CHURN_PREFETCH_WINDOW_MIN) || 10
@@ -3289,12 +3371,19 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
         const forcePrefetch =
           tabState.anchorRetainedByRefresh === true ||
           Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 3000
+        const variantWarm =
+          Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 5000
         maybeRequestPrefetchForTab(
           tabId,
           tabState.segments,
-          tabState.anchorIndex + 1,
-          "captured-playlist",
-          { force: forcePrefetch }
+          Math.max(0, tabState.anchorIndex),
+          variantWarm ? "quality-switch-warm" : "captured-playlist",
+          {
+            force: forcePrefetch,
+            prefetchWindowOverride: variantWarm
+              ? Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12
+              : undefined
+          }
         )
       } else {
         const startSeconds = extractStartSecondsFromPageUrl(pageUrl)
@@ -3335,12 +3424,19 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
       const forcePrefetch =
         tabState.anchorRetainedByRefresh === true ||
         Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 3000
+      const variantWarm =
+        Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 5000
       maybeRequestPrefetchForTab(
         tabId,
         tabState.segments,
-        tabState.anchorIndex + 1,
-        "captured-playlist",
-        { force: forcePrefetch }
+        Math.max(0, tabState.anchorIndex),
+        variantWarm ? "quality-switch-warm" : "captured-playlist",
+        {
+          force: forcePrefetch,
+          prefetchWindowOverride: variantWarm
+            ? Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12
+            : undefined
+        }
       )
     } else {
       addLog("INFO", "Awaiting player segment request to anchor captured DASH prefetch (JIT mode)")

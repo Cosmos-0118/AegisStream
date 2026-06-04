@@ -71,8 +71,11 @@ function getRequestDetails(input, init) {
 }
 
 const STORE_CHUNK_TIMEOUT_MS = 30_000
-const STORE_CHUNK_RETRY_ATTEMPTS = 2
-const STORE_CHUNK_RETRY_DELAY_MS = 80
+const STORE_CHUNK_RETRY_ATTEMPTS = 5
+const STORE_CHUNK_RETRY_DELAY_MS = 120
+const STORE_CHUNK_INVALIDATED_RETRY_ATTEMPTS = 8
+const STORE_CHUNK_INVALIDATED_MAX_DELAY_MS = 2_400
+const MAX_PENDING_STORE_AFTER_RECONNECT = 48
 
 const CHUNK_CAPTURE_SOURCES = new Set([
   "xhr-sync",
@@ -102,12 +105,60 @@ function recordChunkStoreOutcome({ captureSource, ok, byteLength, aborted }) {
 /** @type {Map<string, { abortController: AbortController, promise: Promise<object> }>} */
 const inflightChunkStores = new Map()
 const pendingStoreRequestIds = new Set()
+/** @type {object[]} */
+const pendingStoreAfterReconnect = []
+let extensionReconnectTimer = null
+let lastExtensionReconnectAt = 0
+let lastInvalidatedStoreWarnAt = 0
 
 function abortedStoreResult() {
   return { ok: false, error: "aborted", aborted: true, skipped: true }
 }
 
+function isExtensionContextInvalidated(storeRes, caughtError) {
+  const error = formatStoreChunkError(storeRes, caughtError).toLowerCase()
+  return /context invalidated|extension context invalidated|receiving end does not exist/.test(
+    error
+  )
+}
+
+function scheduleExtensionReconnect(reason = "context-invalidated") {
+  const now = Date.now()
+  if (now - lastExtensionReconnectAt < 400) return
+  if (extensionReconnectTimer) return
+  extensionReconnectTimer = setTimeout(() => {
+    extensionReconnectTimer = null
+    lastExtensionReconnectAt = Date.now()
+    notifyRuntime("REQUEST_BRIDGE_RECONNECT", { reason })
+  }, 80)
+}
+
+function enqueuePendingStoreAfterReconnect(stablePayload) {
+  if (!stablePayload?.url || !stablePayload?.bytes) return
+  if (pendingStoreAfterReconnect.length >= MAX_PENDING_STORE_AFTER_RECONNECT) {
+    pendingStoreAfterReconnect.shift()
+  }
+  pendingStoreAfterReconnect.push(stablePayload)
+}
+
+async function flushPendingStoresAfterReconnect() {
+  if (!pendingStoreAfterReconnect.length) return 0
+  const batch = pendingStoreAfterReconnect.splice(0, pendingStoreAfterReconnect.length)
+  let flushed = 0
+  for (const payload of batch) {
+    const res = await storeChunkFromPage(payload).catch(() => ({ ok: false }))
+    if (res?.ok) flushed += 1
+  }
+  if (flushed > 0) {
+    logBridge(`Flushed ${flushed}/${batch.length} deferred chunk store(s) after reconnect`, "INFO")
+  }
+  return flushed
+}
+
 function cancelInflightChunkStores(reason = "teardown") {
+  if (/visibility-pause|visibility-resume/.test(String(reason || ""))) {
+    return 0
+  }
   if (inflightChunkStores.size === 0) return 0
   const count = inflightChunkStores.size
   for (const ctx of inflightChunkStores.values()) {
@@ -260,9 +311,21 @@ function formatStoreChunkError(storeRes, caughtError) {
 function isTransientStoreFailure(storeRes) {
   if (!storeRes || storeRes.ok) return false
   const error = formatStoreChunkError(storeRes).toLowerCase()
-  return /runtime|timeout|serialize|message port|context invalidated|no-response|unknown/.test(
+  return /runtime|timeout|serialize|message port|context invalidated|relay-error|no-response|unknown/.test(
     error
   )
+}
+
+function storeRetryPlan(storeRes) {
+  const invalidated = isExtensionContextInvalidated(storeRes)
+  const attempts = invalidated ? STORE_CHUNK_INVALIDATED_RETRY_ATTEMPTS : STORE_CHUNK_RETRY_ATTEMPTS
+  const baseDelay = invalidated ? 200 : STORE_CHUNK_RETRY_DELAY_MS
+  return { invalidated, attempts, baseDelay }
+}
+
+function storeRetryDelayMs(baseDelay, attempt, invalidated) {
+  const delay = baseDelay * 2 ** attempt
+  return invalidated ? Math.min(STORE_CHUNK_INVALIDATED_MAX_DELAY_MS, delay) : delay
 }
 
 function storeInflightKey(payload) {
@@ -357,7 +420,8 @@ async function storeChunkFromPage(payload) {
         return abortedStoreResult()
       }
 
-      for (let attempt = 0; attempt < STORE_CHUNK_RETRY_ATTEMPTS; attempt += 1) {
+      let retryPlan = storeRetryPlan(lastRes)
+      for (let attempt = 0; attempt < retryPlan.attempts; attempt += 1) {
         if (signal.aborted) {
           aborted = true
           return abortedStoreResult()
@@ -373,11 +437,18 @@ async function storeChunkFromPage(payload) {
           }
           return lastRes
         }
-        if (!isTransientStoreFailure(lastRes) || attempt >= STORE_CHUNK_RETRY_ATTEMPTS - 1) {
+        retryPlan = storeRetryPlan(lastRes)
+        if (!isTransientStoreFailure(lastRes) || attempt >= retryPlan.attempts - 1) {
           break
         }
+        if (retryPlan.invalidated) {
+          scheduleExtensionReconnect("store-retry")
+        }
         try {
-          await delayWithAbortSignal(STORE_CHUNK_RETRY_DELAY_MS * (attempt + 1), signal)
+          await delayWithAbortSignal(
+            storeRetryDelayMs(retryPlan.baseDelay, attempt, retryPlan.invalidated),
+            signal
+          )
         } catch {
           aborted = true
           return abortedStoreResult()
@@ -394,6 +465,10 @@ async function storeChunkFromPage(payload) {
         if (recovered?.ok) {
           lastRes = recovered
           return recovered
+        }
+        if (isExtensionContextInvalidated(lastRes)) {
+          enqueuePendingStoreAfterReconnect(stablePayload)
+          scheduleExtensionReconnect("store-failed")
         }
       }
       return lastRes
@@ -493,6 +568,8 @@ ns.wrapBytesForExtensionTransport = wrapBytesForExtensionTransport
 ns.normalizeCaptureSource = normalizeCaptureSource
 ns.storeChunkFromPage = storeChunkFromPage
 ns.cancelInflightChunkStores = cancelInflightChunkStores
+ns.flushPendingStoresAfterReconnect = flushPendingStoresAfterReconnect
+ns.isExtensionContextInvalidated = isExtensionContextInvalidated
 ns.base64ToArrayBuffer = base64ToArrayBuffer
 ns.resolveLookupBytes = resolveLookupBytes
 ns.notifyRuntime = notifyRuntime

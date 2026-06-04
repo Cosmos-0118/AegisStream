@@ -97,6 +97,8 @@ function resolveXhrYoutubeChunk(xhr, url, status) {
   return youtubeChunk
 }
 
+let lastXhrInvalidatedWarnAt = 0
+
 function captureXhrResponseSync(xhr, rawResponse) {
   if (xhr.__aegisServedFromCache === true) return
   if (xhr.__aegisChunkCaptured === true) return
@@ -151,6 +153,19 @@ function captureXhrResponseSync(xhr, rawResponse) {
   })
     .then((storeRes) => {
       if (storeRes?.ok || document.visibilityState !== "visible") return
+      if (
+        typeof ns.isExtensionContextInvalidated === "function" &&
+        ns.isExtensionContextInvalidated(storeRes)
+      ) {
+        const now = Date.now()
+        if (now - lastXhrInvalidatedWarnAt < 3_000) return
+        lastXhrInvalidatedWarnAt = now
+        logBridge(
+          `XHR sync store deferred until extension reconnects: ${String(cacheLookupUrl).slice(-80)}`,
+          "DEBUG"
+        )
+        return
+      }
       logBridge(
         `XHR sync capture store failed (${formatStoreChunkError(storeRes)}): ${String(cacheLookupUrl).slice(-80)}`,
         "WARN"
@@ -158,6 +173,13 @@ function captureXhrResponseSync(xhr, rawResponse) {
     })
     .catch((error) => {
       if (document.visibilityState !== "visible") return
+      const synthetic = { ok: false, error: error?.message || String(error) }
+      if (
+        typeof ns.isExtensionContextInvalidated === "function" &&
+        ns.isExtensionContextInvalidated(synthetic, error)
+      ) {
+        return
+      }
       logBridge(
         `XHR sync capture store failed (${formatStoreChunkError(null, error)}): ${String(cacheLookupUrl).slice(-80)}`,
         "WARN"

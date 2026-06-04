@@ -57,9 +57,15 @@ function notifyBridgeReady(reason = "startup") {
         pageUrl: location.href
       },
       (response) => {
+        const runtimeError = chrome.runtime.lastError
+        if (runtimeError) {
+          const msg = String(runtimeError.message || "")
+          if (/context invalidated/i.test(msg)) return
+        }
         if (response?.settings) {
           relaySettingsToPage(response.settings)
         }
+        postExtensionRecoveredToPage(reason)
       }
     )
   } catch {
@@ -153,7 +159,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         type: "RESET_SEEKING_STATE",
         reason: message.reason || "manifest-reset",
         anchorIndex:
-          typeof message.anchorIndex === "number" ? message.anchorIndex : null
+          typeof message.anchorIndex === "number" ? message.anchorIndex : null,
+        variantSwitchGraceUntil:
+          typeof message.variantSwitchGraceUntil === "number"
+            ? message.variantSwitchGraceUntil
+            : null
       },
       "*"
     )
@@ -201,6 +211,17 @@ notifyBridgeReady("startup")
 window.addEventListener("pageshow", () => {
   notifyBridgeReady("pageshow")
 })
+
+function postExtensionRecoveredToPage(reason = "extension-recovered") {
+  window.postMessage(
+    {
+      __aegisstream: true,
+      type: "EXTENSION_RECOVERED",
+      reason
+    },
+    "*"
+  )
+}
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
@@ -281,6 +302,11 @@ window.addEventListener("message", (event) => {
   if (event.source !== window) return
   const data = event.data
   if (!data || data.__aegisstream !== true) return
+
+  if (data.type === "REQUEST_BRIDGE_RECONNECT") {
+    notifyBridgeReady(data.reason || "store-recovery")
+    return
+  }
 
   if (data.type === "CACHE_LOOKUP_REQUEST") {
     try {

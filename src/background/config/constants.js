@@ -133,6 +133,12 @@ ns.constants = {
   /** Let the page playlist delegate run before the extension background fetch. */
   MANIFEST_REFRESH_PAGE_FIRST_MS: 300,
   VARIANT_SWITCH_COOLDOWN_MS: 2_000,
+  /** After manual quality change: ignore spurious DOM teleports near t≈0 while playhead mapping catches up. */
+  VARIANT_SWITCH_GRACE_MS: 8_000,
+  VARIANT_SWITCH_TELEPORT_SUPPRESS_SEC: 20,
+  VARIANT_SWITCH_PREFETCH_WINDOW: 12,
+  /** Prefer aggressive forward prefetch over rescue aborts right after a rendition change. */
+  VARIANT_SWITCH_RESCUE_DEFER_MS: 4_000,
   TELEPORT_QUEUE_PURGE_THRESHOLD: 20,
   TELEPORT_MODE_JUMP_THRESHOLD: 20,
   TELEPORT_MODE_RADIUS: 5,

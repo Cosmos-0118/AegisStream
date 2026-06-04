@@ -69,4 +69,18 @@ decision = evaluateAuthorityCommit(scrubState, 46, AnchorAuthority.DOM_SEEKED)
 assert(decision.allow === true, "scrubbing train bypasses DOM cooldown on repeat")
 assert(decision.purgeQueues === false, "duplicate scrub target should not purge (jump=0)")
 
+const variantGrace = {
+  hasAnchor: true,
+  anchorIndex: 8,
+  variantSwitchGraceUntil: Date.now() + 8_000,
+  variantSwitchAnchorIndex: 8,
+  lastDomTeleportAt: 0
+}
+decision = evaluateAuthorityCommit(variantGrace, 0, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === false, "variant grace blocks spurious teleport to start")
+assert(decision.reason === "variant-switch-grace", "variant grace reason")
+
+decision = evaluateAuthorityCommit(variantGrace, 7, AnchorAuthority.DOM_SEEKED)
+assert(decision.allow === false, "variant grace still blocks small jump below minJump")
+
 console.log("anchor-authority.test.js: all assertions passed")

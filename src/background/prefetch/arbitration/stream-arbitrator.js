@@ -11,6 +11,7 @@
     "anchor-jump": 85,
     "scrub-snap-back": 84,
     "scrub-velocity-prewarm": 82,
+    "quality-switch-warm": 87,
     "dom-seeked": 81,
     "seek-prediction": 78,
     "manifest-refresh": 40,
@@ -63,7 +64,8 @@
     const now = Date.now()
 
     if (mode === ns.EngineModes?.RESCUE) {
-      const rescueOnly = /rescue|buffer-emergency/.test(label)
+      const rescueOnly =
+        /rescue|buffer-emergency|quality-switch-warm|variant-switch-rescue/.test(label)
       if (!rescueOnly) {
         return { allow: false, mode, reason: "rescue-active", priority }
       }
@@ -80,6 +82,9 @@
     }
 
     if (typeof ns.isRescueModeActive === "function" && ns.isRescueModeActive(tabState)) {
+      if (/quality-switch-warm|variant-switch-rescue/.test(label)) {
+        return { allow: true, mode, priority }
+      }
       return { allow: false, mode, reason: "rescue-latched", priority }
     }
 

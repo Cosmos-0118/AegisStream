@@ -69,7 +69,9 @@
     "cap-retry",
     "speculative",
     "maintenance",
-    "visibility-resume"
+    "visibility-resume",
+    "quality-switch-warm",
+    "variant-switch-rescue"
   ])
 
   function normalizeLifecycleEventSource(eventSource) {

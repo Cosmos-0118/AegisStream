@@ -40,6 +40,20 @@ function isScrubbingTrainActive(tabState, now = Date.now()) {
   return now < Number(tabState.scrubbingTrainUntil || 0)
 }
 
+function isVariantSwitchGraceActive(tabState, now = Date.now()) {
+  if (!tabState) return false
+  return now < Number(tabState.variantSwitchGraceUntil || 0)
+}
+
+function shouldBlockDomAnchorDuringVariantGrace(tabState, targetIndex) {
+  if (!isVariantSwitchGraceActive(tabState)) return false
+  const retained = tabState.variantSwitchAnchorIndex
+  if (typeof retained !== "number" || typeof targetIndex !== "number") return false
+  if (targetIndex >= retained - 2) return false
+  const earlyBound = Math.max(2, Math.floor(retained * 0.1))
+  return targetIndex <= earlyBound
+}
+
 /**
  * Whether an authoritative (non-network) anchor commit is allowed and how
  * aggressively to reset prefetch tracking.
@@ -65,6 +79,15 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
         jump,
         // Every scrub step must hard-purge so in-flight prefetch slots stay near the playhead.
         purgeQueues: jump > 0
+      }
+    }
+
+    if (shouldBlockDomAnchorDuringVariantGrace(tabState, targetIndex)) {
+      return {
+        allow: false,
+        reason: "variant-switch-grace",
+        jump,
+        purgeQueues: false
       }
     }
 

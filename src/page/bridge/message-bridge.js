@@ -49,6 +49,15 @@ window.addEventListener("message", (event) => {
     if (typeof ns.resetAllSeekingControllers === "function") {
       ns.resetAllSeekingControllers(data.anchorIndex)
     }
+    if (data.reason === "variant-switch") {
+      const graceUntil = Number(data.variantSwitchGraceUntil || 0)
+      ns.variantSwitchGraceUntil =
+        graceUntil > Date.now() ? graceUntil : Date.now() + 8_000
+      if (typeof data.anchorIndex === "number") {
+        ns.variantSwitchAnchorIndex = data.anchorIndex
+      }
+      ns.variantSwitchTeleportSuppressSec = 20
+    }
     logBridge?.(
       `Seeking/Kalman state reset (${data.reason || "manifest-reset"})`,
       "DEBUG"
@@ -108,6 +117,19 @@ window.addEventListener("message", (event) => {
 
   if (data.type === "SETTINGS_UPDATED" && data.settings) {
     applyRuntimeSettings(data.settings)
+    if (typeof ns.flushPendingStoresAfterReconnect === "function") {
+      void ns.flushPendingStoresAfterReconnect()
+    }
+    return
+  }
+
+  if (data.type === "EXTENSION_RECOVERED") {
+    if (typeof ns.flushPendingStoresAfterReconnect === "function") {
+      void ns.flushPendingStoresAfterReconnect()
+    }
+    if (typeof ns.requestBufferHealthTick === "function") {
+      ns.requestBufferHealthTick(data.reason || "extension-recovered")
+    }
     return
   }
 
