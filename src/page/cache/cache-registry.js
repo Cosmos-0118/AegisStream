@@ -11,6 +11,36 @@
   /** Keys with delegated/in-flight prefetch — enables lookup + collapse before IDB write. */
   const inflightCacheIntentKeys = new Set()
   let registryGeneration = 0
+  /** Recent page-local key assertions — used to flag sync-replace evictions in traces. */
+  const recentLocalAdds = new Map()
+  const LOCAL_ADD_TRACE_MS = 30_000
+
+  function registryKeyLabel(key) {
+    if (typeof key !== "string" || !key) return "unknown"
+    return key.length > 72 ? key.slice(-72) : key
+  }
+
+  function pruneRecentLocalAdds(now = Date.now()) {
+    for (const [key, addedAt] of recentLocalAdds.entries()) {
+      if (now - addedAt > LOCAL_ADD_TRACE_MS) recentLocalAdds.delete(key)
+    }
+  }
+
+  function touchRecentLocalAdd(key) {
+    if (!key) return
+    recentLocalAdds.set(key, Date.now())
+    pruneRecentLocalAdds()
+  }
+
+  function countRecentLocalAddsEvicted(incomingKeys) {
+    let evicted = 0
+    const now = Date.now()
+    for (const [key, addedAt] of recentLocalAdds.entries()) {
+      if (now - addedAt > LOCAL_ADD_TRACE_MS) continue
+      if (!incomingKeys.has(key)) evicted += 1
+    }
+    return evicted
+  }
 
   function isCanonicalCoalesceKey(value) {
     return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
@@ -59,13 +89,34 @@
 
   function applyCacheRegistrySync(payload = {}) {
     const replace = payload.replace !== false
-    if (replace) localizedCacheKeys.clear()
-    const keys = Array.isArray(payload.keys) ? payload.keys : []
-    for (const key of keys) {
-      if (typeof key === "string" && key) localizedCacheKeys.add(key)
+    const reason = payload.reason || "routine-sync"
+    const incomingKeys = Array.isArray(payload.keys)
+      ? payload.keys.filter((key) => typeof key === "string" && key)
+      : []
+    const incomingSet = new Set(incomingKeys)
+    const preSize = localizedCacheKeys.size
+    let evictedPageAhead = 0
+
+    if (replace) {
+      for (const key of localizedCacheKeys) {
+        if (!incomingSet.has(key)) evictedPageAhead += 1
+      }
+      localizedCacheKeys.clear()
+    }
+
+    for (const key of incomingKeys) {
+      localizedCacheKeys.add(key)
     }
     trimRegistry()
     registryGeneration = Number(payload.generation) || registryGeneration + 1
+
+    if (typeof ns.logBridge === "function") {
+      const recentEvicted = replace ? countRecentLocalAddsEvicted(incomingSet) : 0
+      ns.logBridge(
+        `[REGISTRY] sync-replace gen=${payload.generation ?? "?"} reason=${reason} replace=${replace} incoming=${incomingKeys.length} preSize=${preSize} postSize=${localizedCacheKeys.size} evicted=${evictedPageAhead} recentLocalEvicted=${recentEvicted}`,
+        recentEvicted > 0 ? "WARN" : "DEBUG"
+      )
+    }
   }
 
   function trimInflightIntentRegistry() {
@@ -85,6 +136,13 @@
     localizedCacheKeys.add(key)
     inflightCacheIntentKeys.delete(key)
     trimRegistry()
+    touchRecentLocalAdd(key)
+    if (typeof ns.logBridge === "function") {
+      ns.logBridge(
+        `[REGISTRY] local-add gen=${registryGeneration} key=${registryKeyLabel(key)} currentSize=${localizedCacheKeys.size}`,
+        "DEBUG"
+      )
+    }
   }
 
   function removeLocalCacheKey(url) {
@@ -151,14 +209,36 @@
    */
   function isLikelyCacheHitCandidate(url) {
     if (ns.extensionEnabled === false || ns.serveFromCache === false) return false
+
+    const key = resolveCanonicalCoalesceKey(url) || url
+    let cached = false
+    let inflight = false
+    let umpKnown = false
+
     if (typeof url === "string" && url.startsWith("ump|")) {
-      return (
-        isCachedKey(url) ||
-        isInflightKey(url) ||
-        ns.knownUmpCacheKeys?.has?.(url) === true
+      cached = isCachedKey(url)
+      inflight = isInflightKey(url)
+      umpKnown = ns.knownUmpCacheKeys?.has?.(url) === true
+      const result = cached || inflight || umpKnown
+      if (!result && typeof ns.logBridge === "function") {
+        ns.logBridge(
+          `[REGISTRY] candidate-check gen=${registryGeneration} key=${registryKeyLabel(key)} present=false (cached=${cached}, inflight=${inflight}, umpKnown=${umpKnown})`,
+          "DEBUG"
+        )
+      }
+      return result
+    }
+
+    cached = isCachedKey(url)
+    inflight = isInflightKey(url)
+    const result = cached || inflight
+    if (!result && typeof ns.logBridge === "function") {
+      ns.logBridge(
+        `[REGISTRY] candidate-check gen=${registryGeneration} key=${registryKeyLabel(key)} present=false (cached=${cached}, inflight=${inflight})`,
+        "DEBUG"
       )
     }
-    return isCachedKey(url) || isInflightKey(url)
+    return result
   }
 
   ns.applyCacheRegistrySync = applyCacheRegistrySync

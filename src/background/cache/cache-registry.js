@@ -71,12 +71,13 @@ function clearCacheRegistry() {
   scheduleCacheRegistrySync()
 }
 
-function buildRegistryPayload() {
+function buildRegistryPayload(reason = "routine-sync") {
   const maxKeys = Number(constants.CACHE_REGISTRY_MAX_KEYS) || 800
   return {
     keys: Array.from(state.cacheRegistryKeys).slice(0, maxKeys),
     generation: state.cacheRegistryGeneration,
-    replace: true
+    replace: true,
+    reason
   }
 }
 
@@ -85,7 +86,7 @@ async function syncCacheRegistryToTab(tabId) {
   try {
     await chrome.tabs.sendMessage(tabId, {
       type: "AegisStream:CacheRegistrySync",
-      payload: buildRegistryPayload()
+      payload: buildRegistryPayload("tab-sync")
     })
   } catch {
     // Tab may not have content script yet
@@ -101,14 +102,14 @@ function scheduleCacheRegistrySync() {
   }, debounceMs)
 }
 
-async function flushCacheRegistrySync() {
+async function flushCacheRegistrySync(reason = "routine-sync") {
   let tabs = []
   try {
     tabs = await chrome.tabs.query({})
   } catch {
     return
   }
-  const payload = buildRegistryPayload()
+  const payload = buildRegistryPayload(reason)
   for (const tab of tabs) {
     if (!tab?.id || tab.id < 0) continue
     try {
@@ -138,7 +139,7 @@ async function rebuildCacheRegistryFromDb() {
     "INFO",
     `Rebuilt page cache registry with ${state.cacheRegistryKeys.size} invariant keys`
   )
-  await flushCacheRegistrySync()
+  await flushCacheRegistrySync("db-rebuild")
   return state.cacheRegistryKeys.size
 }
 
