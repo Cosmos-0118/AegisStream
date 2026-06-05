@@ -52,12 +52,13 @@ function sendAuthorizedNativeNetwork(xhr, body, originalSend) {
   return originalSend(body)
 }
 
-function recordXhrWritebackSuppression(xhr, lane = "xhr-sync") {
+function recordXhrWritebackSuppression(xhr, lane = "xhr-sync", reason = "unauthorized") {
   if (xhr.__aegisWritebackSuppressionReported === true) return
   xhr.__aegisWritebackSuppressionReported = true
   if (typeof ns.reportRuntimeMetric === "function") {
     ns.reportRuntimeMetric("xhr_writeback_suppressed", {
       lane,
+      reason,
       source: xhr.__aegisResponseSource || "unknown"
     })
   }
@@ -169,8 +170,22 @@ function captureXhrResponseSync(xhr, rawResponse) {
     return
   }
 
+  const responseSource = xhr.__aegisResponseSource || "unknown"
+  const byteLength = bytes.byteLength
   if (!isAuthorizedForXhrWriteback(xhr)) {
-    recordXhrWritebackSuppression(xhr, "xhr-sync")
+    // Distinguish "already captured this XHR" (player re-reads xhr.response, expected)
+    // from a real authorization denial (cached/collapsed source attempting writeback).
+    const alreadyCaptured = xhr.__aegisChunkCaptured === true
+    const suppressionReason = alreadyCaptured ? "duplicate-read" : "unauthorized-source"
+    recordXhrWritebackSuppression(xhr, "xhr-sync", suppressionReason)
+    if (typeof logBridge === "function" && !alreadyCaptured) {
+      // Only log the first denial — duplicate-read suppressions are noise that
+      // contradict the COMMITTED log for the same XHR and confuse diagnostics.
+      logBridge(
+        `[WRITEBACK-SUPPRESSED] source=${responseSource} bytes=${byteLength} reason=${suppressionReason} url=${xhr.__aegisUrl || url || "unknown"}`,
+        "DEBUG"
+      )
+    }
     return
   }
 
@@ -182,6 +197,12 @@ function captureXhrResponseSync(xhr, rawResponse) {
   }
 
   const ct = xhr.getResponseHeader("content-type") || ""
+  if (typeof logBridge === "function") {
+    logBridge(
+      `[WRITEBACK-COMMITTED] source=${responseSource} bytes=${byteLength} url=${xhr.__aegisUrl || cacheLookupUrl || url || "unknown"}`,
+      "INFO"
+    )
+  }
   void storeChunkFromPage({
     url: cacheLookupUrl,
     contentType: ct,
@@ -746,10 +767,70 @@ function AegisXHR() {
       return false
     }
 
+    /**
+     * Final safety belt before burning CDN bandwidth.
+     *
+     * The page-side registry (`isLikelyCacheHitCandidate`) is best-effort: it can
+     * be stale, not-yet-synced from background, or `resolveCanonicalCoalesceKey`
+     * may have returned null for an obfuscated host. When that registry is wrong,
+     * the older code went straight to native fetch and re-stored an IDB hit as
+     * `xhr-sync` — the exact leak observed in the trace:
+     *   Cache HIT (background, bytes=N)
+     *     -> WRITEBACK-COMMITTED source=network-native bytes=N (page)
+     *     -> StoreChunk accepted: source=xhr-sync bytes=N
+     *
+     * Always do one bounded IDB lookup before falling through to native fetch.
+     * This is a small IPC vs. a multi-MB CDN GET — always worth it.
+     */
+    const tryIdbBeltBeforeNative = async (beltLane) => {
+      try {
+        const beltLookup = await Promise.race([
+          requestRuntime("CACHE_LOOKUP_REQUEST", {
+            url: cacheLookupUrl,
+            method: _method,
+            hasRange: false
+          }),
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), 250)
+          )
+        ])
+        if (beltLookup?.timeout) {
+          ns.reportRuntimeMetric("xhr_idb_belt_timeout", { lane: beltLane })
+          return false
+        }
+        const beltBytes = resolveLookupBytes(beltLookup)
+        if (beltLookup?.ok && beltLookup.hit && beltBytes) {
+          ns.reportRuntimeMetric("xhr_idb_belt_hit", {
+            lane: beltLane,
+            bytes: beltBytes.byteLength
+          })
+          if (typeof logBridge === "function") {
+            logBridge(
+              `XHR IDB belt hit (${beltLane}, ${beltBytes.byteLength} bytes) avoided network-native re-fetch: ${String(cacheLookupUrl).slice(-48)}`,
+              "DEBUG"
+            )
+          }
+          applyXhrCachedPayload(xhr, beltBytes, beltLookup, youtubeChunk, "HIT", "idb-hit")
+          return true
+        }
+      } catch (error) {
+        ns.reportRuntimeMetric("xhr_idb_belt_fault", {
+          lane: beltLane,
+          error: error?.message || String(error || "unknown")
+        })
+      }
+      return false
+    }
+
+    const fallbackToNativeWithBelt = async (beltLane) => {
+      if (await tryIdbBeltBeforeNative(beltLane)) return
+      sendAuthorizedNativeNetwork(xhr, body, originalSend)
+    }
+
     if (!cacheCandidate && wireInFlight) {
       void (async () => {
         const delivered = await runCollapseIntercept(true)
-        if (!delivered) sendAuthorizedNativeNetwork(xhr, body, originalSend)
+        if (!delivered) await fallbackToNativeWithBelt("not-candidate-wire-inflight")
       })()
       return undefined
     }
@@ -759,7 +840,7 @@ function AegisXHR() {
         const delivered = await runCollapseIntercept(true)
         if (!delivered) {
           ns.reportRuntimeMetric("cache_lookup_skipped", { transport: "xhr" })
-          sendAuthorizedNativeNetwork(xhr, body, originalSend)
+          await fallbackToNativeWithBelt("not-candidate")
         }
       })()
       return undefined
@@ -818,6 +899,7 @@ function AegisXHR() {
       }
 
       settled = true
+      // Lookup explicitly MISSED here — no point belting IDB again; just collapse or net.
       void (async () => {
         const delivered = await runCollapseIntercept(false)
         if (!delivered) sendAuthorizedNativeNetwork(xhr, body, originalSend)
@@ -826,7 +908,8 @@ function AegisXHR() {
       clearTimeout(timeoutId)
       if (settled) return
       settled = true
-      sendAuthorizedNativeNetwork(xhr, body, originalSend)
+      // Lookup IPC rejected (not a clean MISS) — IDB may still have the bytes.
+      void fallbackToNativeWithBelt("lookup-ipc-fault")
     })
 
     return undefined

@@ -71,12 +71,30 @@ function clearCacheRegistry() {
   scheduleCacheRegistrySync()
 }
 
+/**
+ * Replace-authoritative reasons clobber the page-side registry. Everything
+ * else — most importantly `routine-sync` — is sent as additive merge so a
+ * lagging or trimmed page-side registry can never produce a false negative
+ * on `isLikelyCacheHitCandidate`.
+ *
+ * Page-side `applyCacheRegistrySync` enforces the same allowlist defensively
+ * (coerces unknown reasons + replace=true into additive).
+ */
+const AUTHORITATIVE_REPLACE_REASONS = new Set([
+  "db-rebuild",
+  "tab-sync",
+  "manual-purge",
+  "authoritative-rebuild",
+  "navigation-reset"
+])
+
 function buildRegistryPayload(reason = "routine-sync") {
   const maxKeys = Number(constants.CACHE_REGISTRY_MAX_KEYS) || 800
+  const replace = AUTHORITATIVE_REPLACE_REASONS.has(reason)
   return {
     keys: Array.from(state.cacheRegistryKeys).slice(0, maxKeys),
     generation: state.cacheRegistryGeneration,
-    replace: true,
+    replace,
     reason
   }
 }

@@ -87,35 +87,77 @@
     }
   }
 
+  /**
+   * Reasons authorised to issue a destructive replace.
+   *
+   * Anything outside this set is coerced to additive merge — so a future
+   * background change that accidentally sends `replace: true` with a routine
+   * reason cannot silently nuke the page-side registry and create false
+   * negatives on `isLikelyCacheHitCandidate`.
+   */
+  const AUTHORITATIVE_REPLACE_REASONS = new Set([
+    "db-rebuild",
+    "tab-sync",
+    "manual-purge",
+    "authoritative-rebuild",
+    "navigation-reset"
+  ])
+
   function applyCacheRegistrySync(payload = {}) {
-    const replace = payload.replace !== false
     const reason = payload.reason || "routine-sync"
+    const requestedReplace = payload.replace === true
+    const replaceAuthorized = requestedReplace && AUTHORITATIVE_REPLACE_REASONS.has(reason)
+    const replaceCoerced = requestedReplace && !replaceAuthorized
+
     const incomingKeys = Array.isArray(payload.keys)
       ? payload.keys.filter((key) => typeof key === "string" && key)
+      : []
+    const removedKeys = Array.isArray(payload.removedKeys)
+      ? payload.removedKeys.filter((key) => typeof key === "string" && key)
       : []
     const incomingSet = new Set(incomingKeys)
     const preSize = localizedCacheKeys.size
     let evictedPageAhead = 0
 
-    if (replace) {
+    if (replaceAuthorized) {
       for (const key of localizedCacheKeys) {
         if (!incomingSet.has(key)) evictedPageAhead += 1
       }
       localizedCacheKeys.clear()
     }
 
+    // Additive merge — routine syncs can only ADD keys, never silently remove
+    // them. Removals must come through `removedKeys` (explicit delta) or
+    // `removeLocalCacheKey` on eviction.
     for (const key of incomingKeys) {
       localizedCacheKeys.add(key)
     }
+
+    let appliedRemovals = 0
+    if (!replaceAuthorized && removedKeys.length > 0) {
+      for (const key of removedKeys) {
+        if (localizedCacheKeys.delete(key)) appliedRemovals += 1
+      }
+    }
+
     trimRegistry()
     registryGeneration = Number(payload.generation) || registryGeneration + 1
 
     if (typeof ns.logBridge === "function") {
-      const recentEvicted = replace ? countRecentLocalAddsEvicted(incomingSet) : 0
+      const recentEvicted = replaceAuthorized ? countRecentLocalAddsEvicted(incomingSet) : 0
+      const mode = replaceAuthorized
+        ? "replace-authoritative"
+        : replaceCoerced
+          ? "replace-coerced-to-additive"
+          : "additive"
       ns.logBridge(
-        `[REGISTRY] sync-replace gen=${payload.generation ?? "?"} reason=${reason} replace=${replace} incoming=${incomingKeys.length} preSize=${preSize} postSize=${localizedCacheKeys.size} evicted=${evictedPageAhead} recentLocalEvicted=${recentEvicted}`,
-        recentEvicted > 0 ? "WARN" : "DEBUG"
+        `[REGISTRY] sync gen=${payload.generation ?? "?"} reason=${reason} mode=${mode} incoming=${incomingKeys.length} removed=${appliedRemovals} preSize=${preSize} postSize=${localizedCacheKeys.size} evicted=${evictedPageAhead} recentLocalEvicted=${recentEvicted}`,
+        replaceCoerced || recentEvicted > 0 ? "WARN" : "DEBUG"
       )
+    }
+
+    if (replaceCoerced && typeof ns.reportRuntimeMetric === "function") {
+      ns.reportRuntimeMetric("registry_sync_replace_coerced", { reason })
     }
   }
 
