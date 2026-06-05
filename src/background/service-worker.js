@@ -23,6 +23,7 @@ importScripts(
   "./telemetry/observability/decision-observability.js",
   "./telemetry/collectors/metrics-aggregator.js",
   "./telemetry/collectors/inflight-accounting.js",
+  "./prefetch/state/inflight-consumers.js",
   "./telemetry/domains/rescue-telemetry.js",
   "./telemetry/domains/anchor-telemetry.js",
   "./telemetry/domains/episode-transition-telemetry.js",
@@ -44,6 +45,7 @@ importScripts(
   "./prefetch/state/network-generation.js",
   "./prefetch/wire/unified-seek-wire.js",
   "./prefetch/arbitration/orchestrator.js",
+  "./cache/eviction-manager.js",
   "./prefetch/arbitration/speculation-arbitrator.js",
   "./prefetch/lanes/speculative-prefetch.js",
   "./network/fetch-priority.js",
@@ -70,6 +72,9 @@ const {
 } = self.AegisBackground
 
 void recordServiceWorkerActivation()
+if (typeof self.AegisBackground.startLane3ReconcileLoop === "function") {
+  self.AegisBackground.startLane3ReconcileLoop()
+}
 if (typeof self.AegisBackground.startMetricsAggregatorRollup === "function") {
   self.AegisBackground.startMetricsAggregatorRollup()
 }

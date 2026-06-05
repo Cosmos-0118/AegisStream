@@ -131,17 +131,42 @@ function rememberKnownUmpKey(cacheKey) {
   }
 }
 
+function clearPrefetchIntentForUrl(url) {
+  if (typeof ns.clearPrefetchIntent === "function") {
+    ns.clearPrefetchIntent(url)
+  }
+}
+
+function notePrefetchIntentForUrl(url) {
+  if (typeof ns.notePrefetchIntent === "function") {
+    ns.notePrefetchIntent(url)
+  }
+}
+
 function cancelPrefetchRunway(keepUrls = [], options = {}) {
   if (Number.isFinite(Number(options.networkGeneration))) {
     pageNetworkGeneration = Number(options.networkGeneration)
   }
   const keep = new Set(keepUrls.filter(Boolean))
+  if (typeof ns.collectCoalesceProtectedUrls === "function") {
+    for (const url of ns.collectCoalesceProtectedUrls()) {
+      keep.add(url)
+    }
+  }
   const aborted = prefetchAbortControllers.size + prefetchQueue.length
   for (const [url, controller] of prefetchAbortControllers.entries()) {
+    if (
+      !keep.has(url) &&
+      typeof ns.isCoalesceAbortLocked === "function" &&
+      ns.isCoalesceAbortLocked(url, url)
+    ) {
+      keep.add(url)
+    }
     if (!keep.has(url)) {
       controller.abort()
       prefetchAbortControllers.delete(url)
       urlQueuedGeneration.delete(url)
+      clearPrefetchIntentForUrl(url)
     }
   }
   const queueSnapshot = prefetchQueue.splice(0, prefetchQueue.length)
@@ -153,6 +178,7 @@ function cancelPrefetchRunway(keepUrls = [], options = {}) {
     queuedPrefetches.delete(url)
     prefetchQueuedAt.delete(url)
     urlQueuedGeneration.delete(url)
+    clearPrefetchIntentForUrl(url)
     emitPrefetchSkipped(url, "aborted")
   }
   for (const url of Array.from(queuedPrefetches)) {
@@ -160,6 +186,7 @@ function cancelPrefetchRunway(keepUrls = [], options = {}) {
     queuedPrefetches.delete(url)
     prefetchQueuedAt.delete(url)
     urlQueuedGeneration.delete(url)
+    clearPrefetchIntentForUrl(url)
     emitPrefetchSkipped(url, "aborted")
   }
   if (typeof ns.cancelInflightChunkStores === "function") {
@@ -346,6 +373,7 @@ function dropStalePrefetchUrl(url) {
   prefetchQueuedAt.delete(url)
   queuedPrefetches.delete(url)
   urlQueuedGeneration.delete(url)
+  clearPrefetchIntentForUrl(url)
   emitPrefetchSkipped(url, "stale-queue", { transient: true })
 }
 
@@ -425,17 +453,19 @@ async function processPrefetchUrl(url) {
       : stripHash(url)
   const runWork = () => processPrefetchUrlWork(url)
   if (typeof ns.beginCoalescedNetworkFetch === "function" && key) {
-    return ns.beginCoalescedNetworkFetch(key, runWork)
+    return ns.beginCoalescedNetworkFetch(key, runWork, url)
   }
   return runWork()
 }
 
 async function processPrefetchUrlWork(url) {
   if (!isPagePrefetchAllowed()) {
+    clearPrefetchIntentForUrl(url)
     emitPrefetchSkipped(url, "tab-hidden", { transient: true })
     return { ok: false, skipped: "tab-hidden" }
   }
   if (!isUrlGenerationCurrent(url)) {
+    clearPrefetchIntentForUrl(url)
     emitPrefetchSkipped(url, "generation-stale")
     return { ok: false, skipped: "generation-stale" }
   }
@@ -484,6 +514,7 @@ async function processPrefetchUrlWork(url) {
           requestStatus === 408 ||
           requestStatus === 425 ||
           requestStatus >= 500)
+      clearPrefetchIntentForUrl(url)
       emitPrefetchFailure(url, {
           fetchMode: "page",
           fetchPath:
@@ -513,6 +544,7 @@ async function processPrefetchUrlWork(url) {
   }
 
   if (!bytes || bytes.byteLength === 0) {
+    clearPrefetchIntentForUrl(url)
     emitPrefetchFailure(url, {
       fetchPath: "originalFetch",
       status: requestStatus,
@@ -527,6 +559,7 @@ async function processPrefetchUrlWork(url) {
       ? ns.copyArrayBufferForBridge(bytes)
       : bytes
   if (!bytesForStore || bytesForStore.byteLength === 0) {
+    clearPrefetchIntentForUrl(url)
     emitPrefetchFailure(url, {
       fetchPath: "cache-store",
       status: requestStatus,
@@ -549,6 +582,7 @@ async function processPrefetchUrlWork(url) {
   })
 
   if (!storeRes?.ok) {
+    clearPrefetchIntentForUrl(url)
     emitPrefetchFailure(url, {
       fetchPath: "cache-store",
       status: requestStatus,
@@ -560,6 +594,7 @@ async function processPrefetchUrlWork(url) {
   }
 
   if (!isUrlGenerationCurrent(url)) {
+    clearPrefetchIntentForUrl(url)
     emitPrefetchSkipped(url, "generation-stale")
     return { ok: false, skipped: "generation-stale" }
   }
@@ -578,6 +613,7 @@ async function processPrefetchUrlWork(url) {
   }
   } catch (e) {
     if (e?.name === "AbortError" || controller.signal.aborted) {
+      clearPrefetchIntentForUrl(url)
       emitPrefetchSkipped(url, "aborted")
       return { ok: false, aborted: true }
     }
@@ -613,10 +649,12 @@ async function runPrefetchWorker() {
       await processPrefetchUrl(url)
     } catch (e) {
       if (e?.name === "AbortError") {
+        clearPrefetchIntentForUrl(url)
         emitPrefetchSkipped(url, "aborted")
         return
       }
       if (!isUrlGenerationCurrent(url)) {
+        clearPrefetchIntentForUrl(url)
         emitPrefetchSkipped(url, "generation-stale")
         return
       }
@@ -625,6 +663,7 @@ async function runPrefetchWorker() {
       const transient = /failed to fetch|networkerror|load failed/i.test(
         String(message).toLowerCase()
       )
+      clearPrefetchIntentForUrl(url)
       emitPrefetchFailure(url, {
         fetchPath: "originalFetch",
         status: 0,
@@ -714,10 +753,14 @@ async function prefetchSegmentsFromPage(urls, options = {}) {
 
   const now = Date.now()
   for (const url of toQueue) {
+    notePrefetchIntentForUrl(url)
     queuedPrefetches.add(url)
     prefetchQueuedAt.set(url, now)
     urlQueuedGeneration.set(url, pageNetworkGeneration)
     prefetchQueue.push(url)
+  }
+  for (const url of skippedInflight) {
+    notePrefetchIntentForUrl(url)
   }
   trimPrefetchQueue()
   notifyPrefetchWorkers()

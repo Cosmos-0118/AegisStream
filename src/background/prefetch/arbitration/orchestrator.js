@@ -565,7 +565,9 @@ function handleForceTeleportAnchor(tabId, payload = {}) {
   scheduleDomAnchorCommit(tabId, clampedTarget, payload)
 }
 
-function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", options = {}) {
+const teleportDebounceByTab = new Map()
+
+function enterTeleportModeImmediate(tabId, tabState, targetIndex, source = "teleport", options = {}) {
   if (!tabState?.segments?.length || typeof targetIndex !== "number") return
   const now = Date.now()
   const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
@@ -661,9 +663,10 @@ function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", op
     })
   }
 
+  const prefetchSource = purgeQueues ? "teleport-mode" : "teleport-mode-retained"
   void schedulePrefetch(tabId, tabState.segments, start, {
     force: true,
-    source: "teleport-mode"
+    source: prefetchSource
   })
   if (
     typeof ns.maybeScheduleSpeculativePrefetch === "function" &&
@@ -671,6 +674,47 @@ function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", op
   ) {
     ns.maybeScheduleSpeculativePrefetch(tabId)
   }
+}
+
+function enterTeleportMode(tabId, tabState, targetIndex, source = "teleport", options = {}) {
+  if (!tabState?.segments?.length || typeof targetIndex !== "number") return
+  const debounceMs = Number(constants.TELEPORT_DEBOUNCE_MS) || 0
+  if (debounceMs <= 0) {
+    enterTeleportModeImmediate(tabId, tabState, targetIndex, source, options)
+    return
+  }
+
+  let pending = teleportDebounceByTab.get(tabId)
+  if (!pending) {
+    pending = {
+      timerId: null,
+      targetIndex,
+      source,
+      options: { ...options }
+    }
+    teleportDebounceByTab.set(tabId, pending)
+  } else {
+    pending.targetIndex = targetIndex
+    pending.source = source
+    pending.options = { ...options }
+  }
+
+  if (pending.timerId) clearTimeout(pending.timerId)
+  pending.timerId = setTimeout(() => {
+    const debouncedTarget = pending.targetIndex
+    const debouncedSource = pending.source
+    const debouncedOptions = { ...pending.options }
+    teleportDebounceByTab.delete(tabId)
+    const latestTabState = state.playlistByTab.get(tabId)
+    if (!latestTabState) return
+    enterTeleportModeImmediate(
+      tabId,
+      latestTabState,
+      debouncedTarget,
+      debouncedSource,
+      debouncedOptions
+    )
+  }, debounceMs)
 }
 
 function applyUnifiedSeekPassengerLock(tabState, isScrubbing) {
@@ -998,7 +1042,11 @@ function pruneRuntimeState() {
   }
   for (const [url, inflight] of state.inflightPrefetches.entries()) {
     if (now - Number(inflight?.startedAt || 0) > constants.PREFETCH_INFLIGHT_TTL_MS) {
-      state.inflightPrefetches.delete(url)
+      if (typeof ns.tryReleaseInflightEntry === "function") {
+        ns.tryReleaseInflightEntry(url, { logPreserve: false })
+      } else {
+        state.inflightPrefetches.delete(url)
+      }
     }
   }
 }
@@ -1015,7 +1063,11 @@ function clearPrefetchTrackingForUrls(urls) {
   for (const url of urls) {
     const normalized = normalizePrefetchUrl(url)
     if (!normalized) continue
-    state.inflightPrefetches.delete(normalized)
+    if (typeof ns.tryReleaseInflightEntry === "function") {
+      ns.tryReleaseInflightEntry(normalized, { logPreserve: false })
+    } else {
+      state.inflightPrefetches.delete(normalized)
+    }
     state.failedPrefetches.delete(normalized)
   }
 }
@@ -1336,7 +1388,11 @@ function clearTabFailedPrefetches(tabState) {
     const normalized = normalizePrefetchUrl(url)
     if (!normalized) continue
     state.failedPrefetches.delete(normalized)
-    state.inflightPrefetches.delete(normalized)
+    if (typeof ns.tryReleaseInflightEntry === "function") {
+      ns.tryReleaseInflightEntry(normalized, { logPreserve: false })
+    } else {
+      state.inflightPrefetches.delete(normalized)
+    }
   }
 }
 
@@ -2592,7 +2648,11 @@ function updatePrefetchOutcome(url, success, error = "unknown", options = {}) {
 
   const inflight = state.inflightPrefetches.get(normalizedUrl)
   const tabId = options.tabId ?? inflight?.tabId
-  state.inflightPrefetches.delete(normalizedUrl)
+  if (typeof ns.tryReleaseInflightEntry === "function") {
+    ns.tryReleaseInflightEntry(normalizedUrl, { logPreserve: false })
+  } else {
+    state.inflightPrefetches.delete(normalizedUrl)
+  }
   if (Number.isFinite(tabId)) {
     const tabState = state.playlistByTab.get(tabId)
     if (tabState?.activeInflightSegmentIndices instanceof Set && typeof inflight?.segmentIndex === "number") {
@@ -2886,7 +2946,11 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
         blockedInflight += 1
         continue
       }
-      state.inflightPrefetches.delete(normalizedUrl)
+      if (typeof ns.tryReleaseInflightEntry === "function") {
+        ns.tryReleaseInflightEntry(normalizedUrl, { logPreserve: false })
+      } else {
+        state.inflightPrefetches.delete(normalizedUrl)
+      }
     }
 
     const failed = state.failedPrefetches.get(normalizedUrl)
@@ -3011,7 +3075,10 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
       source,
       lane: prefetchLane,
       startedAt: inflightAt,
-      networkGeneration: Number(tabState.networkGeneration) || 0
+      networkGeneration: Number(tabState.networkGeneration) || 0,
+      consumers: 0,
+      abortLocked: false,
+      pendingRelease: false
     }
     if (typeof ns.attachInflightCategory === "function") {
       ns.attachInflightCategory(inflightEntry)

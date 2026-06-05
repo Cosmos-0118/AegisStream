@@ -185,6 +185,42 @@ function handleExtensionFetchAbort(message) {
   abortActiveExtensionFetch(message.requestId)
 }
 
+async function awaitInflightPrefetchCacheEntry(lookupUrl, tabId = null) {
+  const normalized =
+    typeof ns.resolvePrefetchCoalesceKey === "function"
+      ? ns.resolvePrefetchCoalesceKey(lookupUrl)
+      : stripHash(lookupUrl)
+  if (!normalized) return null
+
+  const inflightTtlMs = Number(constants.PREFETCH_INFLIGHT_TTL_MS) || 12_000
+  const pollMs = 60
+  const maxWaitMs = Number(constants.CACHE_LOOKUP_COLLAPSE_WAIT_MS) || 8_000
+  const started = Date.now()
+
+  if (typeof ns.attachInflightConsumer === "function") {
+    ns.attachInflightConsumer(lookupUrl, tabId)
+  }
+  try {
+    while (Date.now() - started < maxWaitMs) {
+      const inflight = state.inflightPrefetches.get(normalized)
+      if (!inflight) break
+      if (Number.isFinite(tabId) && inflight.tabId !== tabId) break
+      if (Date.now() - Number(inflight.startedAt || 0) > inflightTtlMs) break
+
+      const resolved = await resolveCachedChunk(lookupUrl)
+      if (resolved?.item) {
+        return resolved
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+    return null
+  } finally {
+    if (typeof ns.releaseInflightConsumer === "function") {
+      ns.releaseInflightConsumer(lookupUrl, tabId)
+    }
+  }
+}
+
 function handleCacheLookup(message, sendResponse, tabId = null) {
   ;(async () => {
     const method = (message.method || "GET").toUpperCase()
@@ -221,7 +257,20 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       (state.stats.youtubeUmpLookups || 0) <= constants.UMP_WARMUP_LOOKUP_LIMIT &&
       (state.stats.youtubeUmpLookupHits || 0) === 0
 
-    const resolved = await resolveCachedChunk(lookupUrl)
+    let resolved = await resolveCachedChunk(lookupUrl)
+    let collapsedFromInflight = false
+    if (!resolved?.item) {
+      const collapsed = await awaitInflightPrefetchCacheEntry(lookupUrl, tabId)
+      if (collapsed?.item) {
+        resolved = collapsed
+        collapsedFromInflight = true
+        bumpActivity("requestCollapseHits", 1)
+        if (typeof ns.recordStreamMetric === "function") {
+          ns.recordStreamMetric("hls", "collapseHits", 1)
+        }
+      }
+    }
+
     if (!resolved?.item) {
       if (isUmpLookup) {
         if (isFirstSeenUmpKey && stillInWarmupWindow) {
@@ -282,7 +331,13 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         tabId
       )
     }
-    const hitLabel = isUmpLookup ? "UMP cache HIT" : resolved.via === "alias" ? "Cache HIT via alias" : "Cache HIT"
+    const hitLabel = isUmpLookup
+      ? "UMP cache HIT"
+      : collapsedFromInflight
+        ? "Cache HIT via collapse"
+        : resolved.via === "alias"
+          ? "Cache HIT via alias"
+          : "Cache HIT"
     const rawBytes = resolved.item.bytes
     const byteLength =
       rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
@@ -327,7 +382,21 @@ function handleInflightPrefetchQuery(message, sendResponse, tabId) {
     Boolean(inflight) &&
     inflight.tabId === tabId &&
     Date.now() - Number(inflight.startedAt || 0) < ttlMs
-  sendResponse({ ok: true, inflight: active })
+  sendResponse({
+    ok: true,
+    inflight: active,
+    consumers: Number(inflight?.consumers) || 0,
+    abortLocked: (Number(inflight?.consumers) || 0) > 0
+  })
+}
+
+function handleInflightConsumerMutate(message, tabId) {
+  const url = stripHash(message.url)
+  const delta = Number(message.delta)
+  if (!url || !Number.isFinite(delta) || delta === 0) return
+  if (typeof ns.mutateInflightConsumer === "function") {
+    ns.mutateInflightConsumer(url, delta, tabId)
+  }
 }
 
 function handleStoreChunk(message, sendResponse) {
@@ -531,6 +600,10 @@ function registerMessageRouter() {
     case "AegisStream:InflightPrefetchQuery":
       handleInflightPrefetchQuery(message, sendResponse, sender?.tab?.id)
       return true
+    case "AegisStream:InflightConsumerMutate":
+      handleInflightConsumerMutate(message, sender?.tab?.id)
+      sendResponse({ ok: true })
+      return false
     case "AegisStream:StoreChunk":
       handleStoreChunk(message, sendResponse)
       return true

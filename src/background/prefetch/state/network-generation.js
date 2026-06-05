@@ -90,7 +90,9 @@
     "scrub-velocity-prewarm",
     "scrub-snap-back",
     // Soft anchor commits (purgeQueues=false) schedule with this source; must not reset playback.
-    "dom-seeked"
+    "dom-seeked",
+    // Teleport with retained queues — overlap prefetch instead of invalidating in-flight work.
+    "teleport-mode-retained"
   ])
 
   function isScrubbingTrainActive(tabState) {

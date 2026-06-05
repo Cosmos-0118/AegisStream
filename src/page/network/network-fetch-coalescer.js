@@ -5,6 +5,8 @@
   const ns = (globalThis.AegisPageBridge ||= {})
 
   const inflightByKey = new Map()
+  /** @type {Map<string, string>} coalesce key -> representative page URL for abort protection */
+  const coalesceKeyToUrl = new Map()
   const COALESCE_TTL_MS = 12_000
   const COLLAPSE_WAIT_MIN_MS = 1_500
   const COLLAPSE_WAIT_MAX_MS = 8_000
@@ -77,20 +79,73 @@
   /**
    * Run factory once per key; concurrent callers share the same promise.
    */
-  function beginCoalescedNetworkFetch(key, factory) {
+  function getCoalesceEntry(pageUrl, cacheKey) {
+    purgeStaleCoalescedEntries()
+    const key = resolveNetworkCoalesceKey(pageUrl, cacheKey)
+    return key ? inflightByKey.get(key) || null : null
+  }
+
+  function getCoalesceConsumerCount(pageUrl, cacheKey) {
+    const entry = getCoalesceEntry(pageUrl, cacheKey)
+    return entry ? Number(entry.consumers) || 0 : 0
+  }
+
+  function isCoalesceAbortLocked(pageUrl, cacheKey) {
+    return getCoalesceConsumerCount(pageUrl, cacheKey) > 0
+  }
+
+  function attachCoalesceConsumer(pageUrl, cacheKey) {
+    const key = resolveNetworkCoalesceKey(pageUrl, cacheKey)
+    if (!key) return 0
+    const entry = inflightByKey.get(key)
+    if (!entry) return 0
+    entry.consumers = (Number(entry.consumers) || 0) + 1
+    return entry.consumers
+  }
+
+  function releaseCoalesceConsumer(pageUrl, cacheKey) {
+    const key = resolveNetworkCoalesceKey(pageUrl, cacheKey)
+    if (!key) return 0
+    const entry = inflightByKey.get(key)
+    if (!entry) return 0
+    entry.consumers = Math.max(0, (Number(entry.consumers) || 0) - 1)
+    if (entry.consumers === 0 && entry.pendingRelease === true) {
+      inflightByKey.delete(key)
+      coalesceKeyToUrl.delete(key)
+    }
+    return entry.consumers
+  }
+
+  function collectCoalesceProtectedUrls() {
+    const protectedUrls = new Set()
+    for (const [key, entry] of inflightByKey.entries()) {
+      if ((Number(entry.consumers) || 0) <= 0) continue
+      const url = coalesceKeyToUrl.get(key)
+      if (url) protectedUrls.add(url)
+    }
+    return Array.from(protectedUrls)
+  }
+
+  function beginCoalescedNetworkFetch(key, factory, representativeUrl = null) {
     if (!key || typeof factory !== "function") {
       return factory ? factory() : Promise.resolve({ ok: false, error: "missing-key" })
     }
     purgeStaleCoalescedEntries()
     const existing = inflightByKey.get(key)
-    if (existing) return existing.promise
+    if (existing) {
+      if (representativeUrl && !coalesceKeyToUrl.has(key)) {
+        coalesceKeyToUrl.set(key, representativeUrl)
+      }
+      return existing.promise
+    }
 
     let settle
     const promise = new Promise((resolve) => {
       settle = resolve
     })
-    const entry = { promise, startedAt: Date.now() }
+    const entry = { promise, startedAt: Date.now(), consumers: 0 }
     inflightByKey.set(key, entry)
+    if (representativeUrl) coalesceKeyToUrl.set(key, representativeUrl)
 
     ;(async () => {
       try {
@@ -103,7 +158,12 @@
         })
       } finally {
         if (inflightByKey.get(key) === entry) {
-          inflightByKey.delete(key)
+          if ((Number(entry.consumers) || 0) > 0) {
+            entry.pendingRelease = true
+          } else {
+            inflightByKey.delete(key)
+            coalesceKeyToUrl.delete(key)
+          }
         }
       }
     })()
@@ -140,10 +200,40 @@
    * Player lane: join an active page prefetch and/or wait for background-scheduled work
    * to land in cache before opening a duplicate network socket.
    */
+  function notifyInflightConsumerMutate(url, delta) {
+    if (typeof ns.notifyRuntime !== "function" || !url) return
+    ns.notifyRuntime("INFLIGHT_CONSUMER_MUTATE", { url, delta })
+  }
+
   async function awaitCollapsedNetworkDelivery(pageUrl, cacheKey, lookupCached, options = {}) {
     const timeoutMs = resolveCollapseWaitTimeoutMs(options.timeoutMs)
     const pollMs = Math.max(40, Number(options.pollMs) || 60)
     const started = Date.now()
+    attachCoalesceConsumer(pageUrl, cacheKey)
+    notifyInflightConsumerMutate(cacheKey || pageUrl, 1)
+
+    try {
+      return await awaitCollapsedNetworkDeliveryInner(
+        pageUrl,
+        cacheKey,
+        lookupCached,
+        { timeoutMs, pollMs, started }
+      )
+    } finally {
+      releaseCoalesceConsumer(pageUrl, cacheKey)
+      notifyInflightConsumerMutate(cacheKey || pageUrl, -1)
+    }
+  }
+
+  async function awaitCollapsedNetworkDeliveryInner(
+    pageUrl,
+    cacheKey,
+    lookupCached,
+    options = {}
+  ) {
+    const timeoutMs = Number(options.timeoutMs) || resolveCollapseWaitTimeoutMs()
+    const pollMs = Math.max(40, Number(options.pollMs) || 60)
+    const started = Number(options.started) || Date.now()
 
     while (Date.now() - started < timeoutMs) {
       const remaining = timeoutMs - (Date.now() - started)
@@ -187,6 +277,11 @@
     return null
   }
 
+  ns.getCoalesceConsumerCount = getCoalesceConsumerCount
+  ns.isCoalesceAbortLocked = isCoalesceAbortLocked
+  ns.attachCoalesceConsumer = attachCoalesceConsumer
+  ns.releaseCoalesceConsumer = releaseCoalesceConsumer
+  ns.collectCoalesceProtectedUrls = collectCoalesceProtectedUrls
   ns.isCanonicalCoalesceKey = isCanonicalCoalesceKey
   ns.resolveNetworkCoalesceKey = resolveNetworkCoalesceKey
   ns.resolvePrefetchCoalesceKey = resolvePrefetchCoalesceKey

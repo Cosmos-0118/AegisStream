@@ -4,7 +4,10 @@ const { constants, state, addLog } = ns
 
 function releaseInflightForTab(tabId, options = {}) {
   for (const [url, inflight] of state.inflightPrefetches.entries()) {
-    if (inflight?.tabId === tabId) {
+    if (inflight?.tabId !== tabId) continue
+    if (typeof ns.tryReleaseInflightEntry === "function") {
+      ns.tryReleaseInflightEntry(url, { logPreserve: options.logPreserveConsumers !== false })
+    } else {
       state.inflightPrefetches.delete(url)
     }
   }

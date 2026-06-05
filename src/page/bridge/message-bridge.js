@@ -94,6 +94,9 @@ window.addEventListener("message", (event) => {
   // Handle prefetch commands from background (via content script)
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
     if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
+    if (typeof ns.notePrefetchIntentBatch === "function") {
+      ns.notePrefetchIntentBatch(data.urls)
+    }
     void prefetchSegmentsFromPage(data.urls, {
       networkGeneration: data.networkGeneration,
       playbackGeneration: data.playbackGeneration,

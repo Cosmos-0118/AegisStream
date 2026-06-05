@@ -70,6 +70,16 @@ ns.constants = {
   CACHE_POLICY_REFRESH_MS: 30_000,
   CACHE_RECONCILE_INTERVAL_MS: 20_000,
   CACHE_EVICTION_DEBOUNCE_MS: 2_000,
+  /** Lane 2 soft threshold — avoid IDB scans when cache is comfortably below budget. */
+  CACHE_EVICTION_SOFT_BYTES_RATIO: 0.85,
+  CACHE_EVICTION_SOFT_ENTRIES_RATIO: 0.9,
+  /** Lane 1 hard breaker — bypasses scrub suppression before quota failure. */
+  CACHE_EVICTION_HARD_BYTES_RATIO: 0.95,
+  CACHE_EVICTION_HARD_ENTRIES_RATIO: 0.95,
+  /** Lane 3 lazy reconcile runs only above this fill ratio (steady playback). */
+  CACHE_EVICTION_LANE3_MIN_RATIO: 0.7,
+  CACHE_EVICTION_SCRUB_DEFER_MS: 5_000,
+  CACHE_EVICTION_LANE3_INTERVAL_MS: 45_000,
   CACHE_DUPLICATE_WRITE_WINDOW_MS: 20_000,
   CACHE_MAX_EVICTION_BATCH: 120,
   CACHE_POLICY_HEADROOM_BYTES: 96 * 1024 * 1024,
@@ -111,6 +121,10 @@ ns.constants = {
   MEDIA_CACHE_INVARIANT_TAIL_LEN: 56,
   CACHE_REGISTRY_MAX_KEYS: 800,
   CACHE_REGISTRY_SYNC_DEBOUNCE_MS: 150,
+  /** Debounce rapid teleport anchor shifts before tearing down prefetch windows. */
+  TELEPORT_DEBOUNCE_MS: 150,
+  /** Background cache lookup waits for in-flight prefetch to land in IDB. */
+  CACHE_LOOKUP_COLLAPSE_WAIT_MS: 8_000,
   DOM_TELEPORT_COOLDOWN_MS: 500,
   DOM_ANCHOR_COALESCE_MS: 40,
   SCRUB_DOM_ANCHOR_COALESCE_MS: 120,
@@ -339,7 +353,9 @@ ns.constants = {
       anchorDeferred: 0,
       domSeekSkipped: 0,
       variantSwitchCascadeBlocked: 0,
-      domAnchorSupremacyPreserved: 0
+      domAnchorSupremacyPreserved: 0,
+      evictionSuppressedByScrub: 0,
+      consumerProtectedSkips: 0
     }
   }
 }

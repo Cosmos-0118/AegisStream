@@ -161,6 +161,16 @@ async function buildDisplayStats() {
     cacheMisses: misses,
     cacheWarmups: warmups,
     cacheLookups: lookups > 0 ? lookups : resolvedLookups,
+    cacheLookupSkipped: windowTotals.cacheLookupSkipped || 0,
+    requestCollapseHits: windowTotals.requestCollapseHits || 0,
+    evictionSuppressedByScrub: Math.max(
+      windowTotals.evictionSuppressedByScrub || 0,
+      Number(state.stats.evictionSuppressedByScrub) || 0
+    ),
+    consumerProtectedSkips: Math.max(
+      windowTotals.consumerProtectedSkips || 0,
+      Number(state.stats.consumerProtectedSkips) || 0
+    ),
     hitRatePercent,
     chunksStoredInWindow,
     cacheEntries,

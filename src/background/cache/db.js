@@ -1,7 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
 const { constants, state, addLog, stripHash, buildCacheKeyVariants, isUmpCacheKey, getUmpBodyHashFromCacheKey } = ns
-let evictionTimerId = null
 let evictionInProgress = false
 let lastEvictionRunAt = 0
 let storageSystemOperational = true
@@ -23,7 +22,9 @@ function isStorageFailureError(error) {
 }
 
 function triggerEmergencyCacheEviction() {
-  scheduleEviction(true)
+  if (typeof ns.scheduleEviction === "function") {
+    ns.scheduleEviction(true)
+  }
 }
 
 function engageStoragePassthroughValve(reason, error) {
@@ -298,21 +299,36 @@ async function cleanupAliasesForTargets(targets) {
   }
 }
 
-function scheduleEviction(force = false) {
-  if (evictionTimerId && !force) return
-  if (evictionTimerId) {
-    clearTimeout(evictionTimerId)
+async function evaluateCachePressure() {
+  const policy = await computeAdaptiveCachePolicy(false)
+  const db = await openDb()
+  try {
+    const summary = await summarizeChunkStore(db)
+    return { policy, summary }
+  } finally {
+    db.close()
   }
-  const delay = force ? 100 : constants.CACHE_EVICTION_DEBOUNCE_MS
-  evictionTimerId = setTimeout(() => {
-    evictionTimerId = null
-    void runEvictionPass(force).catch(() => {})
-  }, delay)
 }
 
-async function runEvictionPass(force = false) {
+async function runEvictionPass(force = false, options = {}) {
+  const lane = options.lane || (force ? "hard" : "soft")
   const now = Date.now()
-  if (!force && now - lastEvictionRunAt < constants.CACHE_RECONCILE_INTERVAL_MS) {
+  if (
+    !force &&
+    lane !== "hard" &&
+    typeof ns.isAnyTabEvictionSuppressed === "function" &&
+    ns.isAnyTabEvictionSuppressed(now)
+  ) {
+    return
+  }
+  if (
+    !force &&
+    lane === "reconcile" &&
+    now - lastEvictionRunAt < constants.CACHE_RECONCILE_INTERVAL_MS
+  ) {
+    return
+  }
+  if (!force && lane === "soft" && now - lastEvictionRunAt < constants.CACHE_RECONCILE_INTERVAL_MS) {
     return
   }
   if (evictionInProgress) return
@@ -330,21 +346,43 @@ async function runEvictionPass(force = false) {
           : constants.CACHE_DEFAULT_AVG_CHUNK_BYTES
       state.cachePolicy.avgChunkBytes = avgChunkBytes
 
+      const pressure =
+        typeof ns.evaluateCachePressureRatios === "function"
+          ? ns.evaluateCachePressureRatios(summary, policy)
+          : {
+              overBudget:
+                summary.totalBytes > policy.maxBytes ||
+                summary.totalEntries > policy.maxEntries,
+              overSoftThreshold: true
+            }
+
+      if (!force && !pressure.overSoftThreshold && !pressure.overBudget) return
+
       let overflowEntries = summary.totalEntries - policy.maxEntries
       let overflowBytes = summary.totalBytes - policy.maxBytes
-      if (overflowEntries <= 0 && overflowBytes <= 0) return
+      if (overflowEntries <= 0 && overflowBytes <= 0 && !force) return
 
-      const protectedSet =
+      const guardRingSet =
         typeof ns.collectGuardRingProtectedUrls === "function"
           ? ns.collectGuardRingProtectedUrls()
           : new Set()
+      const tierASet =
+        typeof ns.collectTierAProtectedUrls === "function"
+          ? ns.collectTierAProtectedUrls()
+          : guardRingSet
+      const consumerOnlySet =
+        typeof ns.collectConsumerProtectedUrls === "function"
+          ? ns.collectConsumerProtectedUrls()
+          : new Set()
+
       const evictionOrder =
         typeof ns.sortEvictionCandidates === "function"
-          ? ns.sortEvictionCandidates(summary.oldestFirst, protectedSet)
+          ? ns.sortEvictionCandidates(summary.oldestFirst, tierASet)
           : summary.oldestFirst
 
       const keysToDelete = []
-      let skippedGuardRing = 0
+      let skippedTierA = 0
+      let skippedConsumers = 0
       let reclaimedBytes = 0
       const maxDeletes = Math.max(1, Number(constants.CACHE_MAX_EVICTION_BATCH || 120))
       for (const item of evictionOrder) {
@@ -352,9 +390,16 @@ async function runEvictionPass(force = false) {
         if (keysToDelete.length >= maxDeletes) break
         if (
           typeof ns.isUrlGuardRingProtected === "function" &&
-          ns.isUrlGuardRingProtected(item.url, protectedSet)
+          ns.isUrlGuardRingProtected(item.url, tierASet)
         ) {
-          skippedGuardRing += 1
+          skippedTierA += 1
+          if (
+            consumerOnlySet.size > 0 &&
+            ns.isUrlGuardRingProtected(item.url, consumerOnlySet) &&
+            !ns.isUrlGuardRingProtected(item.url, guardRingSet)
+          ) {
+            skippedConsumers += 1
+          }
           continue
         }
         keysToDelete.push(item.url)
@@ -369,14 +414,21 @@ async function runEvictionPass(force = false) {
         await evictOldestEntries(db, keysToDelete)
         void cleanupAliasesForTargets(keysToDelete).catch(() => {})
         const guardNote =
-          skippedGuardRing > 0 ? `, ${skippedGuardRing} guard-ring protected` : ""
+          skippedTierA > 0
+            ? `, ${skippedTierA} tier-A protected${skippedConsumers > 0 ? ` (${skippedConsumers} consumer-locked)` : ""}`
+            : ""
         addLog(
           "INFO",
-          `Adaptive cache eviction removed ${keysToDelete.length} chunks (~${(reclaimedBytes / (1024 * 1024)).toFixed(1)} MB${guardNote})`
+          `Adaptive cache eviction (${lane}) removed ${keysToDelete.length} chunks (~${(reclaimedBytes / (1024 * 1024)).toFixed(1)} MB${guardNote})`
         )
       }
+      if (skippedConsumers > 0 && typeof ns.bumpActivity === "function") {
+        ns.bumpActivity("consumerProtectedSkips", skippedConsumers)
+      }
       if (overflowEntries > 0 || overflowBytes > 0) {
-        scheduleEviction(true)
+        if (typeof ns.scheduleEviction === "function") {
+          ns.scheduleEviction(true)
+        }
       }
     } finally {
       db.close()
@@ -420,7 +472,9 @@ async function cacheChunk(url, contentType, bytes) {
     existing.contentType === normalizedContentType &&
     now - existingCreatedAt < constants.CACHE_DUPLICATE_WRITE_WINDOW_MS
   ) {
-    scheduleEviction(false)
+    if (typeof ns.scheduleEviction === "function") {
+      ns.scheduleEviction(false)
+    }
     return { ok: true, stored: false, duplicate: true }
   }
   await dbPut(constants.STORE_CHUNKS, {
@@ -461,7 +515,9 @@ async function cacheChunk(url, contentType, bytes) {
   if (aliasWrites.length > 0) {
     await Promise.allSettled(aliasWrites)
   }
-  scheduleEviction(false)
+  if (typeof ns.scheduleEviction === "function") {
+    ns.scheduleEviction(false)
+  }
   if (typeof ns.registerCacheKeys === "function") {
     ns.registerCacheKeys(cacheKeys)
   }
@@ -521,10 +577,6 @@ async function resolveCachedChunk(url) {
 }
 
 async function clearCacheStores() {
-  if (evictionTimerId) {
-    clearTimeout(evictionTimerId)
-    evictionTimerId = null
-  }
   evictionInProgress = false
   lastEvictionRunAt = 0
   storageSystemOperational = true
@@ -544,6 +596,8 @@ async function getCacheEntryCount() {
 
 ns.cacheChunk = cacheChunk
 ns.safeCacheChunk = safeCacheChunk
+ns.evaluateCachePressure = evaluateCachePressure
+ns.runEvictionPass = runEvictionPass
 ns.isStorageSystemOperational = isStorageSystemOperational
 ns.engageStoragePassthroughValve = engageStoragePassthroughValve
 ns.resolveCachedChunk = resolveCachedChunk

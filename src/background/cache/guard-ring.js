@@ -20,6 +20,24 @@ function isTabInSeekChurnAggressive(tabState) {
   return Date.now() < until
 }
 
+function collectConsumerProtectedUrls() {
+  const protectedSet = new Set()
+  for (const [url, entry] of state.inflightPrefetches.entries()) {
+    if ((Number(entry?.consumers) || 0) <= 0) continue
+    addUrlToProtectedSet(url, protectedSet)
+  }
+  return protectedSet
+}
+
+/** Tier A: playhead guard ring + Layer 4 consumer-attached assets. */
+function collectTierAProtectedUrls() {
+  const protectedSet = collectGuardRingProtectedUrls()
+  for (const url of collectConsumerProtectedUrls()) {
+    protectedSet.add(url)
+  }
+  return protectedSet
+}
+
 function collectGuardRingProtectedUrls() {
   const protectedSet = new Set()
   const defaultPast = Math.max(0, Number(constants.CACHE_GUARD_RING_PAST_SEGMENTS) || 2)
@@ -112,6 +130,8 @@ function sortEvictionCandidates(items, protectedSet) {
 }
 
 ns.collectGuardRingProtectedUrls = collectGuardRingProtectedUrls
+ns.collectConsumerProtectedUrls = collectConsumerProtectedUrls
+ns.collectTierAProtectedUrls = collectTierAProtectedUrls
 ns.isUrlGuardRingProtected = isUrlGuardRingProtected
 ns.sortEvictionCandidates = sortEvictionCandidates
 })()

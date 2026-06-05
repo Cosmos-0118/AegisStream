@@ -723,6 +723,19 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "INFLIGHT_CONSUMER_MUTATE" && data.url) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "AegisStream:InflightConsumerMutate",
+        url: data.url,
+        delta: data.delta
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
   if (data.type === "RUNTIME_METRIC" && data.metricType) {
     try {
       const payload = { ...data }

@@ -364,6 +364,13 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "cache_lookup_skipped") {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("cacheLookupSkipped", 1)
+    }
+    return
+  }
+
   if (metricType === "request_collapse_hit") {
     if (!state.telemetry.requestCollapse) {
       state.telemetry.requestCollapse = {

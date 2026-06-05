@@ -36,4 +36,18 @@ assert(
   "unknown segment should short-circuit as miss"
 )
 
+const intentUrl = "https://cdn.example.com/live/seg-intent.ts"
+assert(ns.isLikelyCacheHitCandidate(intentUrl) === false, "intent-only URL should not match before registration")
+ns.notePrefetchIntent(intentUrl)
+assert(ns.isLikelyCacheHitCandidate(intentUrl) === true, "in-flight intent should enable lookup/collapse")
+ns.clearPrefetchIntent(intentUrl)
+assert(ns.isLikelyCacheHitCandidate(intentUrl) === false, "cleared intent should disable candidate again")
+
+ns.notePrefetchIntent(intentUrl)
+ns.noteLocalCacheKey(intentUrl)
+assert(
+  ns.isLikelyCacheHitCandidate(intentUrl) === true,
+  "stored key should remain a hit candidate after intent clears"
+)
+
 console.log("cache-registry.test.js: all assertions passed")

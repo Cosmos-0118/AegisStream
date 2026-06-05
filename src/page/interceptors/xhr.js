@@ -620,12 +620,50 @@ function AegisXHR() {
       cacheLookupUrl = youtubeChunk.cacheKey
     }
 
-    if (
-      typeof ns.isLikelyCacheHitCandidate === "function" &&
-      !ns.isLikelyCacheHitCandidate(cacheLookupUrl)
-    ) {
-      originalSend(body)
-      return
+    const cacheCandidate =
+      typeof ns.isLikelyCacheHitCandidate !== "function" ||
+      ns.isLikelyCacheHitCandidate(cacheLookupUrl)
+
+    if (!cacheCandidate) {
+      let settledEarly = false
+      void (async () => {
+        try {
+          const collapsed = await tryCollapseXhrOntoInflightPrefetch(
+            _url,
+            cacheLookupUrl,
+            youtubeChunk
+          )
+          if (settledEarly) return
+          if (collapsed?.ok && collapsed.bytes) {
+            settledEarly = true
+            const savedBytes =
+              collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
+                ? collapsed.bytes.byteLength
+                : 0
+            ns.reportRuntimeMetric("request_collapse_hit", {
+              transport: "xhr",
+              fromCache: collapsed.fromCache === true,
+              savedBytes,
+              viaIntent: true
+            })
+            applyXhrCachedPayload(
+              xhr,
+              collapsed.bytes,
+              collapsed,
+              youtubeChunk,
+              collapsed.fromCache ? "HIT" : "COLLAPSED"
+            )
+            return
+          }
+        } catch {
+          // Fall through to native request
+        }
+        if (!settledEarly) {
+          ns.reportRuntimeMetric("cache_lookup_skipped", { transport: "xhr" })
+          originalSend(body)
+        }
+      })()
+      return undefined
     }
 
     let settled = false

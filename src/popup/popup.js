@@ -26,6 +26,8 @@ const el = {
   statWarmups: document.getElementById("stat-warmups"),
   statTtfb: document.getElementById("stat-ttfb"),
   statStalls: document.getElementById("stat-stalls"),
+  statEvictSuppressed: document.getElementById("stat-evict-suppressed"),
+  statConsumerSaved: document.getElementById("stat-consumer-saved"),
   statSpecMode: document.getElementById("stat-spec-mode"),
   statSpecHit: document.getElementById("stat-spec-hit"),
   statSpecUsed: document.getElementById("stat-spec-used"),
@@ -85,7 +87,9 @@ const EMPTY_STATS = {
   cacheEntries: 0,
   activityWindowLabel: "Last 5 min",
   hitRatePercent: 0,
-  chunksStoredInWindow: 0
+  chunksStoredInWindow: 0,
+  evictionSuppressedByScrub: 0,
+  consumerProtectedSkips: 0
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +275,13 @@ function renderStats(stats) {
     title: `${formatCountFull(stalls)} stalls · ${formatCountFull(Math.round(stallMs))} ms total`,
     pulse: false
   })
-  
+  setMetricCount(el.statEvictSuppressed, safeStats.evictionSuppressedByScrub, {
+    title: "Soft evictions deferred while a tab is scrubbing"
+  })
+  setMetricCount(el.statConsumerSaved, safeStats.consumerProtectedSkips, {
+    title: "Chunks skipped during eviction because a player held an in-flight consumer lock"
+  })
+
   el.statHitrate.textContent = `${hitRate}%`
   el.statHitrateBar.style.width = `${hitRate}%`
 
