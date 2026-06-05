@@ -311,6 +311,7 @@ ns.constants = {
       youtubeUmpStreamsAborted: 0,
       youtubeUmpStreamsErrored: 0,
       youtubeUmpCaptureSkipped: 0,
+      xhrWritebackSuppressed: 0,
       prefetched: 0,
       prefetchFailed: 0,
       playlistsDetected: 0,

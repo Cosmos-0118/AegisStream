@@ -37,27 +37,30 @@ const MAX_XHR_CAPTURE_BYTES = 32 * 1024 * 1024
 
 let syncResponseTapInstalled = false
 
-/** Payloads from these sources are already on disk or in-flight — never xhr-sync writeback. */
-const INTERNAL_AEGIS_RESPONSE_SOURCES = new Set([
-  "collapse",
-  "idb-hit",
-  "cache",
-  "memory-hit",
-  "wire-collapse"
-])
-
 function exceedsSafeIpcCaptureSize(byteLength) {
   return Number.isFinite(byteLength) && byteLength > MAX_XHR_CAPTURE_BYTES
 }
 
-function isInternalAegisResponseSource(source) {
-  return typeof source === "string" && INTERNAL_AEGIS_RESPONSE_SOURCES.has(source)
+/** Only payloads authenticated as live CDN fetches may write back to IDB. */
+function isAuthorizedForXhrWriteback(xhr) {
+  if (xhr.__aegisChunkCaptured === true) return false
+  return xhr.__aegisResponseSource === "network-native"
 }
 
-function shouldSuppressXhrWriteback(xhr) {
-  if (xhr.__aegisServedFromCache === true) return true
-  if (xhr.__aegisChunkCaptured === true) return true
-  return isInternalAegisResponseSource(xhr.__aegisResponseSource)
+function sendAuthorizedNativeNetwork(xhr, body, originalSend) {
+  xhr.__aegisResponseSource = "network-native"
+  return originalSend(body)
+}
+
+function recordXhrWritebackSuppression(xhr, lane = "xhr-sync") {
+  if (xhr.__aegisWritebackSuppressionReported === true) return
+  xhr.__aegisWritebackSuppressionReported = true
+  if (typeof ns.reportRuntimeMetric === "function") {
+    ns.reportRuntimeMetric("xhr_writeback_suppressed", {
+      lane,
+      source: xhr.__aegisResponseSource || "unknown"
+    })
+  }
 }
 
 function resolveXhrResponseSource(responseSource, cacheHeader) {
@@ -76,7 +79,8 @@ function markInternalXhrFulfillment(xhr, responseSource) {
 function resetXhrCaptureState(xhr) {
   xhr.__aegisChunkCaptured = false
   xhr.__aegisServedFromCache = false
-  xhr.__aegisResponseSource = null
+  xhr.__aegisWritebackSuppressionReported = false
+  xhr.__aegisResponseSource = "unknown"
 }
 
 function bytesFromXhrRawResponse(xhr, rawResponse) {
@@ -133,7 +137,6 @@ function resolveXhrYoutubeChunk(xhr, url, status) {
 let lastXhrInvalidatedWarnAt = 0
 
 function captureXhrResponseSync(xhr, rawResponse) {
-  if (shouldSuppressXhrWriteback(xhr)) return
   if (ns.extensionEnabled === false || ns.serveFromCache === false) return
   // Only capture fully finalized responses; readyState 3 (LOADING) may be truncated.
   if (xhr.readyState !== OriginalXHR.DONE) return
@@ -163,6 +166,11 @@ function captureXhrResponseSync(xhr, rawResponse) {
         "WARN"
       )
     }
+    return
+  }
+
+  if (!isAuthorizedForXhrWriteback(xhr)) {
+    recordXhrWritebackSuppression(xhr, "xhr-sync")
     return
   }
 
@@ -394,6 +402,7 @@ async function tryCollapseXhrOntoInflightPrefetch(_url, cacheLookupUrl, youtubeC
 
 function synthesizeXhrFromBuffer(xhr, statusCode, statusText, bytes, contentType, extraHeaders = {}) {
   xhr.__aegisServedFromCache = true
+  xhr.__aegisResponseSource = "memory-hit"
   Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
   Object.defineProperty(xhr, "statusText", { get: () => statusText, configurable: true })
   Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
@@ -516,9 +525,6 @@ function AegisXHR() {
     // Always attach a load listener to capture playlist responses from XHR
     xhr.addEventListener("load", function xhrLoadHandler() {
       try {
-        if (shouldSuppressXhrWriteback(xhr)) {
-          return
-        }
         if (xhr.status >= 200 && xhr.status < 300 && _url) {
           const ct = xhr.getResponseHeader("content-type") || ""
 
@@ -616,6 +622,10 @@ function AegisXHR() {
                   )
                   return
                 }
+                if (!isAuthorizedForXhrWriteback(xhr)) {
+                  recordXhrWritebackSuppression(xhr, "xhr-load")
+                  return
+                }
                 void storeChunkFromPage({
                   url: cacheLookupUrl,
                   contentType: ct,
@@ -665,7 +675,7 @@ function AegisXHR() {
       void networkFetch(_url, { method: "GET", credentials: "include" })
         .then(async (response) => {
           if (!response?.ok) {
-            originalSend(body)
+            sendAuthorizedNativeNetwork(xhr, body, originalSend)
             return
           }
           const bytes = await response.arrayBuffer()
@@ -674,7 +684,7 @@ function AegisXHR() {
             "x-aegisstream-cache": "NETWORK"
           })
         })
-        .catch(() => originalSend(body))
+        .catch(() => sendAuthorizedNativeNetwork(xhr, body, originalSend))
       return undefined
     }
 
@@ -739,7 +749,7 @@ function AegisXHR() {
     if (!cacheCandidate && wireInFlight) {
       void (async () => {
         const delivered = await runCollapseIntercept(true)
-        if (!delivered) originalSend(body)
+        if (!delivered) sendAuthorizedNativeNetwork(xhr, body, originalSend)
       })()
       return undefined
     }
@@ -749,7 +759,7 @@ function AegisXHR() {
         const delivered = await runCollapseIntercept(true)
         if (!delivered) {
           ns.reportRuntimeMetric("cache_lookup_skipped", { transport: "xhr" })
-          originalSend(body)
+          sendAuthorizedNativeNetwork(xhr, body, originalSend)
         }
       })()
       return undefined
@@ -775,7 +785,7 @@ function AegisXHR() {
       if (settled) return
       settled = true
       ns.reportRuntimeMetric("cache_lookup_timeout", { transport: "xhr", timeoutMs: CACHE_LOOKUP_TIMEOUT_MS })
-      originalSend(body)
+      sendAuthorizedNativeNetwork(xhr, body, originalSend)
     }, CACHE_LOOKUP_TIMEOUT_MS)
 
     const originalAbort = xhr.abort.bind(xhr)
@@ -810,13 +820,13 @@ function AegisXHR() {
       settled = true
       void (async () => {
         const delivered = await runCollapseIntercept(false)
-        if (!delivered) originalSend(body)
+        if (!delivered) sendAuthorizedNativeNetwork(xhr, body, originalSend)
       })()
     }).catch(() => {
       clearTimeout(timeoutId)
       if (settled) return
       settled = true
-      originalSend(body)
+      sendAuthorizedNativeNetwork(xhr, body, originalSend)
     })
 
     return undefined

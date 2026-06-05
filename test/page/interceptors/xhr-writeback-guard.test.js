@@ -3,42 +3,27 @@
  */
 "use strict"
 
-const INTERNAL_AEGIS_RESPONSE_SOURCES = new Set([
-  "collapse",
-  "idb-hit",
-  "cache",
-  "memory-hit",
-  "wire-collapse"
-])
-
-function isInternalAegisResponseSource(source) {
-  return typeof source === "string" && INTERNAL_AEGIS_RESPONSE_SOURCES.has(source)
-}
-
-function shouldSuppressXhrWriteback(xhr) {
-  if (xhr.__aegisServedFromCache === true) return true
-  if (xhr.__aegisChunkCaptured === true) return true
-  return isInternalAegisResponseSource(xhr.__aegisResponseSource)
+function isAuthorizedForXhrWriteback(xhr) {
+  if (xhr.__aegisChunkCaptured === true) return false
+  return xhr.__aegisResponseSource === "network-native"
 }
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-assert(shouldSuppressXhrWriteback({ __aegisResponseSource: "collapse" }), "collapse must suppress")
-assert(shouldSuppressXhrWriteback({ __aegisResponseSource: "idb-hit" }), "idb-hit must suppress")
-assert(shouldSuppressXhrWriteback({ __aegisResponseSource: "cache" }), "legacy cache alias must suppress")
+assert(!isAuthorizedForXhrWriteback({ __aegisResponseSource: "unknown" }), "unknown must block")
+assert(!isAuthorizedForXhrWriteback({ __aegisResponseSource: null }), "null must block")
+assert(!isAuthorizedForXhrWriteback({ __aegisResponseSource: "collapse" }), "collapse must block")
+assert(!isAuthorizedForXhrWriteback({ __aegisResponseSource: "idb-hit" }), "idb-hit must block")
+assert(!isAuthorizedForXhrWriteback({ __aegisResponseSource: "memory-hit" }), "memory-hit must block")
 assert(
-  !shouldSuppressXhrWriteback({ __aegisResponseSource: null }),
-  "native network must allow writeback path"
+  isAuthorizedForXhrWriteback({ __aegisResponseSource: "network-native" }),
+  "network-native must authorize writeback"
 )
 assert(
-  !shouldSuppressXhrWriteback({ __aegisResponseSource: "network-native" }),
-  "explicit network-native must allow writeback path"
-)
-assert(
-  shouldSuppressXhrWriteback({ __aegisChunkCaptured: true, __aegisResponseSource: null }),
-  "chunkCaptured belt must suppress"
+  !isAuthorizedForXhrWriteback({ __aegisChunkCaptured: true, __aegisResponseSource: "network-native" }),
+  "chunkCaptured belt must block even when network-native"
 )
 
 console.log("xhr-writeback-guard.test.js: all assertions passed")

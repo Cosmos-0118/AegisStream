@@ -166,6 +166,7 @@ function maybeLogUmpHealthSummary(force = false) {
 
   state.telemetry.lastUmpHealthLogAt = now
   const captureSkipped = state.stats.youtubeUmpCaptureSkipped || 0
+  const writebackSuppressed = state.stats.xhrWritebackSuppressed || 0
   const stallSeconds = (state.stats.videoStallMsTotal / 1000).toFixed(1)
   const extensionFetchLine =
     typeof ns.formatExtensionFetchMetricsLine === "function"
@@ -195,7 +196,7 @@ function maybeLogUmpHealthSummary(force = false) {
     const hitRate = effective > 0 ? Math.round((ump.hits / effective) * 100) : 0
     addLog(
       "INFO",
-      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}, writebackSuppressed=${writebackSuppressed}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
     )
     return
   }
@@ -227,7 +228,7 @@ function maybeLogUmpHealthSummary(force = false) {
   const rescueTelemetry = rescueLine ? `, ${rescueLine}` : ""
   addLog(
     "INFO",
-    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}${inflightLine}${rescueTelemetry}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}${inflightLine}${rescueTelemetry}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}, writebackSuppressed=${writebackSuppressed}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
   if (typeof ns.noteInflightMismatch === "function") {
     ns.noteInflightMismatch(ns.auditInflightAccounting(), "health-summary")
@@ -347,6 +348,11 @@ function handleRuntimeMetric(message, sender) {
       }
       maybeLogUmpHealthSummary()
     }
+    return
+  }
+
+  if (metricType === "xhr_writeback_suppressed") {
+    state.stats.xhrWritebackSuppressed = (state.stats.xhrWritebackSuppressed || 0) + 1
     return
   }
 
