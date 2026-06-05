@@ -173,17 +173,63 @@
     aggregator.recordEvent("playback_stall", { duration_ms: durationMs })
   }
 
+  const CACHE_ROLLUP_METRICS = [
+    "storeDedupSkipped",
+    "storeDedupInvariantCrcSkipped",
+    "storeDedupUrlWindowSkipped",
+    "recentlyEvictedMisses",
+    "cacheMissNeverStored",
+    "evictedMissUnmapped",
+    "cacheChunksEvicted",
+    "cacheLookups",
+    "cacheHits",
+    "cacheMisses"
+  ]
+
+  let lastCacheRollupBaseline = Object.create(null)
+
+  function snapshotCacheRollupDeltas() {
+    const stats = ns.state?.stats || {}
+    const deltas = {}
+    for (const metric of CACHE_ROLLUP_METRICS) {
+      const current = Number(stats[metric]) || 0
+      deltas[metric] = Math.max(0, current - (lastCacheRollupBaseline[metric] || 0))
+      lastCacheRollupBaseline[metric] = current
+    }
+    const classifiedMisses = deltas.recentlyEvictedMisses + deltas.cacheMissNeverStored
+    deltas.recentlyEvictedMissRatePercent =
+      classifiedMisses > 0
+        ? Math.round((deltas.recentlyEvictedMisses / classifiedMisses) * 100)
+        : null
+    const hitDenominator = deltas.cacheHits + deltas.cacheMisses
+    deltas.cacheHitRatePercent =
+      hitDenominator > 0 ? Math.round((deltas.cacheHits / hitDenominator) * 100) : null
+    return deltas
+  }
+
   function formatRollupLogLine(rollup) {
     const eff =
       rollup.efficiency_ratio != null
         ? `${Math.round(rollup.efficiency_ratio * 100)}%`
         : "n/a"
+    const cache = rollup.cache || {}
+    const evictMissRate =
+      cache.recentlyEvictedMissRatePercent != null
+        ? `${cache.recentlyEvictedMissRatePercent}%`
+        : "n/a"
+    const cacheHitRate =
+      cache.cacheHitRatePercent != null ? `${cache.cacheHitRatePercent}%` : "n/a"
     return [
       `scrub=${rollup.scrub_prewarm_total}(skip=${rollup.scrub_prewarm_skipped_dedup})`,
       `spec=alloc ${rollup.speculative_allocated} hit ${rollup.speculative_hits} miss ${rollup.speculative_misses} eff ${eff}`,
       `saved=${rollup.speculative_time_saved_ms_total}ms`,
       `stalls=${rollup.total_stall_duration_ms}ms`,
-      `kalmanResets=${rollup.z_axis_kalman_resets}`
+      `kalmanResets=${rollup.z_axis_kalman_resets}`,
+      `lookups=${cache.cacheLookups || 0}(hits=${cache.cacheHits || 0},miss=${cache.cacheMisses || 0},hitRate=${cacheHitRate})`,
+      `cacheDedup=${cache.storeDedupSkipped || 0}(crc=${cache.storeDedupInvariantCrcSkipped || 0},url=${cache.storeDedupUrlWindowSkipped || 0})`,
+      `evictMiss=${cache.recentlyEvictedMisses || 0}(${evictMissRate})`,
+      `evictMissUnmapped=${cache.evictedMissUnmapped || 0}`,
+      `cacheEvicted=${cache.cacheChunksEvicted || 0}`
     ].join(", ")
   }
 
@@ -228,6 +274,7 @@
   function flushMetricsRollup(forceLog = true) {
     pruneExpiredPending()
     const rollup = aggregator.flushAndExport()
+    rollup.cache = snapshotCacheRollupDeltas()
     lastRollupSnapshot = rollup
     if (!ns.state) ns.state = {}
     if (!ns.state.telemetry) ns.state.telemetry = {}

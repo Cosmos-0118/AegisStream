@@ -81,6 +81,11 @@ ns.constants = {
   CACHE_EVICTION_SCRUB_DEFER_MS: 5_000,
   CACHE_EVICTION_LANE3_INTERVAL_MS: 45_000,
   CACHE_DUPLICATE_WRITE_WINDOW_MS: 20_000,
+  /** How long evicted chunk keys stay in the evict-then-miss journal. */
+  CACHE_EVICTION_JOURNAL_TTL_MS: 10 * 60 * 1000,
+  CACHE_EVICTION_JOURNAL_MAX_ENTRIES: 800,
+  /** Skip duplicate IDB writes when (invariantKey, crc, byteLength) was stored recently. */
+  CACHE_STORE_INVARIANT_CRC_DEDUP_MS: 5 * 60 * 1000,
   CACHE_MAX_EVICTION_BATCH: 120,
   CACHE_POLICY_HEADROOM_BYTES: 96 * 1024 * 1024,
   CACHE_MIN_BYTES: 96 * 1024 * 1024,
@@ -359,7 +364,18 @@ ns.constants = {
       consumerProtectedSkips: 0,
       requestCollapseHits: 0,
       collapseCancellations: 0,
-      collapseFallbacks: 0
+      collapseFallbacks: 0,
+      recentlyEvictedMisses: 0,
+      cacheMissNeverStored: 0,
+      evictedMissUnmapped: 0,
+      evictedWithoutManifestMap: 0,
+      storeDedupSkipped: 0,
+      storeDedupInvariantCrcSkipped: 0,
+      storeDedupUrlWindowSkipped: 0,
+      cacheChunksEvicted: 0,
+      manifestIndexQualityReports: 0,
+      manifestIndexLowCoverageReports: 0,
+      manifestIndexAmbiguousMappings: 0
     }
   }
 }

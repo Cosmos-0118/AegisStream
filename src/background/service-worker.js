@@ -15,6 +15,7 @@ importScripts(
   "./parsing/playlists.js",
   "./cache/timeline-heat.js",
   "./cache/guard-ring.js",
+  "./cache/eviction-journal.js",
   "./cache/db.js",
   "./cache/cache-registry.js",
   "./cache/store-queue.js",

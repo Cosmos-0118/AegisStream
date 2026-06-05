@@ -381,6 +381,7 @@ async function runEvictionPass(force = false, options = {}) {
           : summary.oldestFirst
 
       const keysToDelete = []
+      const evictedItems = []
       let skippedTierA = 0
       let skippedConsumers = 0
       let reclaimedBytes = 0
@@ -403,6 +404,7 @@ async function runEvictionPass(force = false, options = {}) {
           continue
         }
         keysToDelete.push(item.url)
+        evictedItems.push({ url: item.url, byteLength: item.byteLength })
         overflowEntries -= 1
         overflowBytes -= item.byteLength
         reclaimedBytes += item.byteLength
@@ -410,6 +412,9 @@ async function runEvictionPass(force = false, options = {}) {
       if (keysToDelete.length > 0) {
         if (typeof ns.unregisterCacheKeys === "function") {
           ns.unregisterCacheKeys(keysToDelete)
+        }
+        if (typeof ns.recordEvictedChunks === "function") {
+          ns.recordEvictedChunks(evictedItems)
         }
         await evictOldestEntries(db, keysToDelete)
         void cleanupAliasesForTargets(keysToDelete).catch(() => {})
@@ -462,6 +467,24 @@ async function cacheChunk(url, contentType, bytes) {
   const now = Date.now()
   const normalizedContentType = contentType || "application/octet-stream"
   const byteLength = getByteLength({ bytes })
+  const dedupKey =
+    typeof ns.resolveStoreDedupKey === "function"
+      ? ns.resolveStoreDedupKey(normalizedUrl, bytes)
+      : null
+  if (
+    dedupKey &&
+    typeof ns.shouldSkipDuplicateStore === "function" &&
+    ns.shouldSkipDuplicateStore(dedupKey)
+  ) {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("storeDedupInvariantCrcSkipped", 1)
+      ns.bumpActivity("storeDedupSkipped", 1)
+    }
+    if (typeof ns.scheduleEviction === "function") {
+      ns.scheduleEviction(false)
+    }
+    return { ok: true, stored: false, duplicate: true, dedup: "invariant-crc" }
+  }
   const existing = await dbGet(constants.STORE_CHUNKS, primaryKey).catch(() => null)
   const existingByteLength = getByteLength(existing)
   const existingCreatedAt = Number(existing?.createdAt || 0)
@@ -472,10 +495,14 @@ async function cacheChunk(url, contentType, bytes) {
     existing.contentType === normalizedContentType &&
     now - existingCreatedAt < constants.CACHE_DUPLICATE_WRITE_WINDOW_MS
   ) {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("storeDedupUrlWindowSkipped", 1)
+      ns.bumpActivity("storeDedupSkipped", 1)
+    }
     if (typeof ns.scheduleEviction === "function") {
       ns.scheduleEviction(false)
     }
-    return { ok: true, stored: false, duplicate: true }
+    return { ok: true, stored: false, duplicate: true, dedup: "url-window" }
   }
   await dbPut(constants.STORE_CHUNKS, {
     url: primaryKey,
@@ -520,6 +547,9 @@ async function cacheChunk(url, contentType, bytes) {
   }
   if (typeof ns.registerCacheKeys === "function") {
     ns.registerCacheKeys(cacheKeys)
+  }
+  if (dedupKey && typeof ns.markStoreDedupKey === "function") {
+    ns.markStoreDedupKey(dedupKey)
   }
   return { ok: true, stored: true, duplicate: false }
 }

@@ -27,6 +27,8 @@ const {
   getTabPageUrlFingerprint,
   getManifestUrlSignature,
   buildManifestSequenceIndex,
+  analyzeManifestIndexQuality,
+  recordManifestIndexQuality,
   buildPlaylistFingerprint,
   buildStructuralPlaylistHash,
   buildDurationGeometryHash,
@@ -1756,6 +1758,17 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   const previous = state.playlistByTab.get(tabId)
   const { signatures: manifestSignatures, signatureToIndex } =
     buildManifestSequenceIndex(normalizedSegments)
+  const indexQuality =
+    typeof analyzeManifestIndexQuality === "function"
+      ? analyzeManifestIndexQuality(normalizedSegments, signatureToIndex)
+      : null
+  let manifestIndexHost = null
+  try {
+    const sampleUrl = normalizedSegments[0] || meta.mediaPlaylistUrl || null
+    if (sampleUrl) manifestIndexHost = new URL(sampleUrl).hostname
+  } catch {
+    manifestIndexHost = null
+  }
   const mediaPlaylistPath =
     meta.mediaPlaylistPath ||
     (meta.mediaPlaylistUrl ? getManifestUrlSignature(meta.mediaPlaylistUrl) : null) ||
@@ -1785,6 +1798,12 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     !previous?.segments ||
     previous.segments.length !== normalizedSegments.length ||
     normalizedSegments.some((url, i) => url !== previous.segments[i])
+  if (indexQuality && typeof recordManifestIndexQuality === "function") {
+    recordManifestIndexQuality(tabId, indexQuality, {
+      host: manifestIndexHost,
+      urlsChanged
+    })
+  }
   const durationsForGeometry = Array.isArray(meta.segmentDurations) && meta.segmentDurations.length
     ? meta.segmentDurations
     : previous?.segmentDurations
@@ -2180,6 +2199,8 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     segments: normalizedSegments,
     manifestSignatures,
     signatureToIndex,
+    indexQuality,
+    indexQualityRecordedAt: indexQuality ? Date.now() : null,
     updatedAt: Date.now(),
     hasAnchor,
     anchorIndex,

@@ -15,7 +15,12 @@ const aggregatorPath = path.join(
 const sessionStore = new Map()
 
 const sandbox = {
-  self: { AegisBackground: { state: { telemetry: {} }, addLog: () => {} } },
+  self: {
+    AegisBackground: {
+      state: { telemetry: {}, stats: {} },
+      addLog: () => {}
+    }
+  },
   chrome: {
     storage: {
       session: {
@@ -85,6 +90,33 @@ assert(rollup.scrub_prewarm_total === 1, "scrub prewarm counter")
 assert(rollup.z_axis_kalman_resets === 1, "kalman reset counter")
 assert(rollup.total_stall_duration_ms === 420, "stall ms rollup")
 assert(rollup.efficiency_ratio === 1, "efficiency ratio 100%")
+
+ns.state.stats = {
+  storeDedupSkipped: 5,
+  storeDedupInvariantCrcSkipped: 3,
+  storeDedupUrlWindowSkipped: 2,
+  recentlyEvictedMisses: 2,
+  cacheMissNeverStored: 8,
+  evictedMissUnmapped: 1,
+  cacheChunksEvicted: 10,
+  cacheLookups: 77,
+  cacheHits: 50,
+  cacheMisses: 27
+}
+const cacheRollup = ns.flushMetricsRollup(false)
+assert(cacheRollup.cache?.storeDedupSkipped === 5, "cache dedup total delta")
+assert(cacheRollup.cache?.storeDedupInvariantCrcSkipped === 3, "cache crc dedup delta")
+assert(cacheRollup.cache?.storeDedupUrlWindowSkipped === 2, "cache url-window dedup delta")
+assert(cacheRollup.cache?.recentlyEvictedMisses === 2, "recently evicted miss delta")
+assert(cacheRollup.cache?.recentlyEvictedMissRatePercent === 20, "evict miss rate from deltas")
+assert(cacheRollup.cache?.evictedMissUnmapped === 1, "evicted miss unmapped delta")
+assert(cacheRollup.cache?.cacheHits === 50, "cache hits delta")
+assert(cacheRollup.cache?.cacheHitRatePercent === 65, "cache hit rate from interval deltas")
+
+ns.state.stats.storeDedupSkipped = 8
+ns.state.stats.recentlyEvictedMisses = 5
+const cacheRollup2 = ns.flushMetricsRollup(false)
+assert(cacheRollup2.cache?.storeDedupSkipped === 3, "second-interval dedup delta")
 
 runAsyncTests()
   .then(() => {

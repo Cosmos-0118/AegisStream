@@ -1,5 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
+const { state } = ns
 
 /**
  * Structural identity for HLS/DASH segment URLs: origin + pathname only.
@@ -34,6 +35,182 @@ function buildManifestSequenceIndex(segments) {
     signatureToIndex.set(signature, -1)
   }
   return { signatures, signatureToIndex }
+}
+
+const INDEX_QUALITY_EXAMPLE_LIMIT = 5
+
+/**
+ * Read-only quality report for manifest index uniqueness / ambiguity.
+ * Does not alter buildManifestSequenceIndex behavior.
+ */
+function analyzeManifestIndexQuality(segments, signatureToIndex = null) {
+  const totalSegments = Array.isArray(segments) ? segments.length : 0
+  if (totalSegments === 0) {
+    return {
+      segments: 0,
+      uniqueSignatures: 0,
+      duplicateSignatures: 0,
+      duplicateRatePercent: 0,
+      ambiguousMappings: 0,
+      resolvableSegments: 0,
+      mappingCoveragePercent: 0,
+      nullSignatureSegments: 0,
+      firstDuplicateExamples: []
+    }
+  }
+
+  const frequency = new Map()
+  let nullSignatureSegments = 0
+  for (const segment of segments) {
+    const signature = getManifestUrlSignature(segment)
+    if (!signature) {
+      nullSignatureSegments += 1
+      continue
+    }
+    frequency.set(signature, (frequency.get(signature) || 0) + 1)
+  }
+
+  const signedSegments = totalSegments - nullSignatureSegments
+  const uniqueSignatures = frequency.size
+  const duplicateSignatures = Math.max(0, signedSegments - uniqueSignatures)
+  const duplicateRatePercent =
+    signedSegments > 0 ? Math.round((duplicateSignatures / signedSegments) * 1000) / 10 : 0
+
+  let ambiguousMappings = 0
+  let resolvableSegments = 0
+  const duplicateExamples = []
+  for (const [signature, count] of frequency.entries()) {
+    if (count > 1) {
+      ambiguousMappings += 1
+      duplicateExamples.push({ signature, count })
+      continue
+    }
+    resolvableSegments += 1
+  }
+
+  if (signatureToIndex instanceof Map) {
+    let indexAmbiguous = 0
+    for (const mapped of signatureToIndex.values()) {
+      if (mapped === -1) indexAmbiguous += 1
+    }
+    if (indexAmbiguous !== ambiguousMappings) {
+      ambiguousMappings = indexAmbiguous
+    }
+  }
+
+  duplicateExamples.sort((a, b) => b.count - a.count)
+  const mappingCoveragePercent =
+    totalSegments > 0
+      ? Math.round((resolvableSegments / totalSegments) * 1000) / 10
+      : 0
+
+  return {
+    segments: totalSegments,
+    uniqueSignatures,
+    duplicateSignatures,
+    duplicateRatePercent,
+    ambiguousMappings,
+    resolvableSegments,
+    mappingCoveragePercent,
+    nullSignatureSegments,
+    firstDuplicateExamples: duplicateExamples.slice(0, INDEX_QUALITY_EXAMPLE_LIMIT)
+  }
+}
+
+function formatIndexQualityExamples(examples) {
+  if (!Array.isArray(examples) || examples.length === 0) return "none"
+  return examples
+    .map(({ signature, count }) => {
+      const label =
+        typeof signature === "string" && signature.length > 72
+          ? signature.slice(-72)
+          : signature
+      return `${label}×${count}`
+    })
+    .join(", ")
+}
+
+function recordManifestIndexQuality(tabId, quality, context = {}) {
+  if (!quality || typeof quality !== "object") return quality
+  const now = Date.now()
+  if (typeof ns.bumpActivity === "function") {
+    ns.bumpActivity("manifestIndexQualityReports", 1)
+    if (quality.mappingCoveragePercent < 100) {
+      ns.bumpActivity("manifestIndexLowCoverageReports", 1)
+    }
+    if (quality.ambiguousMappings > 0) {
+      ns.bumpActivity("manifestIndexAmbiguousMappings", quality.ambiguousMappings)
+    }
+  }
+
+  const examples = formatIndexQualityExamples(quality.firstDuplicateExamples)
+  const hostLabel = context.host ? ` host=${context.host}` : ""
+  const message =
+    `Playlist Index Quality tab=${tabId}${hostLabel} ` +
+    `segments=${quality.segments} uniqueSignatures=${quality.uniqueSignatures} ` +
+    `duplicateSignatures=${quality.duplicateSignatures} duplicateRate=${quality.duplicateRatePercent}% ` +
+    `ambiguousMappings=${quality.ambiguousMappings} coverage=${quality.mappingCoveragePercent}% ` +
+    `examples=${examples}`
+
+  const interesting =
+    quality.ambiguousMappings > 0 ||
+    quality.mappingCoveragePercent < 100 ||
+    quality.nullSignatureSegments > 0
+  if (typeof ns.addLog === "function") {
+    ns.addLog(interesting ? "INFO" : "DEBUG", message)
+  }
+
+  if (typeof state === "object" && state !== null) {
+    if (!state.manifestIndexQualityByTab) {
+      state.manifestIndexQualityByTab = new Map()
+    }
+    state.manifestIndexQualityByTab.set(tabId, { ...quality, recordedAt: now, context })
+  }
+
+  return quality
+}
+
+function getManifestIndexQualitySummary() {
+  const windowTotals =
+    typeof ns.sumWindowCounters === "function" ? ns.sumWindowCounters() : {}
+  const reports = Math.max(
+    windowTotals.manifestIndexQualityReports || 0,
+    Number(state?.stats?.manifestIndexQualityReports) || 0
+  )
+  const lowCoverageReports = Math.max(
+    windowTotals.manifestIndexLowCoverageReports || 0,
+    Number(state?.stats?.manifestIndexLowCoverageReports) || 0
+  )
+  const ambiguousMappings = Math.max(
+    windowTotals.manifestIndexAmbiguousMappings || 0,
+    Number(state?.stats?.manifestIndexAmbiguousMappings) || 0
+  )
+
+  let worstCoverage = null
+  let latestReport = null
+  const byTab = state?.manifestIndexQualityByTab
+  if (byTab instanceof Map) {
+    for (const [tabId, entry] of byTab.entries()) {
+      if (!entry) continue
+      if (
+        !worstCoverage ||
+        Number(entry.mappingCoveragePercent) < Number(worstCoverage.mappingCoveragePercent)
+      ) {
+        worstCoverage = { tabId, ...entry }
+      }
+      if (!latestReport || Number(entry.recordedAt) > Number(latestReport.recordedAt)) {
+        latestReport = { tabId, ...entry }
+      }
+    }
+  }
+
+  return {
+    reports,
+    lowCoverageReports,
+    ambiguousMappings,
+    worstCoverage,
+    latestReport
+  }
 }
 
 function resolveSegmentIndexInManifest(chunkUrl, tabState) {
@@ -360,6 +537,9 @@ function comparePlaylistFingerprints(previous, current, options = {}) {
 
 ns.getManifestUrlSignature = getManifestUrlSignature
 ns.buildManifestSequenceIndex = buildManifestSequenceIndex
+ns.analyzeManifestIndexQuality = analyzeManifestIndexQuality
+ns.recordManifestIndexQuality = recordManifestIndexQuality
+ns.getManifestIndexQualitySummary = getManifestIndexQualitySummary
 ns.resolveSegmentIndexInManifest = resolveSegmentIndexInManifest
 ns.getSequentialPrefetchTargets = getSequentialPrefetchTargets
 ns.getPageUrlFingerprint = getPageUrlFingerprint

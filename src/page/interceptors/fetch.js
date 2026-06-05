@@ -303,6 +303,9 @@ async function tryCollapseOntoInflightPrefetch({
   if (youtubeChunk?.type === "ump") {
     rememberKnownUmpKey(cacheLookupUrl)
   }
+  if (collapsed.fromCache === true && typeof ns.noteLocalCacheKey === "function") {
+    ns.noteLocalCacheKey(cacheLookupUrl)
+  }
   return buildChunkResponseFromBytes(collapsed.bytes, collapsed, youtubeChunk)
 }
 
@@ -430,6 +433,9 @@ async function aegisFetchInner(input, init) {
     if (lookup?.ok && lookup.hit && lookupBytes) {
       if (youtubeChunk?.type === "ump") {
         rememberKnownUmpKey(cacheLookupUrl)
+      }
+      if (typeof ns.noteLocalCacheKey === "function") {
+        ns.noteLocalCacheKey(cacheLookupUrl)
       }
       reportRuntimeMetric("request_first_byte", {
         source: "cache",

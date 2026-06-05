@@ -276,9 +276,14 @@ function applyXhrCachedPayload(
   lookup,
   youtubeChunk,
   cacheHeader = "HIT",
-  responseSource = null
+  responseSource = null,
+  cacheLookupUrl = null
 ) {
   markInternalXhrFulfillment(xhr, resolveXhrResponseSource(responseSource, cacheHeader))
+  if (cacheHeader === "HIT" && typeof ns.noteLocalCacheKey === "function") {
+    const key = cacheLookupUrl || xhr.__aegisUrl
+    if (key) ns.noteLocalCacheKey(key)
+  }
   const is206 =
     youtubeChunk?.type === "bytes" && Number.isFinite(youtubeChunk.start)
   const statusCode = is206 ? 206 : 200
@@ -745,7 +750,8 @@ function AegisXHR() {
         collapsed,
         youtubeChunk,
         collapsed.fromCache ? "HIT" : "COLLAPSED",
-        responseSource
+        responseSource,
+        cacheLookupUrl
       )
       return true
     }
@@ -822,7 +828,7 @@ function AegisXHR() {
               "DEBUG"
             )
           }
-          applyXhrCachedPayload(xhr, beltBytes, beltLookup, youtubeChunk, "HIT", "idb-hit")
+          applyXhrCachedPayload(xhr, beltBytes, beltLookup, youtubeChunk, "HIT", "idb-hit", cacheLookupUrl)
           return true
         }
         ns.reportRuntimeMetric("xhr_idb_belt_miss", { lane: beltLane })
@@ -937,7 +943,7 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
-        applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, "HIT", "idb-hit")
+        applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, "HIT", "idb-hit", cacheLookupUrl)
         return
       }
 

@@ -84,6 +84,9 @@ function recordCacheLookupMiss(url) {
     ns.recordStreamMetric("hls", "misses", 1)
   }
   bumpLookupMetric("cacheMisses", url, 1)
+  if (typeof ns.noteRecentlyEvictedMiss === "function") {
+    ns.noteRecentlyEvictedMiss(url)
+  }
   if (typeof ns.notePainCacheMiss === "function") {
     ns.notePainCacheMiss(1)
   }
@@ -105,6 +108,12 @@ function resetActivityMetrics() {
   }
   if (typeof ns.resetDecisionObservability === "function") {
     ns.resetDecisionObservability()
+  }
+  if (typeof ns.resetEvictionJournal === "function") {
+    ns.resetEvictionJournal()
+  }
+  if (state?.manifestIndexQualityByTab instanceof Map) {
+    state.manifestIndexQualityByTab.clear()
   }
 }
 
@@ -179,6 +188,14 @@ async function buildDisplayStats() {
       windowTotals.collapseFallbacks || 0,
       Number(state.stats.collapseFallbacks) || 0
     ),
+    evictThenMiss:
+      typeof ns.getEvictThenMissSummary === "function"
+        ? ns.getEvictThenMissSummary()
+        : null,
+    manifestIndexQuality:
+      typeof ns.getManifestIndexQualitySummary === "function"
+        ? ns.getManifestIndexQualitySummary()
+        : null,
     hitRatePercent,
     chunksStoredInWindow,
     cacheEntries,

@@ -156,6 +156,40 @@ const timeIdx = api.estimateManifestIndexFromTime(9, [4, 4, 4, 4, 4], {
 })
 assert(timeIdx === 2, "manifest index estimated from segment durations")
 
+const uniqueQuality = api.analyzeManifestIndexQuality(segments, signatureToIndex)
+assert(uniqueQuality.segments === 3, "quality report segment count")
+assert(uniqueQuality.uniqueSignatures === 3, "distinct pathnames yield unique signatures")
+assert(uniqueQuality.duplicateSignatures === 0, "no duplicate signatures on healthy playlist")
+assert(uniqueQuality.ambiguousMappings === 0, "no ambiguous mappings on healthy playlist")
+assert(uniqueQuality.mappingCoveragePercent === 100, "full mapping coverage when all unique")
+
+const collapsedPaths = [
+  "https://cdn.site.com/chunk?token=A",
+  "https://cdn.site.com/chunk?token=B",
+  "https://cdn.site.com/chunk?token=C",
+  "https://cdn.site.com/video.ts?sig=1",
+  "https://cdn.site.com/video.ts?sig=2"
+]
+const collapsedIndex = api.buildManifestSequenceIndex(collapsedPaths)
+const collapsedQuality = api.analyzeManifestIndexQuality(collapsedPaths, collapsedIndex.signatureToIndex)
+assert(collapsedQuality.segments === 5, "collapsed fixture segment count")
+assert(collapsedQuality.uniqueSignatures === 2, "two distinct pathnames")
+assert(collapsedQuality.duplicateSignatures === 3, "three segments collapse into duplicates")
+assert(collapsedQuality.ambiguousMappings === 2, "both signatures poisoned to -1")
+assert(collapsedQuality.resolvableSegments === 0, "no resolvable segments after ambiguity")
+assert(collapsedQuality.mappingCoveragePercent === 0, "zero coverage when all signatures ambiguous")
+assert(
+  collapsedQuality.firstDuplicateExamples[0]?.count === 3,
+  "top duplicate example should be /chunk with count 3"
+)
+
+const mismatchSegments = [
+  "https://manifest.example.com/seg-001.ts",
+  "https://manifest.example.com/seg-002.ts"
+]
+const mismatchQuality = api.analyzeManifestIndexQuality(mismatchSegments)
+assert(mismatchQuality.mappingCoveragePercent === 100, "unique manifest paths stay fully mappable")
+
 const geometryA = api.buildDurationGeometryHash([4.01, 4.02, 3.98, 4], 4)
 const geometryB = api.buildDurationGeometryHash([4.01, 4.02, 3.98, 4], 4)
 assert(geometryA === geometryB, "identical duration geometry hashes match")
