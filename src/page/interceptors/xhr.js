@@ -37,13 +37,46 @@ const MAX_XHR_CAPTURE_BYTES = 32 * 1024 * 1024
 
 let syncResponseTapInstalled = false
 
+/** Payloads from these sources are already on disk or in-flight — never xhr-sync writeback. */
+const INTERNAL_AEGIS_RESPONSE_SOURCES = new Set([
+  "collapse",
+  "idb-hit",
+  "cache",
+  "memory-hit",
+  "wire-collapse"
+])
+
 function exceedsSafeIpcCaptureSize(byteLength) {
   return Number.isFinite(byteLength) && byteLength > MAX_XHR_CAPTURE_BYTES
+}
+
+function isInternalAegisResponseSource(source) {
+  return typeof source === "string" && INTERNAL_AEGIS_RESPONSE_SOURCES.has(source)
+}
+
+function shouldSuppressXhrWriteback(xhr) {
+  if (xhr.__aegisServedFromCache === true) return true
+  if (xhr.__aegisChunkCaptured === true) return true
+  return isInternalAegisResponseSource(xhr.__aegisResponseSource)
+}
+
+function resolveXhrResponseSource(responseSource, cacheHeader) {
+  if (responseSource) return responseSource
+  if (cacheHeader === "COLLAPSED") return "collapse"
+  if (cacheHeader === "HIT") return "idb-hit"
+  return "idb-hit"
+}
+
+function markInternalXhrFulfillment(xhr, responseSource) {
+  xhr.__aegisServedFromCache = true
+  xhr.__aegisResponseSource = responseSource
+  xhr.__aegisChunkCaptured = true
 }
 
 function resetXhrCaptureState(xhr) {
   xhr.__aegisChunkCaptured = false
   xhr.__aegisServedFromCache = false
+  xhr.__aegisResponseSource = null
 }
 
 function bytesFromXhrRawResponse(xhr, rawResponse) {
@@ -100,8 +133,7 @@ function resolveXhrYoutubeChunk(xhr, url, status) {
 let lastXhrInvalidatedWarnAt = 0
 
 function captureXhrResponseSync(xhr, rawResponse) {
-  if (xhr.__aegisServedFromCache === true) return
-  if (xhr.__aegisChunkCaptured === true) return
+  if (shouldSuppressXhrWriteback(xhr)) return
   if (ns.extensionEnabled === false || ns.serveFromCache === false) return
   // Only capture fully finalized responses; readyState 3 (LOADING) may be truncated.
   if (xhr.readyState !== OriginalXHR.DONE) return
@@ -209,8 +241,15 @@ function installSyncXhrResponseTap() {
   syncResponseTapInstalled = true
 }
 
-function applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, cacheHeader = "HIT") {
-  xhr.__aegisServedFromCache = true
+function applyXhrCachedPayload(
+  xhr,
+  lookupBytes,
+  lookup,
+  youtubeChunk,
+  cacheHeader = "HIT",
+  responseSource = null
+) {
+  markInternalXhrFulfillment(xhr, resolveXhrResponseSource(responseSource, cacheHeader))
   const is206 =
     youtubeChunk?.type === "bytes" && Number.isFinite(youtubeChunk.start)
   const statusCode = is206 ? 206 : 200
@@ -272,10 +311,40 @@ function applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, cacheHead
 }
 
 async function tryCollapseXhrOntoInflightPrefetch(_url, cacheLookupUrl, youtubeChunk) {
-  if (typeof ns.awaitCollapsedNetworkDelivery !== "function") return null
   const pageInflight =
-    typeof ns.isNetworkFetchInflight === "function" &&
-    ns.isNetworkFetchInflight(_url, cacheLookupUrl)
+    typeof ns.hasActivePageWire === "function"
+      ? ns.hasActivePageWire(_url, cacheLookupUrl)
+      : typeof ns.isNetworkFetchInflight === "function" &&
+        ns.isNetworkFetchInflight(_url, cacheLookupUrl)
+
+  if (pageInflight && typeof ns.joinActivePageWire === "function") {
+    logBridge(
+      `Request collapse (XHR local wire): ${String(cacheLookupUrl || _url).slice(-48)}`,
+      "DEBUG"
+    )
+    ns.reportRuntimeMetric("request_collapse_attempt", { transport: "xhr", lane: "page-wire" })
+    const localWire = await ns.joinActivePageWire(_url, cacheLookupUrl)
+    if (localWire?.ok && localWire.bytes) {
+      return localWire
+    }
+    if (localWire?.aborted || localWire?.cancelled) {
+      ns.reportRuntimeMetric("collapse_cancellation", {
+        transport: "xhr",
+        cacheKey:
+          typeof ns.resolvePageRegistryKey === "function"
+            ? ns.resolvePageRegistryKey(_url, cacheLookupUrl)
+            : cacheLookupUrl
+      })
+    } else if (localWire && !localWire.ok) {
+      ns.reportRuntimeMetric("collapse_fallback", {
+        transport: "xhr",
+        reason: localWire.reason || "local-wire-miss"
+      })
+    }
+  }
+
+  if (typeof ns.awaitCollapsedNetworkDelivery !== "function") return null
+
   let backgroundInflight = false
   try {
     const query = await requestRuntime("INFLIGHT_PREFETCH_QUERY", {
@@ -288,10 +357,10 @@ async function tryCollapseXhrOntoInflightPrefetch(_url, cacheLookupUrl, youtubeC
   if (!pageInflight && !backgroundInflight) return null
 
   logBridge(
-    `Request collapse (XHR): awaiting in-flight prefetch for ${String(cacheLookupUrl || _url).slice(-48)}`,
+    `Request collapse (XHR background): awaiting in-flight prefetch for ${String(cacheLookupUrl || _url).slice(-48)}`,
     "DEBUG"
   )
-  ns.reportRuntimeMetric("request_collapse_attempt", { transport: "xhr" })
+  ns.reportRuntimeMetric("request_collapse_attempt", { transport: "xhr", lane: "background" })
 
   return ns.awaitCollapsedNetworkDelivery(
     _url,
@@ -447,7 +516,7 @@ function AegisXHR() {
     // Always attach a load listener to capture playlist responses from XHR
     xhr.addEventListener("load", function xhrLoadHandler() {
       try {
-        if (xhr.__aegisServedFromCache === true) {
+        if (shouldSuppressXhrWriteback(xhr)) {
           return
         }
         if (xhr.status >= 200 && xhr.status < 300 && _url) {
@@ -620,45 +689,65 @@ function AegisXHR() {
       cacheLookupUrl = youtubeChunk.cacheKey
     }
 
+    const wireInFlight =
+      typeof ns.isKeyInFlight === "function" && ns.isKeyInFlight(cacheLookupUrl)
     const cacheCandidate =
       typeof ns.isLikelyCacheHitCandidate !== "function" ||
       ns.isLikelyCacheHitCandidate(cacheLookupUrl)
 
-    if (!cacheCandidate) {
-      let settledEarly = false
+    const deliverCollapsedXhr = (collapsed, viaIntent = false) => {
+      if (!collapsed?.ok || !collapsed.bytes) return false
+      const savedBytes =
+        collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
+          ? collapsed.bytes.byteLength
+          : 0
+      const responseSource = collapsed.fromCache === true ? "idb-hit" : "collapse"
+      ns.reportRuntimeMetric("request_collapse_hit", {
+        transport: "xhr",
+        fromCache: collapsed.fromCache === true,
+        savedBytes,
+        viaIntent: viaIntent === true
+      })
+      applyXhrCachedPayload(
+        xhr,
+        collapsed.bytes,
+        collapsed,
+        youtubeChunk,
+        collapsed.fromCache ? "HIT" : "COLLAPSED",
+        responseSource
+      )
+      return true
+    }
+
+    const runCollapseIntercept = async (viaIntent = false) => {
+      try {
+        const collapsed = await tryCollapseXhrOntoInflightPrefetch(
+          _url,
+          cacheLookupUrl,
+          youtubeChunk
+        )
+        if (deliverCollapsedXhr(collapsed, viaIntent)) return true
+      } catch (error) {
+        ns.reportRuntimeMetric("collapse_intercept_fault", {
+          transport: "xhr",
+          error: error?.message || String(error || "unknown")
+        })
+      }
+      return false
+    }
+
+    if (!cacheCandidate && wireInFlight) {
       void (async () => {
-        try {
-          const collapsed = await tryCollapseXhrOntoInflightPrefetch(
-            _url,
-            cacheLookupUrl,
-            youtubeChunk
-          )
-          if (settledEarly) return
-          if (collapsed?.ok && collapsed.bytes) {
-            settledEarly = true
-            const savedBytes =
-              collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
-                ? collapsed.bytes.byteLength
-                : 0
-            ns.reportRuntimeMetric("request_collapse_hit", {
-              transport: "xhr",
-              fromCache: collapsed.fromCache === true,
-              savedBytes,
-              viaIntent: true
-            })
-            applyXhrCachedPayload(
-              xhr,
-              collapsed.bytes,
-              collapsed,
-              youtubeChunk,
-              collapsed.fromCache ? "HIT" : "COLLAPSED"
-            )
-            return
-          }
-        } catch {
-          // Fall through to native request
-        }
-        if (!settledEarly) {
+        const delivered = await runCollapseIntercept(true)
+        if (!delivered) originalSend(body)
+      })()
+      return undefined
+    }
+
+    if (!cacheCandidate) {
+      void (async () => {
+        const delivered = await runCollapseIntercept(true)
+        if (!delivered) {
           ns.reportRuntimeMetric("cache_lookup_skipped", { transport: "xhr" })
           originalSend(body)
         }
@@ -667,7 +756,12 @@ function AegisXHR() {
     }
 
     let settled = false
-    const CACHE_LOOKUP_TIMEOUT_MS = 300
+    const CACHE_LOOKUP_TIMEOUT_MS =
+      wireInFlight && typeof ns.resolveCollapseWaitTimeoutMs === "function"
+        ? ns.resolveCollapseWaitTimeoutMs()
+        : wireInFlight
+          ? 8_000
+          : 300
 
     const lookupPromise = requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,
@@ -709,41 +803,14 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
-        applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, "HIT")
+        applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, "HIT", "idb-hit")
         return
       }
 
       settled = true
       void (async () => {
-        try {
-          const collapsed = await tryCollapseXhrOntoInflightPrefetch(
-            _url,
-            cacheLookupUrl,
-            youtubeChunk
-          )
-          if (collapsed?.ok && collapsed.bytes) {
-            const savedBytes =
-              collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
-                ? collapsed.bytes.byteLength
-                : 0
-            ns.reportRuntimeMetric("request_collapse_hit", {
-              transport: "xhr",
-              fromCache: collapsed.fromCache === true,
-              savedBytes
-            })
-            applyXhrCachedPayload(
-              xhr,
-              collapsed.bytes,
-              collapsed,
-              youtubeChunk,
-              collapsed.fromCache ? "HIT" : "COLLAPSED"
-            )
-            return
-          }
-        } catch {
-          // Fall through to native request
-        }
-        originalSend(body)
+        const delivered = await runCollapseIntercept(false)
+        if (!delivered) originalSend(body)
       })()
     }).catch(() => {
       clearTimeout(timeoutId)

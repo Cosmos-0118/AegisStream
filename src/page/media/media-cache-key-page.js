@@ -32,7 +32,14 @@
     if (!normalized) return null
 
     try {
-      const parsed = new URL(normalized, location.href)
+      let parsed
+      try {
+        parsed = new URL(normalized)
+      } catch {
+        const base =
+          typeof location !== "undefined" && location.href ? location.href : "https://localhost/"
+        parsed = new URL(normalized, base)
+      }
       const host = parsed.hostname.toLowerCase()
       const segments = parsed.pathname.split("/").filter(Boolean)
       if (!segments.length) return null

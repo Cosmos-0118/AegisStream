@@ -569,7 +569,11 @@ async function processPrefetchUrlWork(url) {
     return { ok: false }
   }
 
-  // Send bytes to background for caching
+  if (typeof ns.notifyInflightWireResolve === "function") {
+    ns.notifyInflightWireResolve(url, bytesForStore, contentType)
+  }
+
+  // Send bytes to background for caching (decoupled async disk branch)
   const storeRes = await storeChunkForPrefetch({
     url,
     contentType,

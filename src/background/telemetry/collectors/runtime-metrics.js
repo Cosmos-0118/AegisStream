@@ -371,7 +371,24 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "collapse_cancellation") {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("collapseCancellations", 1)
+    }
+    return
+  }
+
+  if (metricType === "collapse_fallback") {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("collapseFallbacks", 1)
+    }
+    return
+  }
+
   if (metricType === "request_collapse_hit") {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("requestCollapseHits", 1)
+    }
     if (!state.telemetry.requestCollapse) {
       state.telemetry.requestCollapse = {
         hits: 0,

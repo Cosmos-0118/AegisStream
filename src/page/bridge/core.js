@@ -529,6 +529,18 @@ function notifyRuntime(type, payload) {
   window.postMessage({ __aegisstream: true, type, ...payload }, "*")
 }
 
+/** Wire-resolved collapse: notify background before async IDB store completes. */
+function notifyInflightWireResolve(url, bytes, contentType) {
+  const normalized = stripHash(url)
+  const stableBytes = bytes ? cloneBytesForBridge(bytes) : null
+  if (!normalized || !stableBytes || stableBytes.byteLength <= 0) return
+  notifyRuntime("INFLIGHT_WIRE_RESOLVE", {
+    url: normalized,
+    contentType: contentType || "application/octet-stream",
+    bytes: stableBytes
+  })
+}
+
 function logBridge(msg, level = "INFO") {
   notifyRuntime("DEBUG_LOG", { msg, level })
 }
@@ -573,6 +585,7 @@ ns.isExtensionContextInvalidated = isExtensionContextInvalidated
 ns.base64ToArrayBuffer = base64ToArrayBuffer
 ns.resolveLookupBytes = resolveLookupBytes
 ns.notifyRuntime = notifyRuntime
+ns.notifyInflightWireResolve = notifyInflightWireResolve
 ns.logBridge = logBridge
 ns.monotonicNow = monotonicNow
 ns.reportRuntimeMetric = reportRuntimeMetric

@@ -30,7 +30,13 @@
     if (Number.isFinite(tabId) && entry.tabId !== tabId) {
       return Number(entry.consumers) || 0
     }
-    entry.consumers = (Number(entry.consumers) || 0) + 1
+    if (Number.isFinite(tabId)) {
+      if (!(entry.attachedTabs instanceof Set)) entry.attachedTabs = new Set()
+      entry.attachedTabs.add(tabId)
+      entry.consumers = entry.attachedTabs.size
+    } else {
+      entry.consumers = (Number(entry.consumers) || 0) + 1
+    }
     entry.pendingRelease = false
     syncInflightAbortLock(entry)
     return entry.consumers
@@ -44,7 +50,12 @@
     if (Number.isFinite(tabId) && entry.tabId !== tabId) {
       return Number(entry.consumers) || 0
     }
-    entry.consumers = Math.max(0, (Number(entry.consumers) || 0) - 1)
+    if (Number.isFinite(tabId) && entry.attachedTabs instanceof Set) {
+      entry.attachedTabs.delete(tabId)
+      entry.consumers = entry.attachedTabs.size
+    } else {
+      entry.consumers = Math.max(0, (Number(entry.consumers) || 0) - 1)
+    }
     syncInflightAbortLock(entry)
     if (entry.consumers === 0 && entry.pendingRelease === true) {
       state.inflightPrefetches.delete(key)

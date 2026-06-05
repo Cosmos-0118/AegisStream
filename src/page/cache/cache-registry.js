@@ -12,16 +12,38 @@
   const inflightCacheIntentKeys = new Set()
   let registryGeneration = 0
 
-  function resolveRegistryKey(url) {
+  function isCanonicalCoalesceKey(value) {
+    return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
+  }
+
+  function resolveRegistryKeyLegacy(url) {
     if (!url || typeof url !== "string") return null
-    if (typeof url === "string" && url.startsWith("ump|")) return url
-    if (typeof url === "string" && url.startsWith("range|")) return url
+    if (url.startsWith("ump|") || url.startsWith("range|")) return url
     if (typeof ns.buildMediaInvariantKey === "function") {
       const invariant = ns.buildMediaInvariantKey(url)
       if (invariant) return invariant
     }
     if (typeof ns.stripHash === "function") return ns.stripHash(url)
     return url.split("#")[0]
+  }
+
+  /**
+   * Coalescing identity — payload matching only. Never retains volatile CDN tokens.
+   * Decoupled from resolveRegistryKey (storage/disk addressing namespace).
+   */
+  function resolveCanonicalCoalesceKey(url) {
+    if (!url || typeof url !== "string") return null
+    if (isCanonicalCoalesceKey(url)) return url
+    if (typeof ns.resolveNetworkCoalesceKey === "function") {
+      const unified = ns.resolveNetworkCoalesceKey(url, null)
+      if (unified) return unified
+    }
+    return null
+  }
+
+  /** Storage/disk registry namespace — may retain full URL when invariants are unavailable. */
+  function resolveRegistryKey(url) {
+    return resolveRegistryKeyLegacy(url)
   }
 
   function trimRegistry() {
@@ -58,7 +80,7 @@
   }
 
   function noteLocalCacheKey(url) {
-    const key = resolveRegistryKey(url)
+    const key = resolveCanonicalCoalesceKey(url)
     if (!key) return
     localizedCacheKeys.add(key)
     inflightCacheIntentKeys.delete(key)
@@ -66,15 +88,28 @@
   }
 
   function removeLocalCacheKey(url) {
-    const key = resolveRegistryKey(url)
+    const key = resolveCanonicalCoalesceKey(url)
     if (!key) return
     localizedCacheKeys.delete(key)
     inflightCacheIntentKeys.delete(key)
   }
 
+  function hasLocalizedDiskEntry(url) {
+    if (typeof url === "string" && isCanonicalCoalesceKey(url) && localizedCacheKeys.has(url)) {
+      return true
+    }
+    const coalesce = resolveCanonicalCoalesceKey(url)
+    if (coalesce && localizedCacheKeys.has(coalesce)) return true
+    if (typeof ns.buildMediaInvariantKey === "function") {
+      const invariant = ns.buildMediaInvariantKey(url)
+      if (invariant && localizedCacheKeys.has(invariant)) return true
+    }
+    return false
+  }
+
   function notePrefetchIntent(url) {
-    const key = resolveRegistryKey(url)
-    if (!key || localizedCacheKeys.has(key)) return
+    const key = resolveCanonicalCoalesceKey(url)
+    if (!key || hasLocalizedDiskEntry(url)) return
     inflightCacheIntentKeys.add(key)
     trimInflightIntentRegistry()
   }
@@ -87,7 +122,7 @@
   }
 
   function clearPrefetchIntent(url) {
-    const key = resolveRegistryKey(url)
+    const key = resolveCanonicalCoalesceKey(url)
     if (!key) return
     inflightCacheIntentKeys.delete(key)
   }
@@ -100,18 +135,14 @@
   }
 
   function isCachedKey(url) {
-    if (typeof url === "string" && url.startsWith("ump|")) {
-      return localizedCacheKeys.has(url)
-    }
-    const key = resolveRegistryKey(url)
-    return key ? localizedCacheKeys.has(key) : false
+    return hasLocalizedDiskEntry(url)
   }
 
   function isInflightKey(url) {
-    if (typeof url === "string" && url.startsWith("ump|")) {
+    if (typeof url === "string" && isCanonicalCoalesceKey(url)) {
       return inflightCacheIntentKeys.has(url)
     }
-    const key = resolveRegistryKey(url)
+    const key = resolveCanonicalCoalesceKey(url)
     return key ? inflightCacheIntentKeys.has(key) : false
   }
 
@@ -141,6 +172,8 @@
   ns.inFlightKeys = inflightCacheIntentKeys
   ns.isCachedKey = isCachedKey
   ns.isInflightKey = isInflightKey
+  ns.isKeyInFlight = isInflightKey
   ns.isLikelyCacheHitCandidate = isLikelyCacheHitCandidate
+  ns.resolveCanonicalCoalesceKey = resolveCanonicalCoalesceKey
   ns.resolveRegistryKey = resolveRegistryKey
 })()

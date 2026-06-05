@@ -355,7 +355,10 @@ ns.constants = {
       variantSwitchCascadeBlocked: 0,
       domAnchorSupremacyPreserved: 0,
       evictionSuppressedByScrub: 0,
-      consumerProtectedSkips: 0
+      consumerProtectedSkips: 0,
+      requestCollapseHits: 0,
+      collapseCancellations: 0,
+      collapseFallbacks: 0
     }
   }
 }

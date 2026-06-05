@@ -2648,6 +2648,9 @@ function updatePrefetchOutcome(url, success, error = "unknown", options = {}) {
 
   const inflight = state.inflightPrefetches.get(normalizedUrl)
   const tabId = options.tabId ?? inflight?.tabId
+  if (!success && typeof ns.rejectPendingInflightLookups === "function") {
+    ns.rejectPendingInflightLookups(normalizedUrl)
+  }
   if (typeof ns.tryReleaseInflightEntry === "function") {
     ns.tryReleaseInflightEntry(normalizedUrl, { logPreserve: false })
   } else {

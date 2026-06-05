@@ -558,6 +558,26 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "INFLIGHT_WIRE_RESOLVE" && data.url) {
+    try {
+      const encoded =
+        storeBytesForExtensionMessage(data.bytes) ||
+        (typeof data.bytesBase64 === "string" && data.bytesBase64.length > 0
+          ? { bytesBase64: data.bytesBase64 }
+          : null)
+      if (!encoded || encoded.error) return
+      chrome.runtime.sendMessage({
+        type: "AegisStream:InflightWireResolve",
+        url: data.url,
+        contentType: data.contentType || "application/octet-stream",
+        bytesBase64: encoded.bytesBase64
+      })
+    } catch {
+      // Extension context may be invalidated
+    }
+    return
+  }
+
   // Relay prefetch results from page-bridge
   if (data.type === "PREFETCH_RESULT") {
     try {

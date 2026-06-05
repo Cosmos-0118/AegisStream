@@ -185,40 +185,174 @@ function handleExtensionFetchAbort(message) {
   abortActiveExtensionFetch(message.requestId)
 }
 
+/** @type {Map<string, Array<{ resolve: Function, timeoutId: ReturnType<typeof setTimeout> | null }>>} */
+const pendingWriteResolvers = new Map()
+/** @type {Map<string, { resolved: object, expiresAt: number }>} */
+const wireResolvedByKey = new Map()
+const WIRE_RESOLVED_TTL_MS = 60_000
+
+function resolveCanonicalCacheKey(lookupUrl) {
+  if (typeof ns.resolveRegistryKey === "function") {
+    return ns.resolveRegistryKey(lookupUrl)
+  }
+  if (typeof ns.resolvePrefetchCoalesceKey === "function") {
+    return ns.resolvePrefetchCoalesceKey(lookupUrl)
+  }
+  return stripHash(lookupUrl)
+}
+
+function inflightTrackingKey(lookupUrl) {
+  return typeof ns.resolvePrefetchCoalesceKey === "function"
+    ? ns.resolvePrefetchCoalesceKey(lookupUrl)
+    : resolveCanonicalCacheKey(lookupUrl)
+}
+
+function removePendingResolver(cacheKey, entry) {
+  const list = pendingWriteResolvers.get(cacheKey)
+  if (!list) return
+  const index = list.indexOf(entry)
+  if (index > -1) list.splice(index, 1)
+  if (list.length === 0) pendingWriteResolvers.delete(cacheKey)
+}
+
+function resolvePendingInflightLookups(url, resolvedItem) {
+  const cacheKey = resolveCanonicalCacheKey(url) || stripHash(url)
+  if (!cacheKey || !resolvedItem?.item) return
+  const resolvers = pendingWriteResolvers.get(cacheKey)
+  if (!resolvers?.length) return
+  pendingWriteResolvers.delete(cacheKey)
+  for (const entry of resolvers) {
+    if (entry.timeoutId) clearTimeout(entry.timeoutId)
+    if (typeof entry.releaseConsumer === "function") entry.releaseConsumer()
+    entry.resolve(resolvedItem)
+  }
+}
+
+function rejectPendingInflightLookups(url) {
+  const cacheKey = resolveCanonicalCacheKey(url) || stripHash(url)
+  if (!cacheKey) return
+  const resolvers = pendingWriteResolvers.get(cacheKey)
+  if (!resolvers?.length) return
+  pendingWriteResolvers.delete(cacheKey)
+  wireResolvedByKey.delete(cacheKey)
+  bumpActivity("collapseCancellations", resolvers.length)
+  for (const entry of resolvers) {
+    if (entry.timeoutId) clearTimeout(entry.timeoutId)
+    if (typeof entry.releaseConsumer === "function") entry.releaseConsumer()
+    entry.resolve(null)
+  }
+}
+
+function getWireResolvedEntry(cacheKey) {
+  const cached = wireResolvedByKey.get(cacheKey)
+  if (!cached) return null
+  if (Date.now() > Number(cached.expiresAt || 0)) {
+    wireResolvedByKey.delete(cacheKey)
+    return null
+  }
+  return cached.resolved
+}
+
+function resolveInflightWireTransfer(url, bytes, contentType) {
+  const normalized = stripHash(url)
+  if (!normalized || !bytes || typeof bytes.byteLength !== "number" || bytes.byteLength <= 0) {
+    bumpActivity("collapseFallbacks", 1)
+    return false
+  }
+  const cacheKey = resolveCanonicalCacheKey(normalized) || normalized
+  const resolved = {
+    item: {
+      url: normalized,
+      bytes,
+      contentType: contentType || "application/octet-stream",
+      byteLength: bytes.byteLength
+    },
+    key: cacheKey,
+    via: "wire"
+  }
+  wireResolvedByKey.set(cacheKey, {
+    resolved,
+    expiresAt: Date.now() + WIRE_RESOLVED_TTL_MS
+  })
+  resolvePendingInflightLookups(normalized, resolved)
+  return true
+}
+
+function handleInflightWireResolve(message, sendResponse) {
+  const url = stripHash(message.url)
+  const bytes = extractMessageBytes(message)
+  if (!url || !bytes || bytes.byteLength <= 0) {
+    bumpActivity("collapseFallbacks", 1)
+    sendResponse({ ok: false, error: "invalid-wire-payload" })
+    return
+  }
+  resolveInflightWireTransfer(url, bytes, message.contentType)
+  sendResponse({ ok: true })
+}
+
+async function flushPendingInflightLookupsAfterStore(storeUrl) {
+  if (typeof resolveCachedChunk !== "function") return
+  const resolved = await resolveCachedChunk(storeUrl)
+  if (resolved?.item) {
+    resolvePendingInflightLookups(storeUrl, resolved)
+  }
+}
+
 async function awaitInflightPrefetchCacheEntry(lookupUrl, tabId = null) {
-  const normalized =
-    typeof ns.resolvePrefetchCoalesceKey === "function"
-      ? ns.resolvePrefetchCoalesceKey(lookupUrl)
-      : stripHash(lookupUrl)
-  if (!normalized) return null
+  const cacheKey = resolveCanonicalCacheKey(lookupUrl) || stripHash(lookupUrl)
+  if (!cacheKey) return null
+
+  const inflightKey = inflightTrackingKey(lookupUrl) || cacheKey
+  const inflight = state.inflightPrefetches.get(inflightKey)
+  if (!inflight) return null
+  if (Number.isFinite(tabId) && inflight.tabId !== tabId) return null
 
   const inflightTtlMs = Number(constants.PREFETCH_INFLIGHT_TTL_MS) || 12_000
-  const pollMs = 60
+  if (Date.now() - Number(inflight.startedAt || 0) > inflightTtlMs) return null
+
+  const existing = await resolveCachedChunk(lookupUrl)
+  if (existing?.item) return existing
+
+  const wireResolved = getWireResolvedEntry(cacheKey)
+  if (wireResolved?.item) return wireResolved
+
   const maxWaitMs = Number(constants.CACHE_LOOKUP_COLLAPSE_WAIT_MS) || 8_000
-  const started = Date.now()
 
-  if (typeof ns.attachInflightConsumer === "function") {
-    ns.attachInflightConsumer(lookupUrl, tabId)
-  }
-  try {
-    while (Date.now() - started < maxWaitMs) {
-      const inflight = state.inflightPrefetches.get(normalized)
-      if (!inflight) break
-      if (Number.isFinite(tabId) && inflight.tabId !== tabId) break
-      if (Date.now() - Number(inflight.startedAt || 0) > inflightTtlMs) break
-
-      const resolved = await resolveCachedChunk(lookupUrl)
-      if (resolved?.item) {
-        return resolved
+  return new Promise((resolve) => {
+    let consumerAttached = false
+    const releaseConsumer = () => {
+      if (!consumerAttached) return
+      consumerAttached = false
+      if (typeof ns.releaseInflightConsumer === "function") {
+        ns.releaseInflightConsumer(lookupUrl, tabId)
       }
-      await new Promise((resolve) => setTimeout(resolve, pollMs))
     }
-    return null
-  } finally {
-    if (typeof ns.releaseInflightConsumer === "function") {
-      ns.releaseInflightConsumer(lookupUrl, tabId)
+
+    const entry = {
+      resolve: (value) => {
+        releaseConsumer()
+        resolve(value)
+      },
+      timeoutId: null,
+      releaseConsumer
     }
-  }
+
+    if (typeof ns.attachInflightConsumer === "function") {
+      ns.attachInflightConsumer(lookupUrl, tabId)
+      consumerAttached = true
+    }
+
+    entry.timeoutId = setTimeout(() => {
+      removePendingResolver(cacheKey, entry)
+      bumpActivity("collapseCancellations", 1)
+      entry.resolve(null)
+    }, maxWaitMs)
+
+    if (!pendingWriteResolvers.has(cacheKey)) {
+      pendingWriteResolvers.set(cacheKey, [])
+    }
+    pendingWriteResolvers.get(cacheKey).push(entry)
+  })
 }
 
 function handleCacheLookup(message, sendResponse, tabId = null) {
@@ -333,11 +467,13 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     }
     const hitLabel = isUmpLookup
       ? "UMP cache HIT"
-      : collapsedFromInflight
-        ? "Cache HIT via collapse"
-        : resolved.via === "alias"
-          ? "Cache HIT via alias"
-          : "Cache HIT"
+      : collapsedFromInflight && resolved.via === "wire"
+        ? "Cache HIT via wire"
+        : collapsedFromInflight
+          ? "Cache HIT via collapse"
+          : resolved.via === "alias"
+            ? "Cache HIT via alias"
+            : "Cache HIT"
     const rawBytes = resolved.item.bytes
     const byteLength =
       rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
@@ -446,9 +582,13 @@ function handleStoreChunk(message, sendResponse) {
       return
     }
     if (!storeResult.stored) {
+      if (storeResult.duplicate) {
+        await flushPendingInflightLookupsAfterStore(storeUrl)
+      }
       sendResponse({ ok: true, duplicate: true })
       return
     }
+    await flushPendingInflightLookupsAfterStore(storeUrl)
     bumpActivity("cachedChunks", 1)
     if (isUmpCacheKey(storeUrl)) {
       bumpActivity("youtubeUmpChunks", 1)
@@ -604,6 +744,9 @@ function registerMessageRouter() {
       handleInflightConsumerMutate(message, sender?.tab?.id)
       sendResponse({ ok: true })
       return false
+    case "AegisStream:InflightWireResolve":
+      handleInflightWireResolve(message, sendResponse)
+      return true
     case "AegisStream:StoreChunk":
       handleStoreChunk(message, sendResponse)
       return true
@@ -904,5 +1047,8 @@ function registerMessageRouter() {
 
 }
 
+ns.resolvePendingInflightLookups = resolvePendingInflightLookups
+ns.rejectPendingInflightLookups = rejectPendingInflightLookups
+ns.resolveInflightWireTransfer = resolveInflightWireTransfer
 ns.registerMessageRouter = registerMessageRouter
 })()

@@ -28,17 +28,66 @@
     return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
   }
 
+  const MEDIA_SEGMENT_PATH_RE =
+    /\.(ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4|cmfv|cmfa|cmft)($|[/?#])/i
+  /** Packagers that encode parallel renditions in query instead of path. */
+  const STREAM_SELECTOR_PARAMS = ["track", "quality", "stream", "variant", "bitrate"]
+
+  function appendWhitelistedStreamSelector(hostnamePathname, searchParams) {
+    for (const selector of STREAM_SELECTOR_PARAMS) {
+      if (searchParams.has(selector)) {
+        const value = searchParams.get(selector)
+        if (value != null && value !== "") {
+          return `${hostnamePathname}?${selector}=${value}`
+        }
+      }
+    }
+    return hostnamePathname
+  }
+
+  /**
+   * Collision-resistant HLS/DASH key: host + full pathname (variant directories preserved).
+   * Volatile auth tokens are stripped; whitelisted stream selectors (?track=audio) are kept.
+   */
+  function resolveStructuralPathCoalesceKey(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== "string") return null
+    try {
+      let parsed
+      try {
+        parsed = new URL(rawUrl)
+      } catch {
+        const base =
+          typeof location !== "undefined" && location.href ? location.href : "https://localhost/"
+        parsed = new URL(rawUrl, base)
+      }
+      if (!/^https?:$/i.test(parsed.protocol)) return null
+      const pathname = parsed.pathname || ""
+      if (!pathname || pathname === "/") return null
+      if (!MEDIA_SEGMENT_PATH_RE.test(pathname)) return null
+      const hostnamePath = `${parsed.hostname.toLowerCase()}${pathname}`.toLowerCase()
+      return appendWhitelistedStreamSelector(hostnamePath, parsed.searchParams).toLowerCase()
+    } catch {
+      const clean = rawUrl.split(/[?#]/)[0]
+      return clean ? clean.toLowerCase().trim() : null
+    }
+  }
+
+  function isObfuscatedBlobInvariant(invariant) {
+    return (
+      typeof invariant === "string" &&
+      (invariant.startsWith("aegis|blob|") || invariant.startsWith("aegis|fallback|"))
+    )
+  }
+
   /**
    * Match cache/store identity — not raw signed URLs (token=A vs token=B).
+   * False positives are catastrophic: never collapse unlike variants/tracks/ranges.
    */
   function resolveNetworkCoalesceKey(pageUrl, cacheKey) {
     if (isCanonicalCoalesceKey(cacheKey)) return cacheKey
     if (isCanonicalCoalesceKey(pageUrl)) return pageUrl
 
-    if (cacheKey && typeof ns.buildMediaInvariantKey === "function") {
-      const fromCacheKey = ns.buildMediaInvariantKey(cacheKey)
-      if (fromCacheKey) return fromCacheKey
-    }
+    const primaryUrl = pageUrl || cacheKey
 
     if (pageUrl && typeof ns.buildYoutubeChunkState === "function") {
       try {
@@ -49,17 +98,92 @@
       }
     }
 
-    if (pageUrl && typeof ns.buildMediaInvariantKey === "function") {
-      const invariant = ns.buildMediaInvariantKey(pageUrl)
+    if (primaryUrl && typeof ns.buildMediaInvariantKey === "function") {
+      const blobInvariant = ns.buildMediaInvariantKey(primaryUrl)
+      if (isObfuscatedBlobInvariant(blobInvariant)) return blobInvariant
+    }
+
+    const structural = resolveStructuralPathCoalesceKey(primaryUrl)
+    if (structural) return structural
+
+    if (primaryUrl && typeof ns.buildMediaInvariantKey === "function") {
+      const invariant = ns.buildMediaInvariantKey(primaryUrl)
       if (invariant) return invariant
     }
 
-    const fallback = pageUrl || cacheKey
-    return typeof ns.stripHash === "function" ? ns.stripHash(fallback) : fallback
+    // Token-churn shield: never fall back to stripHash(url) — that retains ?token= rotators.
+    try {
+      let parsed
+      try {
+        parsed = new URL(primaryUrl)
+      } catch {
+        const base =
+          typeof location !== "undefined" && location.href ? location.href : "https://localhost/"
+        parsed = new URL(primaryUrl, base)
+      }
+      if (/^https?:$/i.test(parsed.protocol)) {
+        const hostnamePath = `${parsed.hostname.toLowerCase()}${parsed.pathname || ""}`.toLowerCase()
+        if (hostnamePath && hostnamePath !== parsed.hostname.toLowerCase()) {
+          return appendWhitelistedStreamSelector(hostnamePath, parsed.searchParams).toLowerCase()
+        }
+      }
+    } catch {
+      // fall through
+    }
+
+    const queryStripped = String(primaryUrl).split(/[?#]/)[0]
+    return queryStripped ? queryStripped.toLowerCase().trim() : primaryUrl
   }
 
   function resolvePrefetchCoalesceKey(pageUrl) {
     return resolveNetworkCoalesceKey(pageUrl, null)
+  }
+
+  /** Canonical registry key — same namespace as cache-registry intent/wire maps. */
+  function resolvePageRegistryKey(pageUrl, cacheKey) {
+    return resolveNetworkCoalesceKey(pageUrl, cacheKey)
+  }
+
+  function hasActivePageWire(pageUrl, cacheKey) {
+    purgeStaleCoalescedEntries()
+    const key = resolveNetworkCoalesceKey(pageUrl, cacheKey)
+    return Boolean(key && inflightByKey.has(key))
+  }
+
+  /**
+   * Layer 4 local collapse: join the page-heap coalesced fetch with zero IPC.
+   */
+  async function joinActivePageWire(pageUrl, cacheKey, options = {}) {
+    if (!hasActivePageWire(pageUrl, cacheKey)) {
+      return { ok: false, reason: "no-active-wire" }
+    }
+    const timeoutMs = resolveCollapseWaitTimeoutMs(options.timeoutMs)
+    try {
+      const joined = await joinCoalescedNetworkFetch(pageUrl, cacheKey, { timeoutMs })
+      if (joined?.ok && joined.bytes) {
+        return {
+          ok: true,
+          bytes: joined.bytes,
+          contentType: joined.contentType || "application/octet-stream",
+          fromCache: joined.fromCache === true,
+          via: "page-wire"
+        }
+      }
+      if (joined === null) {
+        return { ok: false, cancelled: true, reason: "wire-timeout" }
+      }
+      if (joined?.error && /abort/i.test(String(joined.error))) {
+        return { ok: false, aborted: true, reason: joined.error }
+      }
+      return { ok: false, reason: joined?.error || "wire-empty" }
+    } catch (error) {
+      const aborted = error?.name === "AbortError" || /abort/i.test(String(error?.message || ""))
+      return {
+        ok: false,
+        aborted,
+        reason: error?.message || String(error || "wire-failed")
+      }
+    }
   }
 
   function purgeStaleCoalescedEntries(now = Date.now()) {
@@ -232,46 +356,24 @@
     options = {}
   ) {
     const timeoutMs = Number(options.timeoutMs) || resolveCollapseWaitTimeoutMs()
-    const pollMs = Math.max(40, Number(options.pollMs) || 60)
-    const started = Number(options.started) || Date.now()
 
-    while (Date.now() - started < timeoutMs) {
-      const remaining = timeoutMs - (Date.now() - started)
-      if (isNetworkFetchInflight(pageUrl, cacheKey)) {
-        const joined = await joinCoalescedNetworkFetch(pageUrl, cacheKey, {
-          timeoutMs: Math.min(remaining, pollMs + 40)
-        })
-        if (joined?.ok && joined.bytes) {
-          return joined
+    const localWire = await joinActivePageWire(pageUrl, cacheKey, { timeoutMs })
+    if (localWire?.ok && localWire.bytes) {
+      return localWire
+    }
+
+    if (typeof lookupCached === "function") {
+      const cached = await lookupCached()
+      if (cached?.ok && cached.bytes) {
+        return {
+          ok: true,
+          bytes: cached.bytes,
+          contentType: cached.contentType,
+          status: cached.status,
+          fromCache: true,
+          via: cached.fromCache ? "cache" : "background-wire"
         }
       }
-
-      if (typeof lookupCached === "function") {
-        const cached = await lookupCached()
-        if (cached?.ok && cached.bytes) {
-          return {
-            ok: true,
-            bytes: cached.bytes,
-            contentType: cached.contentType,
-            status: cached.status,
-            fromCache: true
-          }
-        }
-      }
-
-      if (typeof ns.requestRuntime === "function") {
-        const queryKey = resolveNetworkCoalesceKey(pageUrl, cacheKey)
-        const query = await ns.requestRuntime("INFLIGHT_PREFETCH_QUERY", {
-          url: queryKey || cacheKey || pageUrl
-        })
-        if (query?.inflight !== true) {
-          break
-        }
-      } else {
-        break
-      }
-
-      await sleep(pollMs)
     }
 
     return null
@@ -283,9 +385,14 @@
   ns.releaseCoalesceConsumer = releaseCoalesceConsumer
   ns.collectCoalesceProtectedUrls = collectCoalesceProtectedUrls
   ns.isCanonicalCoalesceKey = isCanonicalCoalesceKey
+  ns.resolveStructuralPathCoalesceKey = resolveStructuralPathCoalesceKey
   ns.resolveNetworkCoalesceKey = resolveNetworkCoalesceKey
   ns.resolvePrefetchCoalesceKey = resolvePrefetchCoalesceKey
   ns.isNetworkFetchInflight = isNetworkFetchInflight
+  ns.hasActivePageWire = hasActivePageWire
+  ns.resolvePageRegistryKey = resolvePageRegistryKey
+  ns.joinActivePageWire = joinActivePageWire
+  ns.activePagePromises = inflightByKey
   ns.beginCoalescedNetworkFetch = beginCoalescedNetworkFetch
   ns.joinCoalescedNetworkFetch = joinCoalescedNetworkFetch
   ns.awaitCollapsedNetworkDelivery = awaitCollapsedNetworkDelivery

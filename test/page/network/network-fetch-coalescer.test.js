@@ -26,6 +26,8 @@ ns.networkFirstByteP95Ms = 900
 const {
   beginCoalescedNetworkFetch,
   joinCoalescedNetworkFetch,
+  joinActivePageWire,
+  hasActivePageWire,
   isNetworkFetchInflight,
   resolveCollapseWaitTimeoutMs
 } = ns
@@ -51,6 +53,17 @@ assert(resolveCollapseWaitTimeoutMs() === 1800, "collapse wait should be 2x p95 
   assert(factoryCalls === 1, "factory should run once for concurrent joiners")
   assert(a?.ok && b?.ok, "both joiners should receive ok result")
   assert(a.bytes.byteLength === 3, "bytes should be preserved")
+
+  const wireKey = "aegis|hls|cdn.example.com|wire/seg.ts"
+  beginCoalescedNetworkFetch(wireKey, async () => ({
+    ok: true,
+    bytes: new Uint8Array([9]).buffer,
+    contentType: "video/mp2t"
+  }))
+  assert(hasActivePageWire(wireKey), "hasActivePageWire should see inflight entry")
+  const wireJoin = await joinActivePageWire(wireKey)
+  assert(wireJoin?.ok && wireJoin.bytes?.byteLength === 1, "joinActivePageWire should return bytes")
+  assert(wireJoin.via === "page-wire", "local wire join should tag page-wire path")
 
   console.log("network-fetch-coalescer.test.js: all assertions passed")
 })().catch((error) => {

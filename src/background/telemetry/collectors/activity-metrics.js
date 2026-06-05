@@ -171,6 +171,14 @@ async function buildDisplayStats() {
       windowTotals.consumerProtectedSkips || 0,
       Number(state.stats.consumerProtectedSkips) || 0
     ),
+    collapseCancellations: Math.max(
+      windowTotals.collapseCancellations || 0,
+      Number(state.stats.collapseCancellations) || 0
+    ),
+    collapseFallbacks: Math.max(
+      windowTotals.collapseFallbacks || 0,
+      Number(state.stats.collapseFallbacks) || 0
+    ),
     hitRatePercent,
     chunksStoredInWindow,
     cacheEntries,
