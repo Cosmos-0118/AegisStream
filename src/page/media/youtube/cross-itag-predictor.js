@@ -31,6 +31,9 @@
     if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return false
     if (bridge?.extensionEnabled === false || bridge?.prefetchEnabled === false) return false
     if (bridge?.speculativePrefetchEnabled === false) return false
+    if (bridge?.crossItagAllowed !== true) return false
+    const graceUntil = Number(bridge?.variantSwitchGraceUntil || 0)
+    if (graceUntil > Date.now()) return false
     const tier = bridge?.bufferTier
     if (tier === "emergency" || tier === "aggressive") return false
     return getRunwaySec() >= MIN_RUNWAY_SEC

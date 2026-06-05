@@ -10,6 +10,11 @@ function applyRuntimeSettings(settings) {
   ns.prefetchEnabled = settings.prefetchEnabled !== false
   ns.speculativePrefetchEnabled = settings.speculativePrefetchEnabled !== false
   ns.serveFromCache = settings.serveFromCache !== false
+  ns.crossItagAllowed = settings.crossItagAllowed === true
+  ns.speculativeAdaptiveMode =
+    typeof settings.speculativeAdaptiveMode === "string"
+      ? settings.speculativeAdaptiveMode
+      : "full"
   const targetRunway = Number(settings.bufferTargetRunwaySec)
   ns.bufferTargetRunwaySec =
     Number.isFinite(targetRunway) && targetRunway > 0 ? targetRunway : 60
@@ -39,6 +44,9 @@ window.addEventListener("message", (event) => {
 
   // Receive known segment URLs from background
   if (data.type === "CACHE_REGISTRY_SYNC" && data.payload) {
+    if (typeof ns.activateMediaBridge === "function") {
+      ns.activateMediaBridge("registry-sync")
+    }
     if (typeof ns.applyCacheRegistrySync === "function") {
       ns.applyCacheRegistrySync(data.payload)
     }
@@ -66,6 +74,9 @@ window.addEventListener("message", (event) => {
   }
 
   if (data.type === "KNOWN_SEGMENTS" && data.urls) {
+    if (typeof ns.activateMediaBridge === "function") {
+      ns.activateMediaBridge("known-segments")
+    }
     if (data.playbackHint && typeof data.playbackHint === "object") {
       ns.playbackManifestHint = {
         segmentDurations: Array.isArray(data.playbackHint.segmentDurations)
@@ -94,6 +105,9 @@ window.addEventListener("message", (event) => {
   // Handle prefetch commands from background (via content script)
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
     if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return
+    if (typeof ns.activateMediaBridge === "function") {
+      ns.activateMediaBridge("prefetch-segments")
+    }
     if (typeof ns.notePrefetchIntentBatch === "function") {
       ns.notePrefetchIntentBatch(data.urls)
     }
@@ -127,6 +141,9 @@ window.addEventListener("message", (event) => {
   }
 
   if (data.type === "EXTENSION_RECOVERED") {
+    if (typeof ns.isMediaBridgeActive === "function" && !ns.isMediaBridgeActive()) {
+      return
+    }
     if (typeof ns.flushPendingStoresAfterReconnect === "function") {
       void ns.flushPendingStoresAfterReconnect()
     }

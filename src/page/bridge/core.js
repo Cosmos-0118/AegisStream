@@ -123,6 +123,7 @@ function isExtensionContextInvalidated(storeRes, caughtError) {
 }
 
 function scheduleExtensionReconnect(reason = "context-invalidated") {
+  if (typeof ns.isMediaBridgeActive === "function" && !ns.isMediaBridgeActive()) return
   const now = Date.now()
   if (now - lastExtensionReconnectAt < 400) return
   if (extensionReconnectTimer) return
@@ -381,6 +382,9 @@ async function recoverStoreFromCache(payload) {
 }
 
 async function storeChunkFromPage(payload) {
+  if (typeof ns.isMediaBridgeActive === "function" && !ns.isMediaBridgeActive()) {
+    return { ok: false, error: "media-bridge-idle", skipped: true }
+  }
   const captureSource = normalizeCaptureSource(payload?.captureSource)
   const rawByteLength =
     payload?.bytes && typeof payload.bytes.byteLength === "number"

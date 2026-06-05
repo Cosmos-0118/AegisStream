@@ -30,7 +30,8 @@ function makeSandbox() {
         buildCacheKeyVariants: (url) => [url],
         isUmpCacheKey: () => false,
         getUmpBodyHashFromCacheKey: () => null,
-        buildMediaInvariantKey: (url) => `aegis|${String(url).split("/").pop()}`
+        buildMediaInvariantKey: (url) => `aegis|${String(url).split("/").pop()}`,
+        isTabMediaContext: () => true
       }
     },
     chrome: {

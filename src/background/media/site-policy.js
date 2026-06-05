@@ -112,6 +112,51 @@ function isReactivePrefetchTab(tabId) {
   return host ? isTwitchPageHost(host) : false
 }
 
+function isMediaPageUrl(url) {
+  if (typeof url !== "string" || !url) return false
+  try {
+    const host = normalizeHost(new URL(url).hostname)
+    return isYouTubeHost(host) || isTwitchPageHost(host)
+  } catch {
+    return false
+  }
+}
+
+function tabHasPlaybackState(tabId) {
+  if (!Number.isFinite(tabId) || tabId < 0) return false
+  const tabState = state.playlistByTab?.get(tabId)
+  return Array.isArray(tabState?.segments) && tabState.segments.length > 0
+}
+
+/** Tabs that should receive cache registry sync or delegated media bridge work. */
+function isTabMediaContext(tabId, pageUrl = null) {
+  if (!Number.isFinite(tabId) || tabId < 0) return false
+  if (tabHasPlaybackState(tabId)) return true
+  const host =
+    (typeof pageUrl === "string" && pageUrl ? normalizeHost(new URL(pageUrl).hostname) : null) ||
+    getTabPageHost(tabId)
+  if (!host) return false
+  return isYouTubeHost(host) || isTwitchPageHost(host)
+}
+
+function findBackgroundMediaTabId(excludeTabId = null) {
+  let best = null
+  let bestUpdatedAt = 0
+  for (const [tabId, tabState] of state.playlistByTab?.entries() || []) {
+    if (tabId === excludeTabId) continue
+    if (!Array.isArray(tabState?.segments) || !tabState.segments.length) continue
+    if (typeof ns.isTabVisibilitySleeping === "function" && ns.isTabVisibilitySleeping(tabState)) {
+      continue
+    }
+    const updatedAt = Number(tabState.updatedAt) || 0
+    if (updatedAt >= bestUpdatedAt) {
+      bestUpdatedAt = updatedAt
+      best = tabId
+    }
+  }
+  return best
+}
+
 function pruneTabPageHosts() {
   const map = state.tabPageHostByTab
   const fpMap = state.tabPageUrlFingerprintByTab
@@ -144,5 +189,9 @@ ns.noteTabPageUrl = noteTabPageUrl
 ns.getTabPageHost = getTabPageHost
 ns.getTabPageUrlFingerprint = getTabPageUrlFingerprint
 ns.isReactivePrefetchTab = isReactivePrefetchTab
+ns.isMediaPageUrl = isMediaPageUrl
+ns.tabHasPlaybackState = tabHasPlaybackState
+ns.isTabMediaContext = isTabMediaContext
+ns.findBackgroundMediaTabId = findBackgroundMediaTabId
 ns.pruneTabPageHosts = pruneTabPageHosts
 })()

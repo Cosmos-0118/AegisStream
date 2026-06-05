@@ -63,12 +63,37 @@
     return isTwitchPageHost(host)
   }
 
+  function isYouTubeHost(host) {
+    const normalized = normalizeHost(host)
+    if (!normalized) return false
+    return normalized === "youtube.com" || normalized.endsWith(".youtube.com")
+  }
+
+  /** Known media hosts where the fetch/XHR bridge should arm at document start. */
+  function isMediaHost(hostname) {
+    const host = normalizeHost(hostname)
+    if (!host) return false
+    return isYouTubeHost(host) || isTwitchPageHost(host)
+  }
+
+  /**
+   * Generic browse pages (new tab, search home, etc.) defer the media bridge
+   * until a video element appears or the background sends segment/cache work.
+   */
+  function shouldRunMediaBridge() {
+    if (isReactivePrefetchSite()) return false
+    return isMediaHost(location.hostname)
+  }
+
   globalThis.AegisSitePolicy = {
     isTwitchPageHost,
     isTwitchMediaUrl,
     isReactivePrefetchSite,
     shouldPassthroughPlayerRequest,
     shouldPassthroughTwitchApi,
-    isSmootherSkippedHost
+    isSmootherSkippedHost,
+    isYouTubeHost,
+    isMediaHost,
+    shouldRunMediaBridge
   }
 })()

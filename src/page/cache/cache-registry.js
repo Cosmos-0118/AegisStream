@@ -104,6 +104,14 @@
   ])
 
   function applyCacheRegistrySync(payload = {}) {
+    if (typeof ns.isMediaBridgeActive === "function" && !ns.isMediaBridgeActive()) {
+      if (typeof ns.activateMediaBridge === "function") {
+        ns.activateMediaBridge(payload.reason || "registry-sync")
+      } else {
+        return
+      }
+    }
+
     const reason = payload.reason || "routine-sync"
     const requestedReplace = payload.replace === true
     const replaceAuthorized = requestedReplace && AUTHORITATIVE_REPLACE_REASONS.has(reason)

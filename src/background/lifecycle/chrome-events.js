@@ -134,32 +134,47 @@ function registerChromeEventListeners() {
 
   chrome.tabs.onActivated.addListener(({ tabId }) => {
     if (!state.settings.enabled) return
-    setActivePrefetchTab(tabId, "tab-activated")
-    pruneRuntimeState()
-    void ensureTabBridgeReady(tabId, "tab-activated", false).then((ready) => {
-      if (!ready) return
-      const tabState = state.playlistByTab.get(tabId)
-      if (!tabState?.segments?.length) return
-      syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-activated" })
-      if (typeof ns.syncCacheRegistryToTab === "function") {
-        void ns.syncCacheRegistryToTab(tabId)
-      }
-      if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-        maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
-      }
-    })
+    void chrome.tabs.get(tabId).then((tab) => {
+      const focusTabId =
+        typeof ns.resolvePrefetchFocusTabId === "function"
+          ? ns.resolvePrefetchFocusTabId(tabId, tab?.url)
+          : tabId
+      setActivePrefetchTab(focusTabId, "tab-activated")
+      pruneRuntimeState()
+      return ensureTabBridgeReady(tabId, "tab-activated", false).then((ready) => {
+        if (!ready) return
+        if (typeof ns.isTabMediaContext === "function" && !ns.isTabMediaContext(tabId, tab?.url)) {
+          return
+        }
+        const tabState = state.playlistByTab.get(tabId)
+        if (!tabState?.segments?.length) return
+        syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-activated" })
+        if (typeof ns.syncCacheRegistryToTab === "function") {
+          void ns.syncCacheRegistryToTab(tabId)
+        }
+        if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+          maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
+        }
+      })
+    }).catch(() => {})
   })
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.url) {
       noteTabPageUrl(tabId, changeInfo.url)
       state.bridgeHeartbeatByTab.delete(tabId)
+      if (typeof ns.handleTabNavigation === "function") {
+        ns.handleTabNavigation(tabId, changeInfo.url, "navigation")
+      }
     }
     if (changeInfo.status !== "complete") return
     if (!isScriptInjectionAllowedUrl(tab?.url)) return
 
     void ensureTabBridgeReady(tabId, "tab-updated", false).then((ready) => {
       if (!ready) return
+      if (typeof ns.isTabMediaContext === "function" && !ns.isTabMediaContext(tabId, tab?.url)) {
+        return
+      }
       const tabState = state.playlistByTab.get(tabId)
       if (!tabState?.segments?.length) return
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-updated" })

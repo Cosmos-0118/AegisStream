@@ -22,6 +22,32 @@ const {
 
 const TIER_EMERGENCY = "emergency"
 const TIER_AGGRESSIVE = "aggressive"
+const RUNG_SWITCH_MIN_HOLD_MS = 8_000
+const RUNG_SWITCH_CONFIRM_UPGRADE = 2
+const RUNG_SWITCH_CONFIRM_DOWNGRADE = 3
+
+function isRungDowngrade(matrix, fromLabel, toLabel) {
+  if (!fromLabel || !toLabel || fromLabel === toLabel) return false
+  const fromBw = Number(matrix?.rungByLabel?.[fromLabel]?.bandwidth || 0)
+  const toBw = Number(matrix?.rungByLabel?.[toLabel]?.bandwidth || 0)
+  return fromBw > 0 && toBw > 0 && toBw < fromBw
+}
+
+function isQualityRungHoldActive(tabState) {
+  if (!tabState) return false
+  const holdUntil = Number(tabState.lastQualitySwitchAt || 0) + RUNG_SWITCH_MIN_HOLD_MS
+  return Date.now() < holdUntil
+}
+
+function isVariantSwitchGraceActive(tabState) {
+  if (!tabState) return false
+  return Date.now() < Number(tabState.variantSwitchGraceUntil || 0)
+}
+
+function shouldSkipSpeculativeDowngradeRung(tabState, matrix, activeLabel, candidateLabel) {
+  if (!isRungDowngrade(matrix, activeLabel, candidateLabel)) return false
+  return isQualityRungHoldActive(tabState) || isVariantSwitchGraceActive(tabState)
+}
 
 function normalizeVariantEntry(entry) {
   if (typeof entry === "string") {
@@ -195,6 +221,9 @@ function collectSpeculativeRungUrls(tabId, tabState) {
   for (let offset = 1; offset <= ahead; offset += 1) {
     const index = tabState.anchorIndex + offset
     for (const label of adjacent) {
+      if (shouldSkipSpeculativeDowngradeRung(tabState, matrix, activeLabel, label)) {
+        continue
+      }
       const url = getMatrixSegmentUrl(matrix, index, label)
       if (url) {
         urls.push({
@@ -356,11 +385,77 @@ function applyMatrixToTabState(tabState, mediaPlaylistUrl) {
     tabState.warmRecovery = false
     tabState.warmRecoveryRungSamples = []
   }
+
+  const currentLabel = tabState.activeRungLabel || null
+  if (!currentLabel) {
+    tabState.activeRungLabel = label
+    tabState.lastQualitySwitchAt = Date.now()
+    tabState.pendingRungLabel = null
+    tabState.pendingRungSamples = 0
+    tabState.pendingRungFirstAt = 0
+    return
+  }
+
+  if (currentLabel === label) {
+    tabState.pendingRungLabel = null
+    tabState.pendingRungSamples = 0
+    tabState.pendingRungFirstAt = 0
+    return
+  }
+
+  const rungByLabel = tabState.playlistMatrix?.rungByLabel || {}
+  const currentBandwidth = Number(rungByLabel[currentLabel]?.bandwidth || 0)
+  const nextBandwidth = Number(rungByLabel[label]?.bandwidth || 0)
+  const isDowngrade =
+    Number.isFinite(currentBandwidth) &&
+    Number.isFinite(nextBandwidth) &&
+    currentBandwidth > 0 &&
+    nextBandwidth > 0 &&
+    nextBandwidth < currentBandwidth
+
+  const now = Date.now()
+  const holdUntil = Number(tabState.lastQualitySwitchAt || 0) + RUNG_SWITCH_MIN_HOLD_MS
+
+  // During hold, ignore opportunistic downgrades from transient playlist churn.
+  if (isDowngrade && now < holdUntil) {
+    return
+  }
+
+  if (tabState.pendingRungLabel !== label) {
+    tabState.pendingRungLabel = label
+    tabState.pendingRungSamples = 1
+    tabState.pendingRungFirstAt = now
+    return
+  }
+
+  tabState.pendingRungSamples = Number(tabState.pendingRungSamples || 0) + 1
+  const requiredSamples = isDowngrade
+    ? RUNG_SWITCH_CONFIRM_DOWNGRADE
+    : RUNG_SWITCH_CONFIRM_UPGRADE
+
+  if (tabState.pendingRungSamples < requiredSamples) {
+    return
+  }
+
   tabState.activeRungLabel = label
+  tabState.lastQualitySwitchAt = now
+  tabState.pendingRungLabel = null
+  tabState.pendingRungSamples = 0
+  tabState.pendingRungFirstAt = 0
+
+  if (typeof addLog === "function") {
+    const direction = isDowngrade ? "downshift" : "upshift"
+    addLog(
+      "DEBUG",
+      `Rung switch ${direction} confirmed: ${currentLabel} -> ${label} (samples=${requiredSamples})`
+    )
+  }
 }
 
 ns.ingestMasterPlaylist = ingestMasterPlaylist
 ns.scheduleSpeculativeRungPrefetch = scheduleSpeculativeRungPrefetch
 ns.maybeScheduleSpeculativePrefetch = maybeScheduleSpeculativePrefetch
 ns.applyMatrixToTabState = applyMatrixToTabState
+ns.collectSpeculativeRungUrls = collectSpeculativeRungUrls
+ns.shouldSkipSpeculativeDowngradeRung = shouldSkipSpeculativeDowngradeRung
 })()

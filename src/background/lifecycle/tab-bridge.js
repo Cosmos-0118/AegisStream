@@ -104,7 +104,10 @@ async function ensureTabBridgeReady(tabId, reason = "unknown", force = false) {
     addLog("INFO", `Reinjected content bridge into tab ${tabId} (${reason})`)
 
     const tabState = state.playlistByTab.get(tabId)
-    if (tabState?.segments?.length) {
+    if (
+      tabState?.segments?.length &&
+      (typeof ns.isTabMediaContext !== "function" || ns.isTabMediaContext(tabId, tab.url))
+    ) {
       syncKnownSegmentsToPage(tabId, tabState.segments, { reason: `reinject:${reason}` })
       if (typeof ns.syncCacheRegistryToTab === "function") {
         void ns.syncCacheRegistryToTab(tabId)

@@ -55,11 +55,18 @@ const {
   sanitizeRecordedAssetsFromPage,
   armHeaderHintsForUrl,
   stopExtensionActivityOnTabs,
-  broadcastSettingsToTabs
+  broadcastSettingsToTabs,
+  buildSettingsPayloadForTabs
 } = ns
 
 const playlistDiscoverThrottleAt = new Map()
 const layoutRecordLogAt = new Map()
+
+function resolveTabSettingsPayload() {
+  return typeof buildSettingsPayloadForTabs === "function"
+    ? buildSettingsPayloadForTabs()
+    : state.settings
+}
 
 function shouldLogLayoutRecord(origin, pathname, reason) {
   const key = `${origin}|${pathname}|${reason}`
@@ -626,9 +633,9 @@ function registerMessageRouter() {
     case "AegisStream:GetSettings":
       ;(async () => {
         const stats = await buildDisplayStats()
-        sendResponse({ ok: true, settings: state.settings, stats })
+        sendResponse({ ok: true, settings: resolveTabSettingsPayload(), stats })
       })().catch(() => {
-        sendResponse({ ok: true, settings: state.settings, stats: state.stats })
+        sendResponse({ ok: true, settings: resolveTabSettingsPayload(), stats: state.stats })
       })
       return true
     case "AegisStream:GetStats":
@@ -673,7 +680,10 @@ function registerMessageRouter() {
           return true
         }
         const tabState = state.playlistByTab.get(tabId)
-        if (state.settings.enabled && tabState?.segments?.length) {
+        const pageUrl = sender?.tab?.url || message.pageUrl || null
+        const mediaContext =
+          typeof ns.isTabMediaContext !== "function" || ns.isTabMediaContext(tabId, pageUrl)
+        if (state.settings.enabled && mediaContext && tabState?.segments?.length) {
           syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
           if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
             const reason = String(message.reason || "bridge-ready")
@@ -690,13 +700,13 @@ function registerMessageRouter() {
             })
           }
         }
-        if (typeof ns.syncCacheRegistryToTab === "function") {
+        if (mediaContext && typeof ns.syncCacheRegistryToTab === "function") {
           void ns.syncCacheRegistryToTab(tabId)
-        } else if (typeof ns.rebuildCacheRegistryFromDb === "function") {
+        } else if (mediaContext && typeof ns.rebuildCacheRegistryFromDb === "function") {
           void ns.rebuildCacheRegistryFromDb()
         }
       }
-      sendResponse({ ok: true, settings: state.settings })
+      sendResponse({ ok: true, settings: resolveTabSettingsPayload() })
       return true
     }
     case "AegisStream:ClearLogs":
@@ -727,7 +737,7 @@ function registerMessageRouter() {
       }
       chrome.storage.local
         .set({ settings: state.settings })
-        .then(() => sendResponse({ ok: true, settings: state.settings }))
+        .then(() => sendResponse({ ok: true, settings: resolveTabSettingsPayload() }))
         .catch((e) => {
           addLog("ERROR", `Failed to persist settings: ${e.message}`)
           sendResponse({ ok: false })

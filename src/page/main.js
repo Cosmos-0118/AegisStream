@@ -23,9 +23,28 @@ if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
   return
 }
 
-installFetchInterceptor()
-installXhrInterceptor()
+function activateMediaBridge(reason = "startup") {
+  if (ns.mediaBridgeActive === true) return true
+  ns.mediaBridgeActive = true
+  installFetchInterceptor()
+  installXhrInterceptor()
+  if (typeof ns.startBufferHealthMonitor === "function") {
+    ns.startBufferHealthMonitor()
+  }
+  logBridge(`Media bridge activated (${reason})`, "DEBUG")
+  return true
+}
+
+ns.activateMediaBridge = activateMediaBridge
+ns.isMediaBridgeActive = () => ns.mediaBridgeActive === true
+
 if (typeof installPageSmoother === "function") {
   installPageSmoother()
+}
+
+if (globalThis.AegisSitePolicy?.shouldRunMediaBridge?.()) {
+  activateMediaBridge("media-host")
+} else {
+  logBridge("Passive browse mode — media interceptors deferred until playback context", "DEBUG")
 }
 })()

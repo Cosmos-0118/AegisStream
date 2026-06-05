@@ -101,6 +101,7 @@ function buildRegistryPayload(reason = "routine-sync") {
 
 async function syncCacheRegistryToTab(tabId) {
   if (!Number.isFinite(tabId) || tabId < 0) return
+  if (typeof ns.isTabMediaContext === "function" && !ns.isTabMediaContext(tabId)) return
   try {
     await chrome.tabs.sendMessage(tabId, {
       type: "AegisStream:CacheRegistrySync",
@@ -130,6 +131,12 @@ async function flushCacheRegistrySync(reason = "routine-sync") {
   const payload = buildRegistryPayload(reason)
   for (const tab of tabs) {
     if (!tab?.id || tab.id < 0) continue
+    if (
+      typeof ns.isTabMediaContext === "function" &&
+      !ns.isTabMediaContext(tab.id, tab.url)
+    ) {
+      continue
+    }
     try {
       await chrome.tabs.sendMessage(tab.id, {
         type: "AegisStream:CacheRegistrySync",

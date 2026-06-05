@@ -1842,9 +1842,35 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     isLive: meta.isLive === true || previous?.isLive === true,
     segmentCount: normalizedSegments.length
   })
+  const incomingRungLabel =
+    meta.mediaPlaylistUrl &&
+    (meta.playlistMatrix || previous?.playlistMatrix) &&
+    typeof ns.resolveRungLabelForMediaUrl === "function"
+      ? ns.resolveRungLabelForMediaUrl(
+          meta.playlistMatrix || previous.playlistMatrix,
+          meta.mediaPlaylistUrl
+        )
+      : null
+  const matrixForRung = meta.playlistMatrix || previous?.playlistMatrix || null
+  let fsmRungLabel =
+    incomingRungLabel || meta.activeRungLabel || previous?.activeRungLabel || null
+  if (
+    incomingRungLabel &&
+    previous?.activeRungLabel &&
+    incomingRungLabel !== previous.activeRungLabel &&
+    typeof ns.shouldSkipSpeculativeDowngradeRung === "function" &&
+    ns.shouldSkipSpeculativeDowngradeRung(
+      previous,
+      matrixForRung,
+      previous.activeRungLabel,
+      incomingRungLabel
+    )
+  ) {
+    fsmRungLabel = previous.activeRungLabel
+  }
   const playbackTransition = determinePlaybackTransition(previous, {
     structuralHash: timelineGeometryUnchanged ? previous?.structuralHash || structuralHash : structuralHash,
-    activeRungLabel: meta.activeRungLabel || previous?.activeRungLabel || null,
+    activeRungLabel: fsmRungLabel,
     mediaPlaylistPath,
     episodeChanged: episodeChangedByFingerprint,
     urlsChanged,

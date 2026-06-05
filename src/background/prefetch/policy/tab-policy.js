@@ -44,12 +44,63 @@ function cancelPrefetchForInactiveTabs(keepTabId) {
 async function refreshActivePrefetchTab() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-    if (tab?.id && tab.id >= 0) {
-      setActivePrefetchTab(tab.id, "query")
-    }
+    if (!tab?.id || tab.id < 0) return
+    const focusTabId =
+      typeof ns.resolvePrefetchFocusTabId === "function"
+        ? ns.resolvePrefetchFocusTabId(tab.id, tab.url)
+        : tab.id
+    setActivePrefetchTab(focusTabId, "query")
   } catch {
     // ignore
   }
+}
+
+function resolvePrefetchFocusTabId(activeTabId, activeTabUrl = null) {
+  if (!Number.isFinite(activeTabId) || activeTabId < 0) return activeTabId
+  if (
+    typeof ns.isTabMediaContext === "function" &&
+    ns.isTabMediaContext(activeTabId, activeTabUrl)
+  ) {
+    return activeTabId
+  }
+  const mediaTabId =
+    typeof ns.findBackgroundMediaTabId === "function"
+      ? ns.findBackgroundMediaTabId(activeTabId)
+      : null
+  return mediaTabId ?? activeTabId
+}
+
+async function notifyTabCancelPrefetch(tabId, reason = "navigation-away") {
+  if (!Number.isFinite(tabId) || tabId < 0) return
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "AegisStream:CancelPrefetch",
+      reason
+    })
+  } catch {
+    // Tab may not have a content script yet
+  }
+}
+
+function handleTabNavigation(tabId, pageUrl, reason = "navigation") {
+  if (!Number.isFinite(tabId) || tabId < 0 || typeof pageUrl !== "string" || !pageUrl) return
+  if (typeof ns.isMediaPageUrl === "function" && ns.isMediaPageUrl(pageUrl)) return
+  if (typeof ns.tabHasPlaybackState !== "function" || !ns.tabHasPlaybackState(tabId)) return
+
+  releaseInflightForTab(tabId, { notifyPage: false, reason: `${reason}-away` })
+  cancelPendingPrefetchForTab(tabId)
+  void notifyTabCancelPrefetch(tabId, `${reason}-away`)
+
+  const tabState = state.playlistByTab.get(tabId)
+  if (tabState?.pendingDelegatePrefetch?.timerId) {
+    clearTimeout(tabState.pendingDelegatePrefetch.timerId)
+    tabState.pendingDelegatePrefetch = null
+  }
+
+  state.playlistByTab.delete(tabId)
+  state.tabAnchorJumps.delete(tabId)
+  state.pendingPrefetchByTab.delete(tabId)
+  addLog("INFO", `Tab ${tabId} left media context — released playback state (${reason})`)
 }
 
 function setActivePrefetchTab(tabId, reason = "unknown") {
@@ -207,6 +258,8 @@ function countInflightPrefetchesForTab(tabId) {
 }
 
 ns.refreshActivePrefetchTab = refreshActivePrefetchTab
+ns.resolvePrefetchFocusTabId = resolvePrefetchFocusTabId
+ns.handleTabNavigation = handleTabNavigation
 ns.setActivePrefetchTab = setActivePrefetchTab
 ns.isTabVisibilitySleeping = isTabVisibilitySleeping
 ns.pauseTabPrefetchForVisibility = pauseTabPrefetchForVisibility

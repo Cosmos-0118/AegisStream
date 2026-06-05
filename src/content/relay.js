@@ -5,36 +5,107 @@
 // ---------------------------------------------------------------------------
 
 (() => {
-if (typeof globalThis.claimAegisContentSlot === "function") {
-  if (!globalThis.claimAegisContentSlot("relay")) {
-    try {
-      chrome.runtime.sendMessage({
-        type: "AegisStream:BridgeReady",
-        reason: "reinject",
-        pageUrl: location.href
-      })
-    } catch {
-      // Extension context may be invalidated
-    }
-    return
-  }
-} else if (globalThis.__aegisContentRelayInstalled === true) {
-  try {
-    chrome.runtime.sendMessage({
-      type: "AegisStream:BridgeReady",
-      reason: "reinject",
-      pageUrl: location.href
-    })
-  } catch {
-    // Extension context may be invalidated
-  }
-  return
+/** Bumped when a stale relay instance is replaced after extension reload. */
+globalThis.__aegisRelayGeneration = (globalThis.__aegisRelayGeneration || 0) + 1
+
+/** After extension reload, orphaned relays must stop calling chrome.runtime. */
+let relayExtensionContextDead = false
+
+function normalizeRelayError(error) {
+  if (error == null) return ""
+  if (typeof error === "string") return error
+  if (typeof error?.message === "string") return error.message
+  return String(error)
 }
 
-// ---------------------------------------------------------------------------
-// Messages FROM background service worker → relay to page-bridge
-// (prefetch commands, etc.)
-// ---------------------------------------------------------------------------
+function isOrphanedExtensionContext(message) {
+  const msg = normalizeRelayError(message).toLowerCase()
+  return msg.includes("extension context invalidated") || msg.includes("context invalidated")
+}
+
+/** SW cold-start / no listener yet — retry later, do not permanently retire the relay. */
+function isTransientRuntimeUnavailable(message) {
+  const msg = normalizeRelayError(message).toLowerCase()
+  return msg.includes("receiving end does not exist")
+}
+
+function isExtensionContextInvalidated(message) {
+  return isOrphanedExtensionContext(message) || isTransientRuntimeUnavailable(message)
+}
+
+function markRelayExtensionContextDead(message) {
+  if (!isOrphanedExtensionContext(message)) return
+  relayExtensionContextDead = true
+}
+
+function canReachExtensionRuntime() {
+  if (relayExtensionContextDead) return false
+  try {
+    return !!(chrome.runtime && chrome.runtime.id)
+  } catch (error) {
+    if (isOrphanedExtensionContext(normalizeRelayError(error))) {
+      markRelayExtensionContextDead(normalizeRelayError(error))
+    }
+    return false
+  }
+}
+
+function dispatchToBackgroundWorker(message, callback, activeGeneration) {
+  if (!isActiveRelayInstance(activeGeneration)) {
+    if (callback) callback(undefined, "relay-superseded")
+    return
+  }
+  if (relayExtensionContextDead) {
+    if (callback) callback(undefined, "Extension context invalidated.")
+    return
+  }
+  if (!canReachExtensionRuntime()) {
+    if (callback) callback(undefined, "runtime-unavailable")
+    return
+  }
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      const runtimeError = chrome.runtime.lastError
+      if (runtimeError) {
+        const msg = runtimeError.message || String(runtimeError)
+        markRelayExtensionContextDead(msg)
+        if (callback) callback(undefined, msg)
+        return
+      }
+      if (callback) callback(response, null)
+    })
+  } catch (error) {
+    const msg = normalizeRelayError(error)
+    markRelayExtensionContextDead(msg)
+    if (callback) callback(undefined, msg)
+  }
+}
+
+function relayToBackground(message, activeGeneration) {
+  dispatchToBackgroundWorker(message, undefined, activeGeneration)
+}
+
+function forceClaimRelaySlot() {
+  try {
+    const armed =
+      globalThis.__aegisContentArmed ||
+      (globalThis.__aegisContentArmed = Object.create(null))
+    armed.relay = true
+  } catch {
+    // ignore
+  }
+}
+
+function isActiveRelayInstance(activeGeneration) {
+  return activeGeneration === globalThis.__aegisRelayGeneration
+}
+
+function isDuplicateRelayInstall() {
+  if (typeof globalThis.claimAegisContentSlot === "function") {
+    return !globalThis.claimAegisContentSlot("relay")
+  }
+  return globalThis.__aegisContentRelayInstalled === true
+}
 
 function relaySettingsToPage(settings) {
   if (!settings || typeof settings !== "object") return
@@ -48,28 +119,44 @@ function relaySettingsToPage(settings) {
   )
 }
 
-function notifyBridgeReady(reason = "startup") {
-  try {
-    chrome.runtime.sendMessage(
-      {
-        type: "AegisStream:BridgeReady",
-        reason,
-        pageUrl: location.href
-      },
-      (response) => {
-        const runtimeError = chrome.runtime.lastError
-        if (runtimeError) {
-          const msg = String(runtimeError.message || "")
-          if (/context invalidated/i.test(msg)) return
-        }
-        if (response?.settings) {
-          relaySettingsToPage(response.settings)
-        }
-        postExtensionRecoveredToPage(reason)
+function postExtensionRecoveredToPage(reason = "extension-recovered") {
+  window.postMessage(
+    {
+      __aegisstream: true,
+      type: "EXTENSION_RECOVERED",
+      reason
+    },
+    "*"
+  )
+}
+
+function notifyBridgeReady(reason = "startup", activeGeneration) {
+  if (!isActiveRelayInstance(activeGeneration) || relayExtensionContextDead) return
+  dispatchToBackgroundWorker(
+    {
+      type: "AegisStream:BridgeReady",
+      reason,
+      pageUrl: location.href
+    },
+    (response, err) => {
+      if (err) return
+      if (response?.settings) {
+        relaySettingsToPage(response.settings)
       }
-    )
+      postExtensionRecoveredToPage(reason)
+    },
+    activeGeneration
+  )
+}
+
+function isPassiveBrowsePageUrl(pageUrl = location.href) {
+  try {
+    const host = new URL(pageUrl).hostname.toLowerCase()
+    if (host === "youtube.com" || host.endsWith(".youtube.com")) return false
+    if (host === "twitch.tv" || host.endsWith(".twitch.tv")) return false
+    return true
   } catch {
-    // Extension context may be invalidated
+    return true
   }
 }
 
@@ -105,153 +192,6 @@ function relayExtensionFetchStreamToPage(message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "AegisStream:Ping") {
-    sendResponse({ ok: true, ready: true, pageUrl: location.href })
-    return true
-  }
-
-  if (
-    message?.type === "AegisStream:ExtensionFetchChunk" ||
-    message?.type === "AegisStream:ExtensionFetchEnd"
-  ) {
-    relayExtensionFetchStreamToPage(message)
-    return false
-  }
-
-  if (message?.type === "AegisStream:PrefetchSegments" && message.urls) {
-    window.postMessage({
-      __aegisstream: true,
-      type: "PREFETCH_SEGMENTS",
-      urls: message.urls,
-      networkGeneration: message.networkGeneration,
-      playbackGeneration: message.playbackGeneration ?? message.networkGeneration,
-      priority: message.priority || "low"
-    }, "*")
-    sendResponse({ ok: true })
-    return true
-  }
-
-  if (message?.type === "AegisStream:CancelPrefetch") {
-    window.postMessage({
-      __aegisstream: true,
-      type: "CANCEL_PREFETCH",
-      networkGeneration: message.networkGeneration
-    }, "*")
-    sendResponse({ ok: true })
-    return true
-  }
-
-  if (message?.type === "AegisStream:CacheRegistrySync" && message.payload) {
-    window.postMessage({
-      __aegisstream: true,
-      type: "CACHE_REGISTRY_SYNC",
-      payload: message.payload
-    }, "*")
-    sendResponse({ ok: true })
-    return true
-  }
-
-  if (message?.type === "AegisStream:ResetSeekingState") {
-    window.postMessage(
-      {
-        __aegisstream: true,
-        type: "RESET_SEEKING_STATE",
-        reason: message.reason || "manifest-reset",
-        anchorIndex:
-          typeof message.anchorIndex === "number" ? message.anchorIndex : null,
-        variantSwitchGraceUntil:
-          typeof message.variantSwitchGraceUntil === "number"
-            ? message.variantSwitchGraceUntil
-            : null
-      },
-      "*"
-    )
-    sendResponse({ ok: true })
-    return true
-  }
-
-  if (message?.type === "AegisStream:KnownSegments" && message.urls) {
-    window.postMessage({
-      __aegisstream: true,
-      type: "KNOWN_SEGMENTS",
-      urls: message.urls,
-      playbackHint: message.playbackHint || null,
-      resetSeeking: message.resetSeeking === true,
-      anchorIndex:
-        typeof message.anchorIndex === "number" ? message.anchorIndex : null,
-      reason: message.reason || null
-    }, "*")
-    sendResponse({ ok: true })
-    return true
-  }
-
-  if (message?.type === "AegisStream:RefreshPlaylist" && message.url) {
-    window.postMessage({
-      __aegisstream: true,
-      type: "REFRESH_PLAYLIST",
-      url: message.url,
-      generation: message.generation
-    }, "*")
-    sendResponse({ ok: true })
-    return true
-  }
-
-  if (message?.type === "AegisStream:SettingsUpdated" && message.settings) {
-    relaySettingsToPage(message.settings)
-    sendResponse({ ok: true })
-    return true
-  }
-
-  return false
-})
-
-notifyBridgeReady("startup")
-
-window.addEventListener("pageshow", () => {
-  notifyBridgeReady("pageshow")
-})
-
-function postExtensionRecoveredToPage(reason = "extension-recovered") {
-  window.postMessage(
-    {
-      __aegisstream: true,
-      type: "EXTENSION_RECOVERED",
-      reason
-    },
-    "*"
-  )
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    notifyBridgeReady("visible")
-    try {
-      chrome.runtime.sendMessage({
-        type: "AegisStream:TabVisibility",
-        hidden: false,
-        pageUrl: location.href
-      })
-    } catch {
-      // Extension context may be invalidated
-    }
-  } else {
-    try {
-      chrome.runtime.sendMessage({
-        type: "AegisStream:TabVisibility",
-        hidden: true,
-        pageUrl: location.href
-      })
-    } catch {
-      // Extension context may be invalidated
-    }
-  }
-})
-
-// ---------------------------------------------------------------------------
-// Messages FROM page-bridge → relay to background service worker
-// ---------------------------------------------------------------------------
-
 function copyArrayBuffer(bytes) {
   if (!bytes) return null
   try {
@@ -273,10 +213,6 @@ function copyArrayBuffer(bytes) {
 /** Stay under chrome.runtime.sendMessage size limits (base64 expands ~4/3). */
 const MAX_RELAY_STORE_BYTES = 16 * 1024 * 1024
 
-/**
- * TypedArrays often arrive in the service worker as plain objects (wire=[object Object]).
- * Base64 is slower but survives structured clone reliably.
- */
 function storeBytesForExtensionMessage(bytes) {
   const copied = copyArrayBuffer(bytes)
   if (!copied || copied.byteLength <= 0) return null
@@ -298,28 +234,223 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary)
 }
 
-window.addEventListener("message", (event) => {
-  if (event.source !== window) return
-  const data = event.data
-  if (!data || data.__aegisstream !== true) return
+function discoverPlaylistsInPage(activeGeneration) {
+  if (!isActiveRelayInstance(activeGeneration) || relayExtensionContextDead) return
+  const playlistPatterns = /https?:\/\/[^\s"'<>]+\.(m3u8|mpd)(\?[^\s"'<>]*)?/gi
 
-  if (data.type === "REQUEST_BRIDGE_RECONNECT") {
-    notifyBridgeReady(data.reason || "store-recovery")
-    return
+  const mediaTags = document.querySelectorAll("video[src], audio[src], source[src]")
+  for (const tag of mediaTags) {
+    const src = tag.getAttribute("src")
+    if (src && /\.(m3u8|mpd)($|\?)/i.test(src)) {
+      try {
+        const url = new URL(src, location.href).toString()
+        relayToBackground({ type: "AegisStream:PlaylistDiscovered", url }, activeGeneration)
+      } catch {
+        // ignore bad URLs
+      }
+    }
   }
 
-  if (data.type === "CACHE_LOOKUP_REQUEST") {
-    try {
-      chrome.runtime.sendMessage(
+  const scripts = document.querySelectorAll("script:not([src])")
+  for (const script of scripts) {
+    const text = script.textContent || ""
+    const matches = text.matchAll(playlistPatterns)
+    for (const match of matches) {
+      try {
+        relayToBackground(
+          {
+            type: "AegisStream:PlaylistDiscovered",
+            url: match[0]
+          },
+          activeGeneration
+        )
+      } catch {
+        break
+      }
+    }
+  }
+}
+
+function installRelay(activeGeneration) {
+  function relay(message) {
+    relayToBackground(message, activeGeneration)
+  }
+
+  function dispatch(message, callback) {
+    dispatchToBackgroundWorker(message, callback, activeGeneration)
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!isActiveRelayInstance(activeGeneration)) return false
+
+    if (message?.type === "AegisStream:Ping") {
+      sendResponse({ ok: true, ready: true, pageUrl: location.href })
+      return true
+    }
+
+    if (
+      message?.type === "AegisStream:ExtensionFetchChunk" ||
+      message?.type === "AegisStream:ExtensionFetchEnd"
+    ) {
+      relayExtensionFetchStreamToPage(message)
+      return false
+    }
+
+    if (message?.type === "AegisStream:PrefetchSegments" && message.urls) {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "PREFETCH_SEGMENTS",
+          urls: message.urls,
+          networkGeneration: message.networkGeneration,
+          playbackGeneration: message.playbackGeneration ?? message.networkGeneration,
+          priority: message.priority || "low"
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
+    if (message?.type === "AegisStream:CancelPrefetch") {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "CANCEL_PREFETCH",
+          networkGeneration: message.networkGeneration
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
+    if (message?.type === "AegisStream:CacheRegistrySync" && message.payload) {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "CACHE_REGISTRY_SYNC",
+          payload: message.payload
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
+    if (message?.type === "AegisStream:ResetSeekingState") {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "RESET_SEEKING_STATE",
+          reason: message.reason || "manifest-reset",
+          anchorIndex:
+            typeof message.anchorIndex === "number" ? message.anchorIndex : null,
+          variantSwitchGraceUntil:
+            typeof message.variantSwitchGraceUntil === "number"
+              ? message.variantSwitchGraceUntil
+              : null
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
+    if (message?.type === "AegisStream:KnownSegments" && message.urls) {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "KNOWN_SEGMENTS",
+          urls: message.urls,
+          playbackHint: message.playbackHint || null,
+          resetSeeking: message.resetSeeking === true,
+          anchorIndex:
+            typeof message.anchorIndex === "number" ? message.anchorIndex : null,
+          reason: message.reason || null
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
+    if (message?.type === "AegisStream:RefreshPlaylist" && message.url) {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "REFRESH_PLAYLIST",
+          url: message.url,
+          generation: message.generation
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
+    if (message?.type === "AegisStream:SettingsUpdated" && message.settings) {
+      relaySettingsToPage(message.settings)
+      sendResponse({ ok: true })
+      return true
+    }
+
+    return false
+  })
+
+  notifyBridgeReady("startup", activeGeneration)
+
+  window.addEventListener("pageshow", () => {
+    if (!isActiveRelayInstance(activeGeneration)) return
+    notifyBridgeReady("pageshow", activeGeneration)
+  })
+
+  document.addEventListener("visibilitychange", () => {
+    if (!isActiveRelayInstance(activeGeneration) || relayExtensionContextDead) return
+    if (document.visibilityState === "visible") {
+      if (!isPassiveBrowsePageUrl()) {
+        notifyBridgeReady("visible", activeGeneration)
+      }
+      relay(
+        {
+          type: "AegisStream:TabVisibility",
+          hidden: false,
+          pageUrl: location.href
+        }
+      )
+    } else {
+      relay(
+        {
+          type: "AegisStream:TabVisibility",
+          hidden: true,
+          pageUrl: location.href
+        }
+      )
+    }
+  })
+
+  window.addEventListener("message", (event) => {
+    if (!isActiveRelayInstance(activeGeneration)) return
+    if (event.source !== window) return
+    const data = event.data
+    if (!data || data.__aegisstream !== true) return
+
+    if (data.type === "REQUEST_BRIDGE_RECONNECT") {
+      if (isPassiveBrowsePageUrl()) return
+      notifyBridgeReady(data.reason || "store-recovery", activeGeneration)
+      return
+    }
+
+    if (data.type === "CACHE_LOOKUP_REQUEST") {
+      dispatch(
         {
           type: "AegisStream:CacheLookup",
           url: data.url,
           method: data.method,
           hasRange: data.hasRange
         },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          let payload = runtimeError ? { ok: false, hit: false } : response || { ok: false, hit: false }
+        (response, err) => {
+          let payload = err ? { ok: false, hit: false } : response || { ok: false, hit: false }
           if (payload?.hit && payload.bytes) {
             const copied = copyArrayBuffer(payload.bytes)
             if (copied) {
@@ -339,58 +470,33 @@ window.addEventListener("message", (event) => {
           )
         }
       )
-    } catch {
-      window.postMessage(
-        {
-          __aegisstream: true,
-          type: "CACHE_LOOKUP_RESPONSE",
-          requestId: data.requestId,
-          response: { ok: false, hit: false }
-        },
-        "*"
-      )
+      return
     }
-    return
-  }
 
-  if (data.type === "INFLIGHT_PREFETCH_QUERY") {
-    try {
-      chrome.runtime.sendMessage(
+    if (data.type === "INFLIGHT_PREFETCH_QUERY") {
+      dispatch(
         {
           type: "AegisStream:InflightPrefetchQuery",
           url: data.url
         },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
+        (response, err) => {
           window.postMessage(
             {
               __aegisstream: true,
               type: "INFLIGHT_PREFETCH_QUERY_RESPONSE",
               requestId: data.requestId,
-              response: runtimeError
-                ? { ok: false, inflight: false, error: runtimeError.message || "runtime-error" }
+              response: err
+                ? { ok: false, inflight: false, error: err }
                 : response || { ok: false, inflight: false }
             },
             "*"
           )
         }
       )
-    } catch {
-      window.postMessage(
-        {
-          __aegisstream: true,
-          type: "INFLIGHT_PREFETCH_QUERY_RESPONSE",
-          requestId: data.requestId,
-          response: { ok: false, inflight: false, error: "relay-error" }
-        },
-        "*"
-      )
+      return
     }
-    return
-  }
 
-  if (data.type === "STORE_CHUNK_REQUEST") {
-    try {
+    if (data.type === "STORE_CHUNK_REQUEST") {
       const payload = {
         type: "AegisStream:StoreChunk",
         url: data.url,
@@ -423,42 +529,27 @@ window.addEventListener("message", (event) => {
       }
       payload.bytesBase64 = encoded.bytesBase64
 
-      chrome.runtime.sendMessage(
-        payload,
-        (response) => {
-          const runtimeError = chrome.runtime.lastError
-          window.postMessage(
-            {
-              __aegisstream: true,
-              type: "STORE_CHUNK_RESPONSE",
-              requestId: data.requestId,
-              response: runtimeError
-                ? { ok: false, error: runtimeError.message || "runtime-error" }
-                : response || { ok: false, error: "no-response" }
-            },
-            "*"
-          )
-        }
-      )
-    } catch (error) {
-      window.postMessage(
-        {
-          __aegisstream: true,
-          type: "STORE_CHUNK_RESPONSE",
-          requestId: data.requestId,
-          response: {
-            ok: false,
-            error: error?.message ? `relay-error: ${error.message}` : "relay-error"
-          }
-        },
-        "*"
-      )
+      dispatch(payload, (response, err) => {
+        window.postMessage(
+          {
+            __aegisstream: true,
+            type: "STORE_CHUNK_RESPONSE",
+            requestId: data.requestId,
+            response: err
+              ? {
+                  ok: false,
+                  error: err,
+                  transient: isExtensionContextInvalidated(err)
+                }
+              : response || { ok: false, error: "no-response" }
+          },
+          "*"
+        )
+      })
+      return
     }
-    return
-  }
 
-  if (data.type === "EXTENSION_FETCH_REQUEST") {
-    try {
+    if (data.type === "EXTENSION_FETCH_REQUEST") {
       const payload = {
         type: "AegisStream:ExtensionFetch",
         requestId: data.requestId,
@@ -475,113 +566,77 @@ window.addEventListener("message", (event) => {
         payload.bytesBase64 = data.bytesBase64
       }
 
-      chrome.runtime.sendMessage(payload, (response) => {
-        const runtimeError = chrome.runtime.lastError
+      dispatch(payload, (response, err) => {
         window.postMessage(
           {
             __aegisstream: true,
             type: "EXTENSION_FETCH_RESPONSE",
             requestId: data.requestId,
-            response: runtimeError
-              ? { ok: false, error: runtimeError.message || "runtime-error" }
+            response: err
+              ? { ok: false, error: err }
               : response || { ok: false }
           },
           "*"
         )
       })
-    } catch {
-      window.postMessage(
-        {
-          __aegisstream: true,
-          type: "EXTENSION_FETCH_RESPONSE",
-          requestId: data.requestId,
-          response: { ok: false, error: "send-failed" }
-        },
-        "*"
-      )
+      return
     }
-    return
-  }
 
-  if (data.type === "EXTENSION_FETCH_ABORT") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "EXTENSION_FETCH_ABORT") {
+      relay({
         type: "AegisStream:ExtensionFetchAbort",
         requestId: data.requestId
       })
-    } catch {
-      // Ignored
+      return
     }
-    return
-  }
 
-  // Relay playlist URL discoveries from page-bridge
-  if (data.type === "PLAYLIST_DISCOVERED") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "PLAYLIST_DISCOVERED") {
+      relay({
         type: "AegisStream:PlaylistDiscovered",
         url: data.url
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  // Relay captured playlist content from page-bridge (primary path)
-  if (data.type === "PLAYLIST_CONTENT") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "PLAYLIST_CONTENT") {
+      relay({
         type: "AegisStream:PlaylistContent",
         url: data.url,
         text: data.text,
         pageUrl: location.href,
         generation: data.generation
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "PLAYLIST_REFRESH_FAILED") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "PLAYLIST_REFRESH_FAILED") {
+      relay({
         type: "AegisStream:PlaylistRefreshFailed",
         url: data.url,
         generation: data.generation,
         status: data.status
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "INFLIGHT_WIRE_RESOLVE" && data.url) {
-    try {
+    if (data.type === "INFLIGHT_WIRE_RESOLVE" && data.url) {
       const encoded =
         storeBytesForExtensionMessage(data.bytes) ||
         (typeof data.bytesBase64 === "string" && data.bytesBase64.length > 0
           ? { bytesBase64: data.bytesBase64 }
           : null)
       if (!encoded || encoded.error) return
-      chrome.runtime.sendMessage({
+      relay({
         type: "AegisStream:InflightWireResolve",
         url: data.url,
         contentType: data.contentType || "application/octet-stream",
         bytesBase64: encoded.bytesBase64
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  // Relay prefetch results from page-bridge
-  if (data.type === "PREFETCH_RESULT") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "PREFETCH_RESULT") {
+      relay({
         type: "AegisStream:PrefetchResult",
         url: data.url,
         success: data.success,
@@ -601,27 +656,19 @@ window.addEventListener("message", (event) => {
           ? Number(data.networkGeneration)
           : null
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "CACHE_SERVE_HIT" && data.url) {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "CACHE_SERVE_HIT" && data.url) {
+      relay({
         type: "AegisStream:CacheServeHit",
         url: data.url
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "SPECULATIVE_REGISTER" && data.url) {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "SPECULATIVE_REGISTER" && data.url) {
+      relay({
         type: "AegisStream:SpeculativeRegister",
         url: data.url,
         source: data.source || "cross-itag",
@@ -630,27 +677,19 @@ window.addEventListener("message", (event) => {
         fromRung: data.fromRung || null,
         toRung: data.toRung || null
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "CHUNK_OBSERVED" && data.url) {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "CHUNK_OBSERVED" && data.url) {
+      relay({
         type: "AegisStream:ChunkObserved",
         url: data.url
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "FORCE_TELEPORT_ANCHOR") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "FORCE_TELEPORT_ANCHOR") {
+      relay({
         type: "AegisStream:ForceTeleportAnchor",
         payload: {
           index: data.index,
@@ -660,24 +699,16 @@ window.addEventListener("message", (event) => {
           eventType: data.eventType || "seeked"
         }
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "LIVELINESS_PING") {
-    try {
-      chrome.runtime.sendMessage({ type: "AegisStream:LivelinessPing" })
-    } catch {
-      // Extension context may be invalidated
+    if (data.type === "LIVELINESS_PING") {
+      relay({ type: "AegisStream:LivelinessPing" })
+      return
     }
-    return
-  }
 
-  if (data.type === "SCRUB_VELOCITY_PREFETCH") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "SCRUB_VELOCITY_PREFETCH") {
+      relay({
         type: "AegisStream:ScrubVelocityPrefetch",
         payload: {
           predictedIndex: data.predictedIndex,
@@ -685,197 +716,162 @@ window.addEventListener("message", (event) => {
           currentIndex: data.currentIndex
         }
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "TAB_VISIBILITY_PAUSE" || data.type === "TAB_VISIBILITY_RESUME") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "TAB_VISIBILITY_PAUSE" || data.type === "TAB_VISIBILITY_RESUME") {
+      relay({
         type: "AegisStream:TabVisibility",
         hidden: data.type === "TAB_VISIBILITY_PAUSE" || data.hidden === true,
         pageUrl: location.href
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "UNIFIED_SEEK_STATE") {
-    const wire = typeof data.wire === "string" ? data.wire : null
-    if (!wire) return
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "UNIFIED_SEEK_STATE") {
+      const wire = typeof data.wire === "string" ? data.wire : null
+      if (!wire) return
+      relay({
         type: "AegisStream:UnifiedSeekState",
         wire
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "PLAYER_PAUSED") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "PLAYER_PAUSED") {
+      relay({
         type: "AegisStream:RuntimeMetric",
         metricType: "player_paused",
         currentTime: data.timeSec
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "SCRUBBING_TRAIN") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "SCRUBBING_TRAIN") {
+      relay({
         type: "AegisStream:ScrubbingTrain",
         payload: { active: data.active === true }
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "INFLIGHT_CONSUMER_MUTATE" && data.url) {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "INFLIGHT_CONSUMER_MUTATE" && data.url) {
+      relay({
         type: "AegisStream:InflightConsumerMutate",
         url: data.url,
         delta: data.delta
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "RUNTIME_METRIC" && data.metricType) {
-    try {
-      const payload = { ...data }
-      delete payload.__aegisstream
-      delete payload.type
-      chrome.runtime.sendMessage({
+    if (data.type === "RUNTIME_METRIC" && data.metricType) {
+      const metricPayload = { ...data }
+      delete metricPayload.__aegisstream
+      delete metricPayload.type
+      relay({
         type: "AegisStream:RuntimeMetric",
-        ...payload
+        ...metricPayload
       })
-    } catch {
-      // Ignored
+      return
     }
-    return
-  }
 
-  if (data.type === "ARM_HEADER_HINTS" && data.targetUrl) {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "ARM_HEADER_HINTS" && data.targetUrl) {
+      relay({
         type: "AegisStream:ArmHeaderHints",
         targetUrl: data.targetUrl,
         reason: data.reason || "hover"
       })
-    } catch {
-      // Extension context may be invalidated
+      return
     }
-    return
-  }
 
-  if (data.type === "DEBUG_LOG") {
-    try {
-      chrome.runtime.sendMessage({
+    if (data.type === "DEBUG_LOG") {
+      relay({
         type: "AegisStream:DebugLog",
         level: data.level || "INFO",
         msg: data.msg
       })
-    } catch {
-      // Ignored
     }
-    return
-  }
-})
-
-// ---------------------------------------------------------------------------
-// Discover playlist URLs embedded in the page DOM
-// ---------------------------------------------------------------------------
-
-function discoverPlaylistsInPage() {
-  const playlistPatterns = /https?:\/\/[^\s"'<>]+\.(m3u8|mpd)(\?[^\s"'<>]*)?/gi
-
-  // Scan <source> and <video> tags
-  const mediaTags = document.querySelectorAll("video[src], audio[src], source[src]")
-  for (const tag of mediaTags) {
-    const src = tag.getAttribute("src")
-    if (src && /\.(m3u8|mpd)($|\?)/i.test(src)) {
-      try {
-        const url = new URL(src, location.href).toString()
-        chrome.runtime.sendMessage({ type: "AegisStream:PlaylistDiscovered", url })
-      } catch { /* ignore bad URLs */ }
-    }
-  }
-
-  // Scan inline scripts for playlist URLs
-  const scripts = document.querySelectorAll("script:not([src])")
-  for (const script of scripts) {
-    const text = script.textContent || ""
-    const matches = text.matchAll(playlistPatterns)
-    for (const match of matches) {
-      try {
-        chrome.runtime.sendMessage({
-          type: "AegisStream:PlaylistDiscovered",
-          url: match[0]
-        })
-      } catch { break }
-    }
-  }
-}
-
-// Run discovery after page loads
-if (document.readyState === "complete" || document.readyState === "interactive") {
-  setTimeout(discoverPlaylistsInPage, 1000)
-} else {
-  document.addEventListener("DOMContentLoaded", () => {
-    setTimeout(discoverPlaylistsInPage, 1000)
   })
-}
 
-// Also watch for dynamically added video/source elements
-const observer = new MutationObserver((mutations) => {
-  for (const mutation of mutations) {
-    for (const node of mutation.addedNodes) {
-      if (!(node instanceof HTMLElement)) continue
-      const sources = node.matches?.("video, audio, source")
-        ? [node]
-        : Array.from(node.querySelectorAll?.("video[src], audio[src], source[src]") || [])
-      for (const el of sources) {
-        const src = el.getAttribute("src")
-        if (src && /\.(m3u8|mpd)($|\?)/i.test(src)) {
-          try {
-            const url = new URL(src, location.href).toString()
-            chrome.runtime.sendMessage({ type: "AegisStream:PlaylistDiscovered", url })
-          } catch { /* ignore */ }
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    setTimeout(() => discoverPlaylistsInPage(activeGeneration), 1000)
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      setTimeout(() => discoverPlaylistsInPage(activeGeneration), 1000)
+    })
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    if (!isActiveRelayInstance(activeGeneration) || relayExtensionContextDead) return
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue
+        const sources = node.matches?.("video, audio, source")
+          ? [node]
+          : Array.from(node.querySelectorAll?.("video[src], audio[src], source[src]") || [])
+        for (const el of sources) {
+          const src = el.getAttribute("src")
+          if (src && /\.(m3u8|mpd)($|\?)/i.test(src)) {
+            try {
+              const url = new URL(src, location.href).toString()
+              relay({ type: "AegisStream:PlaylistDiscovered", url })
+            } catch {
+              // ignore
+            }
+          }
         }
       }
     }
-  }
-})
+  })
 
-const observerRoot = document.documentElement || document.body
-if (observerRoot) {
-  observer.observe(observerRoot, { childList: true, subtree: true })
-} else {
-  document.addEventListener(
-    "DOMContentLoaded",
-    () => {
-      const lateRoot = document.documentElement || document.body
-      if (lateRoot) {
-        observer.observe(lateRoot, { childList: true, subtree: true })
+  const observerRoot = document.documentElement || document.body
+  if (observerRoot) {
+    observer.observe(observerRoot, { childList: true, subtree: true })
+  } else {
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        const lateRoot = document.documentElement || document.body
+        if (lateRoot) {
+          observer.observe(lateRoot, { childList: true, subtree: true })
+        }
+      },
+      { once: true }
+    )
+  }
+}
+
+function startRelay() {
+  const activeGeneration = globalThis.__aegisRelayGeneration
+  if (!isDuplicateRelayInstall()) {
+    globalThis.__aegisContentRelayInstalled = true
+    installRelay(activeGeneration)
+    return
+  }
+
+  dispatchToBackgroundWorker(
+    { type: "AegisStream:Ping" },
+    (response, err) => {
+      if (!err && response?.ok) {
+        notifyBridgeReady("reinject", activeGeneration)
+        return
       }
+      if (err && isTransientRuntimeUnavailable(err)) {
+        notifyBridgeReady("reinject", activeGeneration)
+        return
+      }
+      if (err && !isOrphanedExtensionContext(err)) {
+        return
+      }
+      globalThis.__aegisRelayGeneration = (globalThis.__aegisRelayGeneration || 0) + 1
+      forceClaimRelaySlot()
+      relayExtensionContextDead = false
+      globalThis.__aegisContentRelayInstalled = true
+      installRelay(globalThis.__aegisRelayGeneration)
     },
-    { once: true }
+    activeGeneration
   )
 }
+
+startRelay()
 })()

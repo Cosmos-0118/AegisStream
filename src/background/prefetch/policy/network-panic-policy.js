@@ -31,13 +31,17 @@ function isNetworkPanicActive() {
 function buildSettingsPayloadForTabs() {
   const base = state.settings ? { ...state.settings } : {}
   const panic = isNetworkPanicActive()
+  const adaptive =
+    typeof ns.getAdaptiveLimits === "function" ? ns.getAdaptiveLimits() : null
   return {
     ...base,
     networkPanicActive: panic,
     bufferTargetRunwaySec: panic
       ? constants.PANIC_TARGET_RUNWAY_SEC
       : constants.BUFFER_TARGET_RUNWAY_SEC,
-    networkFirstByteP95Ms: Number(state.stats?.networkFirstByteP95Ms) || 0
+    networkFirstByteP95Ms: Number(state.stats?.networkFirstByteP95Ms) || 0,
+    speculativeAdaptiveMode: adaptive?.mode || state.speculativeAdaptiveMode || "full",
+    crossItagAllowed: adaptive?.crossItag === true
   }
 }
 

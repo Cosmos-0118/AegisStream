@@ -306,10 +306,15 @@ function observeVideos() {
 }
 
 function startBufferHealthMonitor() {
-  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
-    logBridge("Buffer health monitor skipped (Twitch reactive passthrough)", "DEBUG")
+  if (ns.bufferHealthMonitorStarted === true) return
+  if (
+    globalThis.AegisSitePolicy?.shouldRunMediaBridge &&
+    !globalThis.AegisSitePolicy.shouldRunMediaBridge() &&
+    ns.mediaBridgeActive !== true
+  ) {
     return
   }
+  ns.bufferHealthMonitorStarted = true
   observeVideos()
   const observer = new MutationObserver(() => observeVideos())
   const root = document.documentElement || document.body
@@ -335,11 +340,14 @@ function requestBufferHealthTick(reason = "manual") {
 }
 
 ns.requestBufferHealthTick = requestBufferHealthTick
+ns.startBufferHealthMonitor = startBufferHealthMonitor
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", startBufferHealthMonitor, { once: true })
-} else {
-  startBufferHealthMonitor()
+if (globalThis.AegisSitePolicy?.shouldRunMediaBridge?.()) {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", startBufferHealthMonitor, { once: true })
+  } else {
+    startBufferHealthMonitor()
+  }
 }
 
 ns.measurePrimaryVideoRunway = () => {

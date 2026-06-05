@@ -80,6 +80,9 @@ function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
 
 function setupVideoElementAnchorBridge(videoElement, manifestMapper) {
   if (!videoElement || videoElement.__aegisAnchorBridgeHook) return
+  if (typeof ns.activateMediaBridge === "function") {
+    ns.activateMediaBridge("video-detected")
+  }
   videoElement.__aegisAnchorBridgeHook = true
 
   const mapper = manifestMapper || resolveManifestMapper()
