@@ -135,6 +135,20 @@ ns.constants = {
   VARIANT_SWITCH_COOLDOWN_MS: 2_000,
   /** After manual quality change: ignore spurious DOM teleports near t≈0 while playhead mapping catches up. */
   VARIANT_SWITCH_GRACE_MS: 8_000,
+  /** Keep DOM/seek anchors across playlist refresh for this window (prevents end-seek resets). */
+  SEEK_ANCHOR_RETAIN_MS: 30_000,
+  /** After SW restart, how long to defer quality-rung auto-detection to avoid locking onto low-quality startup chunks. */
+  WARM_RECOVERY_RUNG_CONFIRM_MS: 10_000,
+  /** Number of consecutive same-quality chunks needed before committing activeRungLabel post-restart. */
+  WARM_RECOVERY_RUNG_CONFIRM_SAMPLES: 3,
+  /** After SW restart, defer prefetch decisions for this window while rebuilding state. */
+  WARM_RECOVERY_DEFER_PREFETCH_MS: 3_000,
+  /** After SW restart, run cache-rebuild and state-recovery only; no tab injection. */
+  WARM_RECOVERY_STATE_REBUILD_MS: 5_000,
+  /** Persist critical tab state snapshot to chrome.storage.session at this interval. */
+  STATE_PERSIST_DEBOUNCE_MS: 2_000,
+  /** Maximum number of tab state snapshots to keep in storage. */
+  STATE_PERSIST_MAX_TABS: 8,
   VARIANT_SWITCH_TELEPORT_SUPPRESS_SEC: 20,
   VARIANT_SWITCH_PREFETCH_WINDOW: 12,
   /** Prefer aggressive forward prefetch over rescue aborts right after a rendition change. */
@@ -182,7 +196,7 @@ ns.constants = {
   SCRUB_KALMAN_LOOKAHEAD_BASE_MS: 200,
   SCRUB_KALMAN_LOOKAHEAD_VELOCITY_MS: 80,
   SPECULATIVE_TARGET_RUNWAY_SEC: 30,
-  SPECULATIVE_CONTINUOUS_THRESHOLD: 0.35,
+  SPECULATIVE_CONTINUOUS_THRESHOLD: 0.20,
   SPECULATIVE_CONTINUOUS_AGGRESSIVE_THRESHOLD: 0.7,
   SPECULATIVE_CONTINUOUS_RUNWAY_FLOOR_SEC: 5,
   SPECULATIVE_CONGESTED_MULTIPLIER: 0.3,

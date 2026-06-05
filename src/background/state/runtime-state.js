@@ -79,6 +79,119 @@ function clampNumber(value, min, max, fallback) {
   return Math.min(max, Math.max(min, Math.floor(parsed)))
 }
 
+// ── Warm Recovery: Tab State Snapshot Persistence ──────────────────────
+// On SW restart (update/idle kill), in-memory tab state is lost.
+// We periodically persist a lightweight snapshot to chrome.storage.session
+// so that on re-activation we can:
+//  1. Restore the highest-quality activeRungLabel (prevents 360p lock)
+//  2. Restore anchorIndex (prevents guard-ring misses)
+//  3. Know the last known URL to re-associate tabs
+const WARM_RECOVERY_STORAGE_KEY = "aegisWarmRecoveryTabState"
+let warmRecoveryPersistTimer = null
+
+function buildWarmRecoverySnapshot() {
+  const entries = []
+  for (const [tabId, tabState] of state.playlistByTab.entries()) {
+    if (!tabState?.segments?.length && !tabState?.activeRungLabel) continue
+    const snapshot = {
+      tabId,
+      activeRungLabel: tabState.activeRungLabel || null,
+      anchorIndex: typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null,
+      hasAnchor: Boolean(tabState.hasAnchor),
+      rungLabels: tabState.rungLabels ? [...tabState.rungLabels] : [],
+      lastMediaPlaylistUrl: tabState.lastMediaPlaylistUrl || null,
+      lastSegmentCount: tabState.segments?.length || 0,
+      updatedAt: tabState.updatedAt || Date.now()
+    }
+    entries.push(snapshot)
+    if (entries.length >= (constants.STATE_PERSIST_MAX_TABS || 8)) break
+  }
+  return {
+    entries,
+    persistedAt: Date.now(),
+    workerStartCount: state.workerLifecycle?.startCount || 0
+  }
+}
+
+function scheduleWarmRecoveryPersist() {
+  const debounceMs = Number(constants.STATE_PERSIST_DEBOUNCE_MS) || 2000
+  if (warmRecoveryPersistTimer) clearTimeout(warmRecoveryPersistTimer)
+  warmRecoveryPersistTimer = setTimeout(() => {
+    warmRecoveryPersistTimer = null
+    void flushWarmRecoveryPersist()
+  }, debounceMs)
+}
+
+async function flushWarmRecoveryPersist() {
+  try {
+    const snapshot = buildWarmRecoverySnapshot()
+    if (!snapshot.entries.length) return
+    await chrome.storage.session.set({ [WARM_RECOVERY_STORAGE_KEY]: snapshot })
+  } catch {
+    // Storage may not be available (incognito, quota, etc.)
+  }
+}
+
+async function loadWarmRecoverySnapshot() {
+  try {
+    const stored = await chrome.storage.session.get([WARM_RECOVERY_STORAGE_KEY])
+    const snapshot = stored[WARM_RECOVERY_STORAGE_KEY]
+    if (!snapshot?.entries?.length) return null
+    // Ignore snapshots written by the current worker — only restore from a prior lifecycle.
+    if (snapshot.workerStartCount === state.workerLifecycle?.startCount) {
+      return null
+    }
+    return snapshot
+  } catch {
+    return null
+  }
+}
+
+function applyWarmRecoverySnapshot(snapshot) {
+  if (!snapshot?.entries?.length) return 0
+  let applied = 0
+  for (const entry of snapshot.entries) {
+    if (!Number.isFinite(entry.tabId) || entry.tabId < 0) continue
+    const existing = state.playlistByTab.get(entry.tabId)
+    // Keep fully established tab state; merge into partial state created before recovery ran.
+    if (existing?.segments?.length) continue
+
+    const tabState = {
+      ...(existing || {}),
+      segments: [],
+      activeRungLabel: entry.activeRungLabel || null,
+      anchorIndex: typeof entry.anchorIndex === "number" ? entry.anchorIndex : null,
+      hasAnchor: Boolean(entry.hasAnchor && typeof entry.anchorIndex === "number"),
+      rungLabels: Array.isArray(entry.rungLabels) ? entry.rungLabels : [],
+      lastMediaPlaylistUrl: entry.lastMediaPlaylistUrl || null,
+      warmRecovery: true,
+      warmRecoveryAppliedAt: Date.now(),
+      updatedAt: entry.updatedAt || Date.now()
+    }
+    state.playlistByTab.set(entry.tabId, tabState)
+    applied += 1
+  }
+  if (applied > 0) {
+    addLog("INFO", `Warm recovery: restored state for ${applied} tab(s) from snapshot`)
+  }
+  return applied
+}
+
+/** After restart, defer quality-rung confirmation to avoid 360p lock. */
+function isTabInWarmRecoveryRungConfirm(tabState) {
+  if (!tabState?.warmRecovery) return false
+  const appliedAt = Number(tabState.warmRecoveryAppliedAt || 0)
+  return Date.now() - appliedAt < (constants.WARM_RECOVERY_RUNG_CONFIRM_MS || 10_000)
+}
+
+/** After restart, defer prefetch until state stabilizes. */
+function isTabInWarmRecoveryDeferPrefetch() {
+  if (state.workerLifecycle?.startCount < 2) return false
+  const startedAt = Number(state.workerLifecycle?.lastStartedAt || 0)
+  if (!startedAt) return false
+  return Date.now() - startedAt < (constants.WARM_RECOVERY_DEFER_PREFETCH_MS || 3_000)
+}
+
 function sanitizeSettings(candidate = {}) {
   const sanitized = {
     enabled: candidate.enabled !== false,
@@ -159,4 +272,9 @@ ns.addLog = addLog
 ns.sanitizeSettings = sanitizeSettings
 ns.resetStats = resetStats
 ns.loadSettings = loadSettings
+ns.scheduleWarmRecoveryPersist = scheduleWarmRecoveryPersist
+ns.loadWarmRecoverySnapshot = loadWarmRecoverySnapshot
+ns.applyWarmRecoverySnapshot = applyWarmRecoverySnapshot
+ns.isTabInWarmRecoveryRungConfirm = isTabInWarmRecoveryRungConfirm
+ns.isTabInWarmRecoveryDeferPrefetch = isTabInWarmRecoveryDeferPrefetch
 })()

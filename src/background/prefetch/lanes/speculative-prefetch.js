@@ -338,7 +338,25 @@ function maybeScheduleSpeculativePrefetch(tabId) {
 function applyMatrixToTabState(tabState, mediaPlaylistUrl) {
   if (!tabState?.playlistMatrix || !mediaPlaylistUrl) return
   const label = resolveRungLabelForMediaUrl(tabState.playlistMatrix, mediaPlaylistUrl)
-  if (label) tabState.activeRungLabel = label
+  if (!label) return
+  if (
+    typeof ns.isTabInWarmRecoveryRungConfirm === "function" &&
+    ns.isTabInWarmRecoveryRungConfirm(tabState)
+  ) {
+    const needed = Number(ns.constants?.WARM_RECOVERY_RUNG_CONFIRM_SAMPLES) || 3
+    const samples = Array.isArray(tabState.warmRecoveryRungSamples)
+      ? tabState.warmRecoveryRungSamples
+      : []
+    samples.push(label)
+    if (samples.length > needed) samples.splice(0, samples.length - needed)
+    tabState.warmRecoveryRungSamples = samples
+    const confirmed =
+      samples.length >= needed && samples.every((entry) => entry === label)
+    if (!confirmed) return
+    tabState.warmRecovery = false
+    tabState.warmRecoveryRungSamples = []
+  }
+  tabState.activeRungLabel = label
 }
 
 ns.ingestMasterPlaylist = ingestMasterPlaylist

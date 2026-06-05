@@ -22,6 +22,10 @@
     if (lane === "teleport" || /teleport|dom-seek|force-teleport|player-seek/.test(source)) {
       return "playback"
     }
+    // quality-switch-warm / variant-switch are prefetch operations, not "other"
+    if (/quality-switch|variant-switch|switch-warm/.test(source)) {
+      return "prefetch"
+    }
     if (/scrub|snap|velocity|schedule|bridge|chunk|maintenance/.test(source)) {
       return "prefetch"
     }

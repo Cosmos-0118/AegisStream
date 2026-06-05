@@ -73,7 +73,22 @@ function determinePlaybackTransition(previous, next) {
   }
 
   if (rungLabelChanged || mediaPathChanged) {
+    // Only treat as quality switch if structuralHash ALSO changed AND urls changed.
+    // A rung label or media path change alone during token refresh / ABR fluctuation
+    // is NOT a quality switch — it must be accompanied by structural content change.
+    // Without this guard, every YouTube ABR fluctuation triggers clearPrefetch,
+    // nuking the higher-quality prefetch queue and locking playback at low quality.
     if (!structuralHashChanged) {
+      return {
+        state: PlaybackStates.TOKEN_REFRESHING,
+        clearPrefetch: false,
+        retainAnchor: true,
+        qualitySwitch: false
+      }
+    }
+    // Only if BOTH structural hash changed AND urls changed do we treat as quality switch.
+    // If urls haven't changed, this is a stale comparison artifact, not a real switch.
+    if (!next.urlsChanged) {
       return {
         state: PlaybackStates.TOKEN_REFRESHING,
         clearPrefetch: false,

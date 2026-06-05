@@ -34,7 +34,9 @@ const {
   resolveSegmentIndexInManifest,
   determinePlaybackTransition,
   PlaybackStates,
-  estimateManifestIndexFromTime
+  estimateManifestIndexFromTime,
+  scheduleWarmRecoveryPersist,
+  isTabInWarmRecoveryDeferPrefetch
 } = ns
 
 const TIER_EMERGENCY = "emergency"
@@ -219,6 +221,10 @@ function softCommitAnchor(tabId, tabState, targetIndex, source = "anchor-soft-co
     tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
   }
 
+  if (typeof scheduleWarmRecoveryPersist === "function") {
+    scheduleWarmRecoveryPersist()
+  }
+
   addLog(
     "INFO",
     `Soft anchor commit on tab ${tabId} (${source}): ${previousAnchor ?? "?"} -> ${clampedTarget}, retaining prefetch overlap`
@@ -324,6 +330,11 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
   if (typeof tabState.mediaSequence === "number") {
     tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
   }
+
+  if (typeof scheduleWarmRecoveryPersist === "function") {
+    scheduleWarmRecoveryPersist()
+  }
+
   if (typeof ns.tryResolveSpeculationAtSegment === "function") {
     ns.tryResolveSpeculationAtSegment(tabId, clampedTarget, {
       resolve_source: source || "dom-seeked",
@@ -1880,12 +1891,18 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     )
   }
 
+  const authoritativeAnchorSource =
+    previous?.anchorSource === "DOM_SEEKED" || previous?.anchorSource === "SEEK_PREDICTION"
+  const anchorRecentlyAuthoritative =
+    authoritativeAnchorSource &&
+    Date.now() - Number(previous?.anchorSourceAt || 0) <
+      (Number(constants.SEEK_ANCHOR_RETAIN_MS) || 30_000)
   const staleEndOfTimelineAnchor =
     !episodeChangedByFingerprint &&
+    !anchorRecentlyAuthoritative &&
     previous?.hasAnchor === true &&
     typeof previous.anchorIndex === "number" &&
-    (previous.anchorIndex >= normalizedSegments.length ||
-      previous.anchorIndex >= Math.max(0, Math.floor(normalizedSegments.length * 0.85) - 1))
+    previous.anchorIndex >= normalizedSegments.length
   if (staleEndOfTimelineAnchor) {
     addLog(
       "INFO",
@@ -2236,6 +2253,8 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     networkGeneration: nextNetworkGeneration,
     prefetchDownloadRegistry: nextPrefetchRegistry,
     activeEngineMode: previous?.activeEngineMode || null,
+    warmRecovery: previous?.warmRecovery === true,
+    warmRecoveryAppliedAt: Number(previous?.warmRecoveryAppliedAt || 0),
     activeInflightSegmentIndices:
       qualityVariantSwitch || episodeChangedByFingerprint
         ? new Set()
@@ -2254,6 +2273,9 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     ns.applyMatrixToTabState(tabState, meta.mediaPlaylistUrl)
   }
   state.playlistByTab.set(tabId, tabState)
+  if (typeof scheduleWarmRecoveryPersist === "function") {
+    scheduleWarmRecoveryPersist()
+  }
   if (
     previous &&
     Number(tabState.playbackGeneration) >
@@ -2490,6 +2512,12 @@ function maybeRequestPrefetchForTab(tabId, segments, startIndex, source, options
   }
   const tabState = state.playlistByTab.get(tabId)
   if (isPrefetchBlocked(tabState)) return
+  if (
+    typeof isTabInWarmRecoveryDeferPrefetch === "function" &&
+    isTabInWarmRecoveryDeferPrefetch()
+  ) {
+    return
+  }
   if (
     source === "chunk-observed" &&
     segmentIndexHasActivePrefetch(tabId, tabState, startIndex)
@@ -2749,6 +2777,12 @@ function schedulePrefetchCapRetry(tabId, tabState, segments, startIndex, source)
 async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   if (!state.settings.enabled || !state.settings.prefetchEnabled) return
   if (!isTabEligibleForPrefetch(tabId)) return
+  if (
+    typeof isTabInWarmRecoveryDeferPrefetch === "function" &&
+    isTabInWarmRecoveryDeferPrefetch()
+  ) {
+    return
+  }
   const normalized = normalizeSegments(segments)
   if (!normalized.length) return
   const tabState = upsertPlaylistState(tabId, normalized)
@@ -3510,6 +3544,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   tabState.anchorRetainedByRefresh = false
   if (typeof tabState.mediaSequence === "number") {
     tabState.anchorMediaSequence = tabState.mediaSequence + chunkIndex
+  }
+  if (typeof scheduleWarmRecoveryPersist === "function") {
+    scheduleWarmRecoveryPersist()
   }
   if (typeof ns.tryResolveSpeculationAtSegment === "function") {
     ns.tryResolveSpeculationAtSegment(tabId, chunkIndex, {

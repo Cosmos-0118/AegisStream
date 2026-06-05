@@ -10,15 +10,19 @@
   }
 
   /**
-   * Continuous speculation score: confidence² × runway factor × congestion multiplier.
-   * High runway can unlock conservative speculative prefetch below the legacy 75% cliff.
+   * Continuous speculation score: confidence^1.5 × runway factor × congestion multiplier.
+   * Using confidence^1.5 instead of confidence² so that moderate confidence (~40-50%)
+   * still yields a viable score. This is critical for quality recovery: when the
+   * player drops to a low quality (360p), speculative adjacent-rung prefetch is the
+   * only mechanism that can pull it back up. Blocking speculation at 94% rate means
+   * the player stays permanently stuck at low quality in auto mode.
    */
   function calculateContinuousSpeculationPriority(sessionMetrics = {}, networkProfile = {}) {
     const confidence = Math.min(1, Math.max(0, Number(sessionMetrics.confidence) || 0))
     const runway = Number(networkProfile.runwaySec ?? networkProfile.currentBufferRunway)
     const targetRunway = Number(constants.SPECULATIVE_TARGET_RUNWAY_SEC) || 30
     const hardFloor = Number(constants.SPECULATIVE_CONTINUOUS_RUNWAY_FLOOR_SEC) || 5
-    const threshold = Number(constants.SPECULATIVE_CONTINUOUS_THRESHOLD) || 0.35
+    const threshold = Number(constants.SPECULATIVE_CONTINUOUS_THRESHOLD) || 0.20
     const aggressiveThreshold =
       Number(constants.SPECULATIVE_CONTINUOUS_AGGRESSIVE_THRESHOLD) || 0.7
 
@@ -44,7 +48,23 @@
     }
 
     const runwayFactor = Math.min(2, runway / targetRunway)
-    const structuralScore = confidence * confidence * runwayFactor
+    // Use confidence^1.5 instead of confidence² to give moderate confidence (~42%)
+    // a viable score: 0.42^1.5 ≈ 0.272 vs 0.42² ≈ 0.176. With runwayFactor=2,
+    // this yields 0.544 vs 0.352 — above the threshold instead of barely at it.
+    let structuralScore = Math.pow(confidence, 1.5) * runwayFactor
+
+    // Quality-recovery boost: when the player is stuck at the lowest available
+    // quality rung, amplify speculation to allow higher-quality rung prefetch.
+    // Without this, the player can get permanently stuck at low quality in auto mode
+    // because speculation is the only mechanism that prefetches adjacent quality rungs.
+    if (networkProfile?.activeRungLabel && networkProfile?.rungLabels?.length > 1) {
+      const rungs = networkProfile.rungLabels
+      const lowestLabel = rungs[0] // sorted by bandwidth, index 0 = lowest
+      if (networkProfile.activeRungLabel === lowestLabel) {
+        // Player is at the lowest quality — boost by 1.8× to help recovery
+        structuralScore *= 1.8
+      }
+    }
 
     let congestionMultiplier = 1
     if (congestionTier === "CONGESTED") {
@@ -89,7 +109,10 @@
       currentBufferRunway: Number(resolved?.bufferRunwaySec),
       activeTierName: congestion?.activeTierName || resolved?.bufferTier || "NOMINAL",
       tier: resolved?.bufferTier || "NOMINAL",
-      speculativeAllowed: congestion?.speculativeAllowed
+      speculativeAllowed: congestion?.speculativeAllowed,
+      // Quality-recovery boost info
+      activeRungLabel: resolved?.activeRungLabel || null,
+      rungLabels: resolved?.playlistMatrix?.rungLabels || resolved?.rungLabels || []
     }
   }
 

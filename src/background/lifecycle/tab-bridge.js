@@ -166,8 +166,18 @@ async function ensureBackgroundEngineReady() {
   if (engineReady) return
   if (engineInFlight) return engineInFlight
   engineInFlight = runBackgroundEngine()
-    .then(() => {
+    .then(async () => {
       engineReady = true
+      if (typeof ns.loadWarmRecoverySnapshot === "function") {
+        try {
+          const snapshot = await ns.loadWarmRecoverySnapshot()
+          if (snapshot) {
+            ns.applyWarmRecoverySnapshot(snapshot)
+          }
+        } catch {
+          // Non-critical – we'll rebuild state from live traffic
+        }
+      }
       if (typeof ns.rebuildCacheRegistryFromDb === "function") {
         void ns.rebuildCacheRegistryFromDb()
       }
@@ -183,21 +193,30 @@ async function wakeBackgroundEngine() {
   return ensureBackgroundEngineReady()
 }
 
+async function refreshTabBridgesAfterUpdate() {
+  try {
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (!tab?.id || tab.id < 0 || !isScriptInjectionAllowedUrl(tab?.url)) continue
+      // Ping-first without force — avoids reinjecting page scripts into tabs that are mid-playback.
+      void ensureTabBridgeReady(tab.id, "extension-update", false)
+    }
+  } catch {
+    // ignore
+  }
+}
+
 /** Extension install/update or explicit reload: engine + active tab only. */
 async function handleExtensionInstall() {
   engineReady = false
   engineInFlight = null
   await ensureBackgroundEngineReady()
+
   await bootstrapActiveTabOnly(true)
-  try {
-    const tabs = await chrome.tabs.query({})
-    for (const tab of tabs) {
-      if (!tab?.id || tab.id < 0 || !isScriptInjectionAllowedUrl(tab?.url)) continue
-      void ensureTabBridgeReady(tab.id, "extension-update", true)
-    }
-  } catch {
-    // ignore
-  }
+  const rebuildMs = Number(constants.WARM_RECOVERY_STATE_REBUILD_MS) || 5_000
+  setTimeout(() => {
+    void refreshTabBridgesAfterUpdate()
+  }, rebuildMs)
 }
 
 /** Browser cold start: engine only; manifest content_scripts own tab injection. */
