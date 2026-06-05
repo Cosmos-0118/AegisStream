@@ -58,7 +58,7 @@ window.addEventListener("message", (event) => {
       }
       ns.variantSwitchTeleportSuppressSec = 20
     }
-    logBridge?.(
+    ns.logBridge?.(
       `Seeking/Kalman state reset (${data.reason || "manifest-reset"})`,
       "DEBUG"
     )

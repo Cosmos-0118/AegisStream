@@ -782,8 +782,14 @@ function AegisXHR() {
      * Always do one bounded IDB lookup before falling through to native fetch.
      * This is a small IPC vs. a multi-MB CDN GET — always worth it.
      */
-    const tryIdbBeltBeforeNative = async (beltLane) => {
+    const tryIdbBeltBeforeNative = async (beltLane, beltTimeoutMs = 250) => {
       try {
+        if (typeof logBridge === "function") {
+          logBridge(
+            `[CACHE-LOOKUP-BELT] request lane=${beltLane} timeoutMs=${beltTimeoutMs} key=${String(cacheLookupUrl || "").slice(-48)}`,
+            "DEBUG"
+          )
+        }
         const beltLookup = await Promise.race([
           requestRuntime("CACHE_LOOKUP_REQUEST", {
             url: cacheLookupUrl,
@@ -791,11 +797,17 @@ function AegisXHR() {
             hasRange: false
           }),
           new Promise((resolve) =>
-            setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), 250)
+            setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), beltTimeoutMs)
           )
         ])
         if (beltLookup?.timeout) {
           ns.reportRuntimeMetric("xhr_idb_belt_timeout", { lane: beltLane })
+          if (typeof logBridge === "function") {
+            logBridge(
+              `[CACHE-LOOKUP-BELT] timeout lane=${beltLane} key=${String(cacheLookupUrl || "").slice(-48)}`,
+              "DEBUG"
+            )
+          }
           return false
         }
         const beltBytes = resolveLookupBytes(beltLookup)
@@ -813,6 +825,13 @@ function AegisXHR() {
           applyXhrCachedPayload(xhr, beltBytes, beltLookup, youtubeChunk, "HIT", "idb-hit")
           return true
         }
+        ns.reportRuntimeMetric("xhr_idb_belt_miss", { lane: beltLane })
+        if (typeof logBridge === "function") {
+          logBridge(
+            `[CACHE-LOOKUP-BELT] miss lane=${beltLane} key=${String(cacheLookupUrl || "").slice(-48)}`,
+            "DEBUG"
+          )
+        }
       } catch (error) {
         ns.reportRuntimeMetric("xhr_idb_belt_fault", {
           lane: beltLane,
@@ -822,8 +841,8 @@ function AegisXHR() {
       return false
     }
 
-    const fallbackToNativeWithBelt = async (beltLane) => {
-      if (await tryIdbBeltBeforeNative(beltLane)) return
+    const fallbackToNativeWithBelt = async (beltLane, beltTimeoutMs = 250) => {
+      if (await tryIdbBeltBeforeNative(beltLane, beltTimeoutMs)) return
       sendAuthorizedNativeNetwork(xhr, body, originalSend)
     }
 
@@ -854,6 +873,13 @@ function AegisXHR() {
           ? 8_000
           : 300
 
+    if (typeof logBridge === "function") {
+      logBridge(
+        `[CACHE-LOOKUP] request timeoutMs=${CACHE_LOOKUP_TIMEOUT_MS} key=${String(cacheLookupUrl || "").slice(-48)} candidate=${cacheCandidate} inflight=${wireInFlight}`,
+        "DEBUG"
+      )
+    }
+
     const lookupPromise = requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,
       method: _method,
@@ -866,7 +892,18 @@ function AegisXHR() {
       if (settled) return
       settled = true
       ns.reportRuntimeMetric("cache_lookup_timeout", { transport: "xhr", timeoutMs: CACHE_LOOKUP_TIMEOUT_MS })
-      sendAuthorizedNativeNetwork(xhr, body, originalSend)
+      if (typeof logBridge === "function") {
+        logBridge(
+          `[CACHE-LOOKUP] timeout key=${String(cacheLookupUrl || "").slice(-48)} — attempting collapse/belt before native`,
+          "DEBUG"
+        )
+      }
+      void (async () => {
+        const delivered = await runCollapseIntercept(false)
+        if (!delivered) {
+          await fallbackToNativeWithBelt("lookup-timeout", 250)
+        }
+      })()
     }, CACHE_LOOKUP_TIMEOUT_MS)
 
     const originalAbort = xhr.abort.bind(xhr)
@@ -891,6 +928,12 @@ function AegisXHR() {
     lookupPromise.then((lookup) => {
       clearTimeout(timeoutId)
       if (settled) return
+      if (typeof logBridge === "function") {
+        logBridge(
+          `[CACHE-LOOKUP] response ok=${lookup?.ok === true} hit=${lookup?.hit === true} key=${String(cacheLookupUrl || "").slice(-48)}`,
+          "DEBUG"
+        )
+      }
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
@@ -899,15 +942,21 @@ function AegisXHR() {
       }
 
       settled = true
-      // Lookup explicitly MISSED here — no point belting IDB again; just collapse or net.
+      // Miss can still race with a just-finished store; do one short belt before native.
       void (async () => {
         const delivered = await runCollapseIntercept(false)
-        if (!delivered) sendAuthorizedNativeNetwork(xhr, body, originalSend)
+        if (!delivered) await fallbackToNativeWithBelt("lookup-miss", 120)
       })()
     }).catch(() => {
       clearTimeout(timeoutId)
       if (settled) return
       settled = true
+      if (typeof logBridge === "function") {
+        logBridge(
+          `[CACHE-LOOKUP] fault key=${String(cacheLookupUrl || "").slice(-48)} — attempting belt`,
+          "DEBUG"
+        )
+      }
       // Lookup IPC rejected (not a clean MISS) — IDB may still have the bytes.
       void fallbackToNativeWithBelt("lookup-ipc-fault")
     })
