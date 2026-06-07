@@ -38,6 +38,7 @@ function buildManifestSequenceIndex(segments) {
 }
 
 const INDEX_QUALITY_EXAMPLE_LIMIT = 5
+const LOOKUP_MAPPING_EXAMPLE_LIMIT = 5
 
 /**
  * Read-only quality report for manifest index uniqueness / ambiguity.
@@ -130,6 +131,11 @@ function formatIndexQualityExamples(examples) {
     .join(", ")
 }
 
+function trimLookupExample(url) {
+  if (typeof url !== "string" || !url) return null
+  return url.length > 72 ? url.slice(-72) : url
+}
+
 function recordManifestIndexQuality(tabId, quality, context = {}) {
   if (!quality || typeof quality !== "object") return quality
   const now = Date.now()
@@ -208,6 +214,106 @@ function getManifestIndexQualitySummary() {
     reports,
     lowCoverageReports,
     ambiguousMappings,
+    worstCoverage,
+    latestReport
+  }
+}
+
+function recordLookupMappingCoverage(tabId, chunkUrl, mappedIndex, context = {}) {
+  const mapped = typeof mappedIndex === "number" && mappedIndex >= 0
+  if (typeof ns.bumpActivity === "function") {
+    ns.bumpActivity("lookupMappingChecks", 1)
+    ns.bumpActivity(mapped ? "lookupMappingResolved" : "lookupMappingUnresolved", 1)
+  }
+
+  if (typeof state === "object" && state !== null && Number.isFinite(tabId)) {
+    if (!state.lookupMappingCoverageByTab) {
+      state.lookupMappingCoverageByTab = new Map()
+    }
+    const previous = state.lookupMappingCoverageByTab.get(tabId) || {
+      checks: 0,
+      resolved: 0,
+      unresolved: 0,
+      unresolvedExamples: [],
+      lastCheckedAt: 0,
+      lastResolvedAt: 0,
+      lastUnresolvedAt: 0,
+      recordedAt: 0,
+      context: {}
+    }
+
+    const next = {
+      ...previous,
+      checks: Number(previous.checks) + 1,
+      resolved: Number(previous.resolved) + (mapped ? 1 : 0),
+      unresolved: Number(previous.unresolved) + (mapped ? 0 : 1),
+      lastCheckedAt: Date.now(),
+      recordedAt: Date.now(),
+      context: { ...previous.context, ...context }
+    }
+    if (mapped) {
+      next.lastResolvedAt = next.lastCheckedAt
+    } else {
+      next.lastUnresolvedAt = next.lastCheckedAt
+      const example = trimLookupExample(chunkUrl)
+      if (example) {
+        const merged = [example, ...(Array.isArray(previous.unresolvedExamples) ? previous.unresolvedExamples : [])]
+        next.unresolvedExamples = [...new Set(merged)].slice(0, LOOKUP_MAPPING_EXAMPLE_LIMIT)
+      }
+    }
+    next.coveragePercent =
+      next.checks > 0 ? Math.round((next.resolved / next.checks) * 1000) / 10 : null
+    state.lookupMappingCoverageByTab.set(tabId, next)
+  }
+
+  return {
+    mapped,
+    mappedIndex: mapped ? mappedIndex : null
+  }
+}
+
+function getLookupMappingCoverageSummary() {
+  const windowTotals =
+    typeof ns.sumWindowCounters === "function" ? ns.sumWindowCounters() : {}
+  const checks = Math.max(
+    windowTotals.lookupMappingChecks || 0,
+    Number(state?.stats?.lookupMappingChecks) || 0
+  )
+  const resolved = Math.max(
+    windowTotals.lookupMappingResolved || 0,
+    Number(state?.stats?.lookupMappingResolved) || 0
+  )
+  const unresolved = Math.max(
+    windowTotals.lookupMappingUnresolved || 0,
+    Number(state?.stats?.lookupMappingUnresolved) || 0
+  )
+  const observedTotal = checks > 0 ? checks : resolved + unresolved
+  const coveragePercent =
+    observedTotal > 0 ? Math.round((resolved / observedTotal) * 1000) / 10 : null
+
+  let worstCoverage = null
+  let latestReport = null
+  const byTab = state?.lookupMappingCoverageByTab
+  if (byTab instanceof Map) {
+    for (const [tabId, entry] of byTab.entries()) {
+      if (!entry) continue
+      if (
+        !worstCoverage ||
+        Number(entry.coveragePercent) < Number(worstCoverage.coveragePercent)
+      ) {
+        worstCoverage = { tabId, ...entry }
+      }
+      if (!latestReport || Number(entry.recordedAt) > Number(latestReport.recordedAt)) {
+        latestReport = { tabId, ...entry }
+      }
+    }
+  }
+
+  return {
+    checks,
+    resolved,
+    unresolved,
+    coveragePercent,
     worstCoverage,
     latestReport
   }
@@ -540,6 +646,8 @@ ns.buildManifestSequenceIndex = buildManifestSequenceIndex
 ns.analyzeManifestIndexQuality = analyzeManifestIndexQuality
 ns.recordManifestIndexQuality = recordManifestIndexQuality
 ns.getManifestIndexQualitySummary = getManifestIndexQualitySummary
+ns.recordLookupMappingCoverage = recordLookupMappingCoverage
+ns.getLookupMappingCoverageSummary = getLookupMappingCoverageSummary
 ns.resolveSegmentIndexInManifest = resolveSegmentIndexInManifest
 ns.getSequentialPrefetchTargets = getSequentialPrefetchTargets
 ns.getPageUrlFingerprint = getPageUrlFingerprint

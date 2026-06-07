@@ -807,7 +807,10 @@ function AegisXHR() {
           )
         ])
         if (beltLookup?.timeout) {
-          ns.reportRuntimeMetric("xhr_idb_belt_timeout", { lane: beltLane })
+          ns.reportRuntimeMetric("xhr_idb_belt_timeout", {
+            lane: beltLane,
+            url: cacheLookupUrl
+          })
           if (typeof logBridge === "function") {
             logBridge(
               `[CACHE-LOOKUP-BELT] timeout lane=${beltLane} key=${String(cacheLookupUrl || "").slice(-48)}`,
@@ -831,7 +834,10 @@ function AegisXHR() {
           applyXhrCachedPayload(xhr, beltBytes, beltLookup, youtubeChunk, "HIT", "idb-hit", cacheLookupUrl)
           return true
         }
-        ns.reportRuntimeMetric("xhr_idb_belt_miss", { lane: beltLane })
+        ns.reportRuntimeMetric("xhr_idb_belt_miss", {
+          lane: beltLane,
+          url: cacheLookupUrl
+        })
         if (typeof logBridge === "function") {
           logBridge(
             `[CACHE-LOOKUP-BELT] miss lane=${beltLane} key=${String(cacheLookupUrl || "").slice(-48)}`,

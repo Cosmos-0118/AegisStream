@@ -392,6 +392,30 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       ns.recordStreamMetric("hls", "lookups", 1)
     }
 
+    let lookupManifestIndex = null
+    if (
+      !isUmpLookup &&
+      Number.isFinite(tabId) &&
+      tabState?.segments?.length &&
+      tabState?.signatureToIndex &&
+      typeof ns.resolveSegmentIndexInManifest === "function"
+    ) {
+      lookupManifestIndex = ns.resolveSegmentIndexInManifest(lookupUrl, tabState)
+      if (typeof ns.recordLookupMappingCoverage === "function") {
+        ns.recordLookupMappingCoverage(tabId, lookupUrl, lookupManifestIndex, {
+          source: "cache-lookup"
+        })
+      } else {
+        bumpActivity("lookupMappingChecks", 1)
+        bumpActivity(
+          typeof lookupManifestIndex === "number"
+            ? "lookupMappingResolved"
+            : "lookupMappingUnresolved",
+          1
+        )
+      }
+    }
+
     const isFirstSeenUmpKey = isUmpLookup && !state.umpLookupSeenAt.has(lookupUrl)
     const stillInWarmupWindow =
       isUmpLookup &&
@@ -446,7 +470,10 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
       if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
-        const index = ns.resolveSegmentIndexInManifest(lookupUrl, tabState)
+        const index =
+          typeof lookupManifestIndex === "number"
+            ? lookupManifestIndex
+            : ns.resolveSegmentIndexInManifest(lookupUrl, tabState)
         if (typeof index === "number") {
           ns.recordTimelineHeat(tabId, index, 0.5)
         }

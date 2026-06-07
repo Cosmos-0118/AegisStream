@@ -115,6 +115,9 @@ function resetActivityMetrics() {
   if (state?.manifestIndexQualityByTab instanceof Map) {
     state.manifestIndexQualityByTab.clear()
   }
+  if (state?.lookupMappingCoverageByTab instanceof Map) {
+    state.lookupMappingCoverageByTab.clear()
+  }
 }
 
 function sumWindowCounters() {
@@ -195,6 +198,10 @@ async function buildDisplayStats() {
     manifestIndexQuality:
       typeof ns.getManifestIndexQualitySummary === "function"
         ? ns.getManifestIndexQualitySummary()
+        : null,
+    lookupMappingCoverage:
+      typeof ns.getLookupMappingCoverageSummary === "function"
+        ? ns.getLookupMappingCoverageSummary()
         : null,
     hitRatePercent,
     chunksStoredInWindow,

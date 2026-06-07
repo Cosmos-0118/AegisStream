@@ -8,7 +8,27 @@ const path = require("path")
 const vm = require("vm")
 
 const mapperPath = path.join(__dirname, "../../../src/background/media/manifest-mapper.js")
-const sandbox = { self: {}, URL: global.URL, URLSearchParams: global.URLSearchParams }
+const lookupStats = {
+  lookupMappingChecks: 0,
+  lookupMappingResolved: 0,
+  lookupMappingUnresolved: 0
+}
+const sandbox = {
+  self: {
+    AegisBackground: {
+      state: {
+        stats: { ...lookupStats }
+      },
+      bumpActivity(metric, amount = 1) {
+        if (!Number.isFinite(amount)) return
+        if (typeof this.state.stats[metric] !== "number") this.state.stats[metric] = 0
+        this.state.stats[metric] += amount
+      }
+    }
+  },
+  URL: global.URL,
+  URLSearchParams: global.URLSearchParams
+}
 vm.runInContext(fs.readFileSync(mapperPath, "utf8"), vm.createContext(sandbox))
 const api = sandbox.self.AegisBackground
 
@@ -189,6 +209,35 @@ const mismatchSegments = [
 ]
 const mismatchQuality = api.analyzeManifestIndexQuality(mismatchSegments)
 assert(mismatchQuality.mappingCoveragePercent === 100, "unique manifest paths stay fully mappable")
+
+const lookupTabState = { segments, manifestSignatures: signatures, signatureToIndex }
+const mappedLookupIndex = api.resolveSegmentIndexInManifest(
+  "https://cdn.example.com/stream/seg-ghi?token=override",
+  lookupTabState
+)
+api.recordLookupMappingCoverage(
+  99,
+  "https://cdn.example.com/stream/seg-ghi?token=override",
+  mappedLookupIndex,
+  { source: "unit-test" }
+)
+api.recordLookupMappingCoverage(
+  99,
+  "https://cdn.example.com/stream/segment-does-not-exist?token=override",
+  null,
+  { source: "unit-test" }
+)
+const lookupSummary = api.getLookupMappingCoverageSummary()
+assert(lookupSummary.checks === 2, "lookup mapping checks should aggregate")
+assert(lookupSummary.resolved === 1, "lookup mapping resolved count should aggregate")
+assert(lookupSummary.unresolved === 1, "lookup mapping unresolved count should aggregate")
+assert(lookupSummary.coveragePercent === 50, "lookup mapping coverage should be 50%")
+assert(lookupSummary.latestReport?.tabId === 99, "latest lookup mapping report should keep tab id")
+assert(
+  Array.isArray(lookupSummary.latestReport?.unresolvedExamples) &&
+    lookupSummary.latestReport.unresolvedExamples.length === 1,
+  "unresolved lookup examples should be recorded"
+)
 
 const geometryA = api.buildDurationGeometryHash([4.01, 4.02, 3.98, 4], 4)
 const geometryB = api.buildDurationGeometryHash([4.01, 4.02, 3.98, 4], 4)

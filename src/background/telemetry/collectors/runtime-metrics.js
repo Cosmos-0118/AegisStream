@@ -370,6 +370,26 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "xhr_idb_belt_miss" || metricType === "xhr_idb_belt_timeout") {
+    const lane = String(message.lane || "unknown")
+    const lookupUrl = typeof message.url === "string" ? message.url : null
+    if (metricType === "xhr_idb_belt_timeout") {
+      bumpActivity("beltLookupTimeouts", 1)
+    } else {
+      bumpActivity("beltLookupMisses", 1)
+    }
+    // `lookup-miss` already classified by background cache miss path.
+    if (lookupUrl && lane !== "lookup-miss" && typeof ns.noteRecentlyEvictedMiss === "function") {
+      const classification = ns.noteRecentlyEvictedMiss(lookupUrl)
+      if (classification?.recentlyEvicted) {
+        bumpActivity("beltLookupRecentlyEvictedMisses", 1)
+      } else {
+        bumpActivity("beltLookupMissNeverStored", 1)
+      }
+    }
+    return
+  }
+
   if (metricType === "cache_lookup_skipped") {
     if (typeof ns.bumpActivity === "function") {
       ns.bumpActivity("cacheLookupSkipped", 1)

@@ -238,6 +238,15 @@ function getEvictThenMissSummary() {
     Number(state.stats.cacheMissNeverStored) || 0
   )
   const classifiedMisses = recentlyEvictedMisses + cacheMissNeverStored
+  const beltLookupRecentlyEvictedMisses = Math.max(
+    windowTotals.beltLookupRecentlyEvictedMisses || 0,
+    Number(state.stats.beltLookupRecentlyEvictedMisses) || 0
+  )
+  const beltLookupMissNeverStored = Math.max(
+    windowTotals.beltLookupMissNeverStored || 0,
+    Number(state.stats.beltLookupMissNeverStored) || 0
+  )
+  const beltClassified = beltLookupRecentlyEvictedMisses + beltLookupMissNeverStored
   return {
     recentlyEvictedMisses,
     cacheMissNeverStored,
@@ -265,6 +274,20 @@ function getEvictThenMissSummary() {
       windowTotals.cacheChunksEvicted || 0,
       Number(state.stats.cacheChunksEvicted) || 0
     ),
+    beltLookupMisses: Math.max(
+      windowTotals.beltLookupMisses || 0,
+      Number(state.stats.beltLookupMisses) || 0
+    ),
+    beltLookupTimeouts: Math.max(
+      windowTotals.beltLookupTimeouts || 0,
+      Number(state.stats.beltLookupTimeouts) || 0
+    ),
+    beltLookupRecentlyEvictedMisses,
+    beltLookupMissNeverStored,
+    beltLookupRecentlyEvictedMissRatePercent:
+      beltClassified > 0
+        ? Math.round((beltLookupRecentlyEvictedMisses / beltClassified) * 100)
+        : 0,
     recentlyEvictedMissRatePercent:
       classifiedMisses > 0
         ? Math.round((recentlyEvictedMisses / classifiedMisses) * 100)

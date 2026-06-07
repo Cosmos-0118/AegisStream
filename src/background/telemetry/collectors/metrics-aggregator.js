@@ -181,6 +181,13 @@
     "cacheMissNeverStored",
     "evictedMissUnmapped",
     "cacheChunksEvicted",
+    "beltLookupMisses",
+    "beltLookupTimeouts",
+    "beltLookupRecentlyEvictedMisses",
+    "beltLookupMissNeverStored",
+    "lookupMappingChecks",
+    "lookupMappingResolved",
+    "lookupMappingUnresolved",
     "cacheLookups",
     "cacheHits",
     "cacheMisses"
@@ -201,6 +208,20 @@
       classifiedMisses > 0
         ? Math.round((deltas.recentlyEvictedMisses / classifiedMisses) * 100)
         : null
+    const lookupMappingChecks =
+      deltas.lookupMappingChecks > 0
+        ? deltas.lookupMappingChecks
+        : deltas.lookupMappingResolved + deltas.lookupMappingUnresolved
+    deltas.lookupMappingCoveragePercent =
+      lookupMappingChecks > 0
+        ? Math.round((deltas.lookupMappingResolved / lookupMappingChecks) * 1000) / 10
+        : null
+    const beltClassified = deltas.beltLookupRecentlyEvictedMisses + deltas.beltLookupMissNeverStored
+    deltas.beltLookupClassified = beltClassified
+    deltas.beltLookupRecentlyEvictedMissRatePercent =
+      beltClassified > 0
+        ? Math.round((deltas.beltLookupRecentlyEvictedMisses / beltClassified) * 100)
+        : null
     const hitDenominator = deltas.cacheHits + deltas.cacheMisses
     deltas.cacheHitRatePercent =
       hitDenominator > 0 ? Math.round((deltas.cacheHits / hitDenominator) * 100) : null
@@ -217,6 +238,12 @@
       cache.recentlyEvictedMissRatePercent != null
         ? `${cache.recentlyEvictedMissRatePercent}%`
         : "n/a"
+    const lookupCoverage =
+      cache.lookupMappingCoveragePercent != null ? `${cache.lookupMappingCoveragePercent}%` : "n/a"
+    const beltEvictRate =
+      cache.beltLookupRecentlyEvictedMissRatePercent != null
+        ? `${cache.beltLookupRecentlyEvictedMissRatePercent}%`
+        : "n/a"
     const cacheHitRate =
       cache.cacheHitRatePercent != null ? `${cache.cacheHitRatePercent}%` : "n/a"
     return [
@@ -227,7 +254,9 @@
       `kalmanResets=${rollup.z_axis_kalman_resets}`,
       `lookups=${cache.cacheLookups || 0}(hits=${cache.cacheHits || 0},miss=${cache.cacheMisses || 0},hitRate=${cacheHitRate})`,
       `cacheDedup=${cache.storeDedupSkipped || 0}(crc=${cache.storeDedupInvariantCrcSkipped || 0},url=${cache.storeDedupUrlWindowSkipped || 0})`,
+      `lookupMap=${cache.lookupMappingChecks || 0}(ok=${cache.lookupMappingResolved || 0},miss=${cache.lookupMappingUnresolved || 0},coverage=${lookupCoverage})`,
       `evictMiss=${cache.recentlyEvictedMisses || 0}(${evictMissRate})`,
+      `beltMiss=${cache.beltLookupMisses || 0}(timeout=${cache.beltLookupTimeouts || 0},evict=${cache.beltLookupRecentlyEvictedMisses || 0}/${cache.beltLookupClassified || 0},rate=${beltEvictRate})`,
       `evictMissUnmapped=${cache.evictedMissUnmapped || 0}`,
       `cacheEvicted=${cache.cacheChunksEvicted || 0}`
     ].join(", ")

@@ -1,6 +1,6 @@
 # Cache efficiency investigation — swiftstream / obfuscated HLS hosts
 
-This document captures the cache-efficiency investigation on obfuscated streaming hosts (primarily **swiftstream.top** / animetsu-style players) as of **2026-06-05**. It is written for developers who need context on what was measured, what was ruled out, what telemetry exists, and what remains before changing eviction, retention, or prefetch behavior.
+This document captures the cache-efficiency investigation on obfuscated streaming hosts (primarily **swiftstream.top** / animetsu-style players) as of **2026-06-07**. It is written for developers who need context on what was measured, what was ruled out, what telemetry exists, and what remains before changing eviction, retention, or prefetch behavior.
 
 ---
 
@@ -64,7 +64,7 @@ Observed in logs:
 
 **Priority elevation:** duplicate-ingestion suppression is now ranked **above** lookup-path optimization for swiftstream. Dedup is not a minor optimization; it is one of the highest-impact changes measured so far.
 
-### H5 — Belt lookup races: **EXPECTED BEHAVIOR**
+### H5 — Belt lookup races: **EXPECTED BEHAVIOR + NOW CLASSIFIED**
 
 Pattern in logs:
 
@@ -75,13 +75,22 @@ Pattern in logs:
 
 This is a cold-path race (lookup before write lands), not eviction damage. Belt misses should not be interpreted as retention failure.
 
+As of **2026-06-07**, XHR belt misses/timeouts now emit runtime metrics with URL context and are classified through `noteRecentlyEvictedMiss()` (except `lane=lookup-miss`, which is skipped to avoid double-counting misses already classified by background `handleCacheLookup`).
+
 ### H1 — Retention damage: **NOT YET MEASURABLE**
 
 `evictMiss` telemetry is implemented but every captured rollup window had `cacheEvicted=0`. Decision deferred until a session with hard evictions + rollup.
 
-### H3 — Lookup mapping coverage: **NOT YET INSTRUMENTED**
+### H3 — Lookup mapping coverage: **INSTRUMENTED (NEW)**
 
-Deferred. Playlist `coverage=100%` does not prove chunk URL resolution always succeeds at lookup time. Future metric: `lookupMappingCoveragePercent`.
+Runtime lookup mapping coverage is now tracked at `handleCacheLookup` time:
+
+- `lookupMappingChecks`
+- `lookupMappingResolved`
+- `lookupMappingUnresolved`
+- derived `lookupMappingCoveragePercent` (reported in the 60s rollup as `lookupMap=...`)
+
+This closes the original H3 measurement gap: playlist `coverage=100%` can now be compared against actual chunk lookup mapping coverage during playback.
 
 ---
 
@@ -117,7 +126,7 @@ MISS recently_evicted key=... evicted=Ns ago size=... distance=... manifestMappe
 - Eviction: `src/background/cache/db.js` → `runEvictionPass()` → `recordEvictedChunks()`
 - Lookup miss: `src/background/telemetry/collectors/activity-metrics.js` → `recordCacheLookupMiss()` → `noteRecentlyEvictedMiss()`
 
-**Limitation:** Only fires on **background** `handleCacheLookup` misses (`message-router.js`). Page-side `[CACHE-LOOKUP-BELT]` timeouts are **not** counted in `evictMiss`.
+**Update (2026-06-07):** XHR page-side belt misses/timeouts now classify through the same eviction journal path via runtime metrics (`runtime-metrics.js`), with a guard to skip `lane=lookup-miss` and avoid duplicate classification when background miss accounting already ran.
 
 ### 2. Write dedup (split counters)
 
@@ -145,14 +154,30 @@ Logs per upsert:
 Playlist Index Quality tab=<id> host=<host> segments=N uniqueSignatures=N duplicateSignatures=0 duplicateRate=0% ambiguousMappings=0 coverage=100% examples=none
 ```
 
-### 4. 60-second metrics rollup
+### 4. Lookup mapping coverage (runtime)
+
+**Files:** `src/background/messaging/message-router.js`, `src/background/media/manifest-mapper.js`
+
+On each eligible non-UMP background cache lookup, we now record whether chunk URL → manifest index resolution succeeded at lookup time.
+
+**Counters:**
+
+| Counter | Meaning |
+|---------|---------|
+| `lookupMappingChecks` | Eligible lookup mapping checks |
+| `lookupMappingResolved` | Checks where URL resolved to manifest index |
+| `lookupMappingUnresolved` | Checks where URL did not resolve |
+
+**Summary API:** `getLookupMappingCoverageSummary()` now exposes aggregate coverage and per-tab worst/latest coverage snapshots.
+
+### 5. 60-second metrics rollup
 
 **File:** `src/background/telemetry/collectors/metrics-aggregator.js`
 
 Every 60s, emits:
 
 ```
-AegisStream 60s metrics rollup — scrub=..., spec=..., lookups=N(hits=H,miss=M,hitRate=P%), cacheDedup=N(crc=X,url=Y), evictMiss=N(P%), evictMissUnmapped=N, cacheEvicted=N
+AegisStream 60s metrics rollup — scrub=..., spec=..., lookups=N(hits=H,miss=M,hitRate=P%), cacheDedup=N(crc=X,url=Y), lookupMap=C(ok=R,miss=U,coverage=P%), evictMiss=N(P%), beltMiss=M(timeout=T,evict=E/C,rate=Q%), evictMissUnmapped=N, cacheEvicted=N
 ```
 
 **Decision fields:**
@@ -161,8 +186,10 @@ AegisStream 60s metrics rollup — scrub=..., spec=..., lookups=N(hits=H,miss=M,
 |-------|----------------|
 | `hitRate` | Background lookup effectiveness in the 60s delta |
 | `cacheDedup` | Duplicate write suppression volume |
+| `lookupMap` | Runtime chunk URL → manifest index resolution coverage |
 | `evictMiss` | Misses on chunks evicted within journal TTL |
 | `evictMiss` percentage | `recentlyEvictedMisses / (recentlyEvictedMisses + cacheMissNeverStored)` |
+| `beltMiss` | XHR belt misses/timeouts plus eviction classification split |
 | `cacheEvicted` | Must be **> 0** for `evictMiss` to be meaningful |
 
 **Interpretation guide:**
@@ -327,11 +354,12 @@ The goal is to capture `cacheEvicted > 0` and `evictMiss = ?` in the same rollup
 |------|--------|--------|
 | Mapper signatures (H2) | Ruled out for swiftstream | No change |
 | Write dedup / duplicate ingestion (H4) | Shipped, high impact (~42% writeback + crc dedup) | Monitor; do not regress |
+| Lookup mapping coverage (H3) | Instrumented (`lookupMap`) | Monitor under pressure before architecture changes |
 | Lookup path optimization | Low priority | Defer until pressure session completes |
 | Evict-then-miss (H1) | Instrumented, inconclusive | Collect session with `cacheEvicted > 0` |
 | Eviction algorithm / cache budget | Unknown impact | **Do not change yet** |
 | Prefetch / retention tuning | Unknown impact | **Do not change yet** |
-| Belt miss → evictMiss | Under-counting possible | Future: expose evict classification on belt misses |
+| Belt miss → evict classification | Instrumented for XHR belt miss/timeout | Compare against pressure-session `evictMiss` windows |
 
 ---
 
@@ -379,9 +407,11 @@ Until the pressure-session rollup is captured:
 | Eviction journal + dedup map | `src/background/cache/eviction-journal.js` |
 | Cache writes, eviction pass, dedup gates | `src/background/cache/db.js` |
 | Manifest signatures + index quality | `src/background/media/manifest-mapper.js` |
+| Runtime lookup mapping coverage | `src/background/messaging/message-router.js`, `src/background/media/manifest-mapper.js` |
 | Index quality at playlist upsert | `src/background/prefetch/arbitration/orchestrator.js` |
 | 60s rollup formatting | `src/background/telemetry/collectors/metrics-aggregator.js` |
 | Lookup miss → evict journal | `src/background/telemetry/collectors/activity-metrics.js` |
+| Belt miss runtime metric classification | `src/background/telemetry/collectors/runtime-metrics.js` |
 | Background cache lookup routing | `src/background/messaging/message-router.js` |
 | Invariant cache keys | `src/shared/media-cache-key.js` |
 | Page belt lookups | `src/page/interceptors/xhr.js`, `src/content/relay.js` |
@@ -393,13 +423,14 @@ Until the pressure-session rollup is captured:
 | Test file | Covers |
 |-----------|--------|
 | `test/background/cache/eviction-journal.test.js` | Eviction journal + recently-evicted miss classification |
-| `test/background/media/manifest-mapper.test.js` | Index quality analysis |
-| `test/background/telemetry/collectors/metrics-aggregator.test.js` | Rollup line includes `cacheDedup` / `evictMiss` |
+| `test/background/media/manifest-mapper.test.js` | Index quality + runtime lookup mapping coverage summary |
+| `test/background/telemetry/collectors/metrics-aggregator.test.js` | Rollup includes `cacheDedup` / `evictMiss` / `lookupMap` / `beltMiss` deltas |
+| `test/background/telemetry/collectors/runtime-metrics-belt.test.js` | XHR belt miss/timeout eviction classification path |
 
 Run:
 
 ```bash
-npm test -- test/background/cache/eviction-journal.test.js test/background/media/manifest-mapper.test.js test/background/telemetry/collectors/metrics-aggregator.test.js
+npm test -- test/background/cache/eviction-journal.test.js test/background/media/manifest-mapper.test.js test/background/telemetry/collectors/metrics-aggregator.test.js test/background/telemetry/collectors/runtime-metrics-belt.test.js
 ```
 
 ---
@@ -408,8 +439,8 @@ npm test -- test/background/cache/eviction-journal.test.js test/background/media
 
 1. **Pressure session rollup** — `cacheEvicted > 0` + `evictMiss = ?` in the same 60s window (blocks all retention decisions).
 2. **Writeback suppression correlation** — do the ~42% suppressed writes map to wire collapse, prefetch overlap, or XHR rereads?
-3. **`lookupMappingCoveragePercent`** — measure chunk URL → cache key resolution failures even when playlist `coverage=100%` (H3).
-4. **Belt miss evict classification** — extend `noteRecentlyEvictedMiss` to page-side `[CACHE-LOOKUP-BELT]` timeouts if background path under-counts retention damage.
+3. **Pressure-session `lookupMap` validation** — capture whether runtime lookup mapping coverage degrades under aggressive scrub/rotation.
+4. **Fetch-path belt parity** — if needed, extend equivalent belt classification for fetch-side fallback paths (XHR is instrumented now).
 5. **Retention / budget tuning** — only after high `evictMiss` under `cacheEvicted > 0` confirms eviction damage (interpretation matrix).
 
 ---
@@ -430,3 +461,4 @@ These shipped alongside telemetry and are orthogonal to the retention question b
 |------|-------|
 | 2026-06-05 | Initial document: H2 falsified, dedup + evictMiss telemetry shipped, four log sessions analyzed, first 60s rollup captured with `cacheEvicted=0` |
 | 2026-06-05 | Post-rollup analysis: retention pressure ≠ retention damage; duplicate ingestion elevated to 6/10; Mode A/B framework; interpretation matrix; pressure session protocol; writeback suppression ~42% noted |
+| 2026-06-07 | H3 instrumented: runtime `lookupMap` coverage counters + summary + rollup field. Belt under-counting closed for XHR: belt miss/timeout now classified against eviction journal (with `lookup-miss` dedupe guard) and exposed in rollup via `beltMiss`. |

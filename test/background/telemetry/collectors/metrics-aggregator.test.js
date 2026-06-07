@@ -99,6 +99,13 @@ ns.state.stats = {
   cacheMissNeverStored: 8,
   evictedMissUnmapped: 1,
   cacheChunksEvicted: 10,
+   beltLookupMisses: 4,
+   beltLookupTimeouts: 1,
+   beltLookupRecentlyEvictedMisses: 1,
+   beltLookupMissNeverStored: 2,
+   lookupMappingChecks: 12,
+   lookupMappingResolved: 9,
+   lookupMappingUnresolved: 3,
   cacheLookups: 77,
   cacheHits: 50,
   cacheMisses: 27
@@ -110,6 +117,17 @@ assert(cacheRollup.cache?.storeDedupUrlWindowSkipped === 2, "cache url-window de
 assert(cacheRollup.cache?.recentlyEvictedMisses === 2, "recently evicted miss delta")
 assert(cacheRollup.cache?.recentlyEvictedMissRatePercent === 20, "evict miss rate from deltas")
 assert(cacheRollup.cache?.evictedMissUnmapped === 1, "evicted miss unmapped delta")
+assert(cacheRollup.cache?.beltLookupMisses === 4, "belt misses delta")
+assert(cacheRollup.cache?.beltLookupTimeouts === 1, "belt timeout delta")
+assert(cacheRollup.cache?.beltLookupClassified === 3, "belt classified delta")
+assert(
+  cacheRollup.cache?.beltLookupRecentlyEvictedMissRatePercent === 33,
+  "belt evict miss rate from deltas"
+)
+assert(cacheRollup.cache?.lookupMappingChecks === 12, "lookup mapping checks delta")
+assert(cacheRollup.cache?.lookupMappingResolved === 9, "lookup mapping resolved delta")
+assert(cacheRollup.cache?.lookupMappingUnresolved === 3, "lookup mapping unresolved delta")
+assert(cacheRollup.cache?.lookupMappingCoveragePercent === 75, "lookup mapping coverage delta")
 assert(cacheRollup.cache?.cacheHits === 50, "cache hits delta")
 assert(cacheRollup.cache?.cacheHitRatePercent === 65, "cache hit rate from interval deltas")
 

@@ -369,13 +369,20 @@ ns.constants = {
       cacheMissNeverStored: 0,
       evictedMissUnmapped: 0,
       evictedWithoutManifestMap: 0,
+      beltLookupMisses: 0,
+      beltLookupTimeouts: 0,
+      beltLookupRecentlyEvictedMisses: 0,
+      beltLookupMissNeverStored: 0,
       storeDedupSkipped: 0,
       storeDedupInvariantCrcSkipped: 0,
       storeDedupUrlWindowSkipped: 0,
       cacheChunksEvicted: 0,
       manifestIndexQualityReports: 0,
       manifestIndexLowCoverageReports: 0,
-      manifestIndexAmbiguousMappings: 0
+      manifestIndexAmbiguousMappings: 0,
+      lookupMappingChecks: 0,
+      lookupMappingResolved: 0,
+      lookupMappingUnresolved: 0
     }
   }
 }

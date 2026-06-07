@@ -39,6 +39,7 @@ const {
   resolveStoreDedupKey,
   shouldSkipDuplicateStore,
   markStoreDedupKey,
+  getEvictThenMissSummary,
   resetEvictionJournal,
   resolvePlaybackDistanceForUrl
 } = ns
@@ -111,5 +112,17 @@ assert(typeof dedupKey === "string" && dedupKey.includes("|"), `dedup key should
 assert(!shouldSkipDuplicateStore(dedupKey), "first store attempt should not dedup")
 markStoreDedupKey(dedupKey)
 assert(shouldSkipDuplicateStore(dedupKey), "second store attempt should dedup")
+
+state.stats.beltLookupMisses = 3
+state.stats.beltLookupTimeouts = 1
+state.stats.beltLookupRecentlyEvictedMisses = 1
+state.stats.beltLookupMissNeverStored = 2
+const summary = getEvictThenMissSummary()
+assert(summary.beltLookupMisses === 3, "belt miss total should be exposed")
+assert(summary.beltLookupTimeouts === 1, "belt timeout total should be exposed")
+assert(
+  summary.beltLookupRecentlyEvictedMissRatePercent === 33,
+  "belt recently-evicted miss rate should be computed"
+)
 
 console.log("eviction-journal.test.js: all assertions passed")
