@@ -347,24 +347,35 @@
     options = {}
   ) {
     const timeoutMs = Number(options.timeoutMs) || resolveCollapseWaitTimeoutMs()
+    const pollMs = Math.max(40, Number(options.pollMs) || 60)
+    const started = Number(options.started) || Date.now()
+    const wireSliceMs = Math.min(400, pollMs * 4)
 
-    const localWire = await joinActivePageWire(pageUrl, cacheKey, { timeoutMs })
-    if (localWire?.ok && localWire.bytes) {
-      return localWire
-    }
+    while (Date.now() - started < timeoutMs) {
+      const localWire = await joinActivePageWire(pageUrl, cacheKey, {
+        timeoutMs: Math.min(wireSliceMs, timeoutMs - (Date.now() - started))
+      })
+      if (localWire?.ok && localWire.bytes) {
+        return localWire
+      }
 
-    if (typeof lookupCached === "function") {
-      const cached = await lookupCached()
-      if (cached?.ok && cached.bytes) {
-        return {
-          ok: true,
-          bytes: cached.bytes,
-          contentType: cached.contentType,
-          status: cached.status,
-          fromCache: true,
-          via: cached.fromCache ? "cache" : "background-wire"
+      if (typeof lookupCached === "function") {
+        const cached = await lookupCached()
+        if (cached?.ok && cached.bytes) {
+          return {
+            ok: true,
+            bytes: cached.bytes,
+            contentType: cached.contentType,
+            status: cached.status,
+            fromCache: true,
+            via: cached.fromCache ? "cache" : "background-wire"
+          }
         }
       }
+
+      const remaining = timeoutMs - (Date.now() - started)
+      if (remaining <= 0) break
+      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)))
     }
 
     return null

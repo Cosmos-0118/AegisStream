@@ -169,6 +169,12 @@ ns.constants = {
   WARM_RECOVERY_RUNG_CONFIRM_SAMPLES: 3,
   /** After SW restart, defer prefetch decisions for this window while rebuilding state. */
   WARM_RECOVERY_DEFER_PREFETCH_MS: 3_000,
+  /** Signed HLS URLs often expire after this much idle time — recapture playlist before serving. */
+  PLAYLIST_IDLE_STALE_MS: 120_000,
+  /** Debounce repeated playlist recovery attempts for the same tab. */
+  PLAYLIST_RECOVERY_DEBOUNCE_MS: 5_000,
+  /** Recapture playlist after tab was hidden this long (signed URLs may have rotated). */
+  VISIBILITY_PLAYLIST_REFRESH_MS: 30_000,
   /** After SW restart, run cache-rebuild and state-recovery only; no tab injection. */
   WARM_RECOVERY_STATE_REBUILD_MS: 5_000,
   /** Persist critical tab state snapshot to chrome.storage.session at this interval. */

@@ -137,12 +137,18 @@ function setupVisibilityLifecycleGuards() {
 
   const applyVisibilityState = (hidden) => {
     ns.pageVisibilitySleep = hidden === true
+    const playing = isAnyVideoPlaying()
     if (hidden) {
-      notifyRuntime("TAB_VISIBILITY_PAUSE", { hidden: true })
-      logBridge?.("Tab hidden — pausing new prefetch (in-flight retained)", "DEBUG")
+      notifyRuntime("TAB_VISIBILITY_PAUSE", { hidden: true, playing })
+      logBridge?.(
+        playing
+          ? "Tab hidden — playback continues; prefetch stays warm"
+          : "Tab hidden — pausing new prefetch (in-flight retained)",
+        "DEBUG"
+      )
       return
     }
-    notifyRuntime("TAB_VISIBILITY_RESUME", { hidden: false })
+    notifyRuntime("TAB_VISIBILITY_RESUME", { hidden: false, playing })
     logBridge?.("Tab visible — re-warming buffer pipelines", "DEBUG")
     if (typeof ns.requestBufferHealthTick === "function") {
       ns.requestBufferHealthTick("visibility-resume")

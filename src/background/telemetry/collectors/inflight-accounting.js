@@ -26,7 +26,9 @@
     if (/quality-switch|variant-switch|switch-warm/.test(source)) {
       return "prefetch"
     }
-    if (/scrub|snap|velocity|schedule|bridge|chunk|maintenance/.test(source)) {
+    if (/scrub|snap|velocity|schedule|bridge|chunk|maintenance|captured-playlist|playlist|manifest|delegate|visibility/.test(
+      source
+    )) {
       return "prefetch"
     }
     return "other"

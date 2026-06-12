@@ -946,8 +946,21 @@ function AegisXHR() {
       }
 
       settled = true
-      // Miss can still race with a just-finished store; do one short belt before native.
+      // Miss can still race with a just-finished store; collapse before belt/native.
       void (async () => {
+        const rotationGrace = isPlaylistRotationGraceActive()
+        if (
+          typeof ns.demandStartQueuedPrefetch === "function" &&
+          ns.demandStartQueuedPrefetch(_url, cacheLookupUrl)
+        ) {
+          if (await runCollapseIntercept(true)) return
+        }
+        if (rotationGrace || wireInFlight) {
+          if (typeof ns.awaitInflightChunkStoreByUrl === "function") {
+            await ns.awaitInflightChunkStoreByUrl(cacheLookupUrl)
+          }
+          if (await runCollapseIntercept(true)) return
+        }
         const delivered = await runCollapseIntercept(false)
         if (!delivered) await fallbackToNativeWithBelt("lookup-miss")
       })()

@@ -759,6 +759,7 @@ function installRelay(activeGeneration) {
       relay({
         type: "AegisStream:TabVisibility",
         hidden: data.type === "TAB_VISIBILITY_PAUSE" || data.hidden === true,
+        playing: data.playing === true,
         pageUrl: location.href
       })
       return

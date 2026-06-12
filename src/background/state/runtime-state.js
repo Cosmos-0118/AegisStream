@@ -99,7 +99,9 @@ function buildWarmRecoverySnapshot() {
       anchorIndex: typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null,
       hasAnchor: Boolean(tabState.hasAnchor),
       rungLabels: tabState.rungLabels ? [...tabState.rungLabels] : [],
-      lastMediaPlaylistUrl: tabState.lastMediaPlaylistUrl || null,
+      mediaPlaylistUrl: tabState.mediaPlaylistUrl || null,
+      lastMediaPlaylistUrl:
+        tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || null,
       lastSegmentCount: tabState.segments?.length || 0,
       updatedAt: tabState.updatedAt || Date.now()
     }
@@ -156,6 +158,11 @@ function applyWarmRecoverySnapshot(snapshot) {
     // Keep fully established tab state; merge into partial state created before recovery ran.
     if (existing?.segments?.length) continue
 
+    const playlistUrl =
+      entry.mediaPlaylistUrl ||
+      entry.lastMediaPlaylistUrl ||
+      existing?.mediaPlaylistUrl ||
+      null
     const tabState = {
       ...(existing || {}),
       segments: [],
@@ -163,7 +170,9 @@ function applyWarmRecoverySnapshot(snapshot) {
       anchorIndex: typeof entry.anchorIndex === "number" ? entry.anchorIndex : null,
       hasAnchor: Boolean(entry.hasAnchor && typeof entry.anchorIndex === "number"),
       rungLabels: Array.isArray(entry.rungLabels) ? entry.rungLabels : [],
-      lastMediaPlaylistUrl: entry.lastMediaPlaylistUrl || null,
+      mediaPlaylistUrl: playlistUrl,
+      lastMediaPlaylistUrl: playlistUrl,
+      playlistRecaptureRequired: !(Number(entry.lastSegmentCount) > 0),
       warmRecovery: true,
       warmRecoveryAppliedAt: Date.now(),
       updatedAt: entry.updatedAt || Date.now()
@@ -173,6 +182,16 @@ function applyWarmRecoverySnapshot(snapshot) {
   }
   if (applied > 0) {
     addLog("INFO", `Warm recovery: restored state for ${applied} tab(s) from snapshot`)
+    const deferMs = Number(constants.WARM_RECOVERY_DEFER_PREFETCH_MS) || 3_000
+    for (const entry of snapshot.entries) {
+      if (!Number.isFinite(entry.tabId) || entry.tabId < 0) continue
+      const tabId = entry.tabId
+      setTimeout(() => {
+        if (typeof ns.ensureTabPlaylistRecovery === "function") {
+          void ns.ensureTabPlaylistRecovery(tabId, "warm-recovery", { force: true })
+        }
+      }, deferMs)
+    }
   }
   return applied
 }

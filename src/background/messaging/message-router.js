@@ -817,6 +817,16 @@ function registerMessageRouter() {
       void wakeBackgroundEngine()
       if (Number.isFinite(tabId)) {
         state.bridgeHeartbeatByTab.set(tabId, Date.now())
+        const tabState = state.playlistByTab.get(tabId)
+        if (
+          message.playing === true &&
+          tabState &&
+          typeof ns.tabNeedsPlaylistRecovery === "function" &&
+          ns.tabNeedsPlaylistRecovery(tabState, { forceAfterIdle: true }) &&
+          typeof ns.ensureTabPlaylistRecovery === "function"
+        ) {
+          void ns.ensureTabPlaylistRecovery(tabId, "playback-resume")
+        }
       }
       sendResponse({ ok: true })
       return true
@@ -836,21 +846,30 @@ function registerMessageRouter() {
         const pageUrl = sender?.tab?.url || message.pageUrl || null
         const mediaContext =
           typeof ns.isTabMediaContext !== "function" || ns.isTabMediaContext(tabId, pageUrl)
-        if (state.settings.enabled && mediaContext && tabState?.segments?.length) {
-          syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
-          if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-            const reason = String(message.reason || "bridge-ready")
-            const recovery =
-              reason === "store-recovery" ||
-              reason === "extension-update" ||
-              reason.startsWith("reinject:") ||
-              reason === "visible"
-            const start = recovery
-              ? Math.max(0, tabState.anchorIndex)
-              : tabState.anchorIndex + 1
-            maybeRequestPrefetchForTab(tabId, tabState.segments, start, recovery ? reason : "bridge-ready", {
-              force: recovery
+        if (state.settings.enabled && mediaContext && tabState) {
+          const needsRecovery =
+            typeof ns.tabNeedsPlaylistRecovery === "function" &&
+            ns.tabNeedsPlaylistRecovery(tabState, { forceAfterIdle: true })
+          if (needsRecovery && typeof ns.ensureTabPlaylistRecovery === "function") {
+            void ns.ensureTabPlaylistRecovery(tabId, message.reason || "bridge-ready", {
+              force: tabState.warmRecovery === true
             })
+          } else if (tabState.segments?.length) {
+            syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
+            if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
+              const reason = String(message.reason || "bridge-ready")
+              const recovery =
+                reason === "store-recovery" ||
+                reason === "extension-update" ||
+                reason.startsWith("reinject:") ||
+                reason === "visible"
+              const start = recovery
+                ? Math.max(0, tabState.anchorIndex)
+                : tabState.anchorIndex + 1
+              maybeRequestPrefetchForTab(tabId, tabState.segments, start, recovery ? reason : "bridge-ready", {
+                force: recovery
+              })
+            }
           }
         }
         if (mediaContext && typeof ns.syncCacheRegistryToTab === "function") {
@@ -1129,7 +1148,9 @@ function registerMessageRouter() {
       if (Number.isFinite(tabId)) {
         if (message.hidden === true) {
           if (typeof ns.pauseTabPrefetchForVisibility === "function") {
-            ns.pauseTabPrefetchForVisibility(tabId, "tab-hidden")
+            ns.pauseTabPrefetchForVisibility(tabId, "tab-hidden", {
+              playing: message.playing === true
+            })
           }
         } else if (typeof ns.resumeTabPrefetchForVisibility === "function") {
           ns.resumeTabPrefetchForVisibility(tabId, "tab-visible")
