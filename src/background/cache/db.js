@@ -643,7 +643,21 @@ async function bridgePlaylistSegmentUrlAliases(previousSegments, newSegments, op
   const end = Math.min(previousSegments.length, newSegments.length)
   let bridged = 0
 
-  for (let i = 0; i < end; i += 1) {
+  const anchor = Number(options.anchorIndex)
+  const radius = Number(options.radius) || 0
+  const indexOrder = []
+  if (Number.isFinite(anchor) && radius > 0) {
+    const start = Math.max(0, Math.floor(anchor - radius))
+    const stop = Math.min(end, Math.ceil(anchor + radius + 1))
+    for (let i = start; i < stop; i += 1) indexOrder.push(i)
+    for (let i = 0; i < end; i += 1) {
+      if (!indexOrder.includes(i)) indexOrder.push(i)
+    }
+  } else {
+    for (let i = 0; i < end; i += 1) indexOrder.push(i)
+  }
+
+  for (const i of indexOrder) {
     const oldUrl = previousSegments[i]
     const newUrl = newSegments[i]
     if (!oldUrl || !newUrl) continue

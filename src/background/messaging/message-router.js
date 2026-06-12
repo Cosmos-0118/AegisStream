@@ -531,6 +531,25 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       tabId,
       lookupManifestIndex
     )
+    if (
+      !resolved?.item &&
+      tabState?.pendingRotationBridge &&
+      typeof tabState.pendingRotationBridge.then === "function"
+    ) {
+      try {
+        await Promise.race([
+          tabState.pendingRotationBridge,
+          new Promise((resolve) => setTimeout(resolve, 400))
+        ])
+      } catch {
+        // bridge may fail without blocking lookup
+      }
+      resolved = await resolveCachedChunkWithSegmentHistory(
+        lookupUrl,
+        tabId,
+        lookupManifestIndex
+      )
+    }
     let collapsedFromInflight = false
     if (!resolved?.item) {
       const collapsed = await awaitInflightPrefetchCacheEntry(lookupUrl, tabId)

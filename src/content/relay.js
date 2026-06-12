@@ -380,6 +380,7 @@ function installRelay(activeGeneration) {
           type: "KNOWN_SEGMENTS",
           urls: message.urls,
           playbackHint: message.playbackHint || null,
+          playlistRotatedAt: message.playlistRotatedAt || null,
           resetSeeking: message.resetSeeking === true,
           anchorIndex:
             typeof message.anchorIndex === "number" ? message.anchorIndex : null,

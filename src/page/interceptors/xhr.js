@@ -33,7 +33,14 @@ const MAX_XHR_CAPTURE_BYTES = 32 * 1024 * 1024
 
 let syncResponseTapInstalled = false
 
-function resolveBeltTimeoutMs(lane, { wireInFlight = false } = {}) {
+function isPlaylistRotationGraceActive() {
+  const rotated = Number(ns.playlistRotatedAt || 0)
+  // Narrow window only — a long grace keeps every belt on 2s timeouts and stalls playback.
+  const graceMs = 3_500
+  return rotated > 0 && Date.now() - rotated < graceMs
+}
+
+function resolveBeltTimeoutMs(lane, { wireInFlight = false, rotationGrace = false } = {}) {
   const collapseMs =
     typeof ns.resolveCollapseWaitTimeoutMs === "function"
       ? ns.resolveCollapseWaitTimeoutMs()
@@ -49,14 +56,14 @@ function resolveBeltTimeoutMs(lane, { wireInFlight = false } = {}) {
   switch (lane) {
     case "not-candidate":
     case "not-candidate-wire-inflight":
-      return 1_200
+      return rotationGrace ? 1_400 : 1_200
     case "lookup-miss":
-      return 1_000
+      return rotationGrace ? 1_400 : 1_000
     case "lookup-timeout":
     case "lookup-ipc-fault":
-      return 1_000
+      return rotationGrace ? 1_200 : 1_000
     default:
-      return 800
+      return rotationGrace ? 900 : 800
   }
 }
 
@@ -790,12 +797,16 @@ function AegisXHR() {
     }
 
     const fallbackToNativeWithBelt = async (beltLane) => {
+      const rotationGrace = isPlaylistRotationGraceActive()
       const hadInflightIntent =
         typeof ns.isInflightKey === "function" && ns.isInflightKey(cacheLookupUrl)
       if (typeof ns.awaitInflightChunkStoreByUrl === "function") {
         await ns.awaitInflightChunkStoreByUrl(cacheLookupUrl)
       }
-      const beltTimeoutMs = resolveBeltTimeoutMs(beltLane, { wireInFlight })
+      if (rotationGrace || hadInflightIntent) {
+        if (await runCollapseIntercept(true)) return
+      }
+      const beltTimeoutMs = resolveBeltTimeoutMs(beltLane, { wireInFlight, rotationGrace })
       if (await tryIdbBeltBeforeNative(beltLane, beltTimeoutMs)) return
       const retryBelt = async (lane, delayMs) => {
         if (delayMs > 0) {
@@ -809,9 +820,13 @@ function AegisXHR() {
       ) {
         if (await retryBelt(`${beltLane}-retry`, 90)) return
         if (await retryBelt(`${beltLane}-retry2`, 180)) return
-      } else if (typeof ns.isSwiftStreamTransportSegment === "function" && ns.isSwiftStreamTransportSegment(cacheLookupUrl)) {
-        if (await retryBelt(`${beltLane}-segment-retry`, 120)) return
+      } else if (
+        typeof ns.isSwiftStreamTransportSegment === "function" &&
+        ns.isSwiftStreamTransportSegment(cacheLookupUrl)
+      ) {
+        if (await retryBelt(`${beltLane}-segment-retry`, rotationGrace ? 180 : 120)) return
       }
+      if (await runCollapseIntercept(false)) return
       sendAuthorizedNativeNetwork(xhr, body, originalSend)
     }
 

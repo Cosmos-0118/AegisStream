@@ -165,4 +165,26 @@ assert(
   "prefetch pollution must not promote anchor far ahead"
 )
 
+// Catastrophic backward promotion: anchor=29, spurious t≈0 predictor during scrub.
+const backwardScrubState = {
+  segments,
+  anchorIndex: 29,
+  predictedAnchorIndex: 1,
+  predictedAnchorAt: now,
+  lastPlayerObservedIndex: 1,
+  lastPlayerObservedAt: now,
+  seekChurnAggressiveUntil: now + 5_000
+}
+const backwardSignals = collectAnchorSignals(backwardScrubState, now)
+assert(
+  !backwardSignals.some((s) => s.source === "predictor"),
+  "stale t≈0 predictor excluded when anchor far ahead"
+)
+evaluateAnchorReconciliation(backwardScrubState, now)
+decision = evaluateAnchorReconciliation(backwardScrubState, now + 600)
+assert(
+  decision.promote === false && decision.reason === "backward-during-churn",
+  `backward scrub must not promote anchor 29 -> 1, got ${decision.reason}`
+)
+
 console.log("anchor-reconciler.test.js passed")

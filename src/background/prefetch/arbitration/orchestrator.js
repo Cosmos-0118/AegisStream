@@ -277,23 +277,45 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
   }
 
   const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
+  const previousCommitted =
+    typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null
   const previousEffective =
     typeof ns.getEffectiveAnchorIndex === "function"
       ? ns.getEffectiveAnchorIndex(tabState)
-      : typeof tabState.anchorIndex === "number"
-        ? tabState.anchorIndex
-        : null
+      : previousCommitted
+  const jumpReference =
+    source === "anchor-reconciliation"
+      ? previousCommitted ?? previousEffective
+      : previousEffective ?? previousCommitted
   const jump =
-    typeof previousEffective === "number" ? Math.abs(clampedTarget - previousEffective) : 0
+    typeof jumpReference === "number" ? Math.abs(clampedTarget - jumpReference) : 0
   if (jump === 0) {
     const label =
       typeof ns.authorityLabel === "function" ? ns.authorityLabel(authority) : String(authority)
+    if (
+      source === "anchor-reconciliation" &&
+      typeof previousCommitted === "number" &&
+      previousCommitted !== clampedTarget
+    ) {
+      tabState.hasAnchor = true
+      tabState.anchorIndex = clampedTarget
+      tabState.anchorSourceAt = Date.now()
+      if (typeof tabState.mediaSequence === "number") {
+        tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
+      }
+      addLog(
+        "DEBUG",
+        `Anchor reconciliation soft-sync on tab ${tabId}: committed ${previousCommitted} -> ${clampedTarget}`
+      )
+      return true
+    }
     addLog(
       "DEBUG",
       `Anchor authority commit skipped on tab ${tabId} (${label}, ${source}): already at index ${clampedTarget}`
     )
     return false
   }
+  const oldAnchor = typeof jumpReference === "number" ? jumpReference : null
   const scrubbingTrain = isTabInScrubbingTrain(tabState)
   const timelineRestart =
     authority === ns.AnchorAuthority?.DOM_SEEKED &&
@@ -323,8 +345,6 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
       `Timeline restart on tab ${tabId}: DOM ${previousEffective} -> ${clampedTarget} without queue purge (player reload / start over)`
     )
   }
-  const oldAnchor = typeof previousEffective === "number" ? previousEffective : null
-
   if (authority === ns.AnchorAuthority?.DOM_SEEKED) {
     tabState.lastDomTeleportAt = Date.now()
     if (scrubbingTrain || purgeQueues) {
@@ -535,7 +555,7 @@ function handleScrubVelocityPrefetch(tabId, payload = {}) {
   const tabState = state.playlistByTab.get(tabId)
   if (!tabState?.segments?.length) return
   const now = Date.now()
-  const minInterval = Number(constants.SCRUB_DELEGATE_MIN_INTERVAL_MS) || 280
+  const minInterval = Number(constants.SCRUB_DELEGATE_MIN_INTERVAL_MS) || 400
   const lastDelegateAt = Number(tabState.lastScrubVelocityDelegateAt || 0)
   if (now - lastDelegateAt < minInterval) return
   tabState.lastScrubVelocityDelegateAt = now
@@ -551,30 +571,76 @@ function handleScrubVelocityPrefetch(tabId, payload = {}) {
     typeof tabState.predictedAnchorIndex === "number"
       ? tabState.predictedAnchorIndex
       : effectiveAnchor
-  if (
+  const scrubContext =
+    ns.isScrubbingTrainActive?.(tabState) ||
+    isTabInSeekChurnAggressive(tabState) ||
+    now < Number(tabState.scrubbingTrainUntil || 0) + 400
+  if (typeof effectiveAnchor === "number" && predictedIndex < effectiveAnchor - 3) {
+    predictedIndex = effectiveAnchor
+  } else if (
     typeof seekObservedIndex === "number" &&
-    (predictedIndex <= 2 || Math.abs(predictedIndex - seekObservedIndex) > 8) &&
     seekObservedIndex > 6 &&
-    (ns.isScrubbingTrainActive?.(tabState) || isTabInSeekChurnAggressive(tabState))
+    (scrubContext || Math.abs(predictedIndex - seekObservedIndex) > 8) &&
+    (predictedIndex <= 2 || Math.abs(predictedIndex - seekObservedIndex) > 3)
   ) {
     predictedIndex = seekObservedIndex
   }
   const radius = Math.max(1, Number(constants.SCRUB_VELOCITY_PREFETCH_RADIUS) || 3)
   let clamped = Math.max(0, Math.min(Math.round(predictedIndex), tabState.segments.length - 1))
-  const currentIndex = Number(payload.currentIndex)
+  const kalmanIndex = Number.isFinite(Number(payload.currentIndex))
+    ? Math.round(Number(payload.currentIndex))
+    : null
+  const domIndex =
+    typeof seekObservedIndex === "number"
+      ? seekObservedIndex
+      : Number.isFinite(Number(payload.estimatedIndex))
+        ? Math.round(Number(payload.estimatedIndex))
+        : null
+  const playheadIndex =
+    kalmanIndex !== null && domIndex !== null
+      ? Math.max(kalmanIndex, domIndex)
+      : kalmanIndex ?? domIndex
+  if (scrubContext && typeof playheadIndex === "number" && playheadIndex > clamped + 2) {
+    clamped = playheadIndex
+  }
   const maxJump = Number(constants.SCRUB_VELOCITY_MAX_JUMP_SEGMENTS) || 8
-  if (Number.isFinite(currentIndex) && Math.abs(clamped - currentIndex) > maxJump) {
+  if (typeof playheadIndex === "number" && Math.abs(clamped - playheadIndex) > maxJump) {
     clamped = Math.max(
       0,
       Math.min(
         tabState.segments.length - 1,
-        currentIndex + Math.sign(clamped - currentIndex) * maxJump
+        playheadIndex + Math.sign(clamped - playheadIndex) * maxJump
       )
     )
   }
-  pruneInflightSegmentIndices(tabState, clamped)
-  const start = Math.max(0, clamped - radius)
-  const windowSize = radius * 2 + 1
+  if (
+    typeof effectiveAnchor === "number" &&
+    effectiveAnchor > 10 &&
+    clamped <= 2 &&
+    (scrubContext || now < Number(tabState.anchorRotationGraceUntil || 0))
+  ) {
+    addLog(
+      "DEBUG",
+      `Scrub velocity prewarm skipped on tab ${tabId}: stale timeline index ${clamped} (anchor ${effectiveAnchor})`
+    )
+    return
+  }
+  pruneInflightSegmentIndices(
+    tabState,
+    typeof playheadIndex === "number" ? playheadIndex : clamped
+  )
+  let start
+  let windowSize = radius * 2 + 1
+  if (scrubContext && typeof playheadIndex === "number") {
+    // Kalman often reports v=0 during SwiftStream DOM teleports — still lead from playhead.
+    start = Math.max(0, playheadIndex)
+    windowSize = Math.min(tabState.segments.length - start, radius + 4)
+  } else if (typeof playheadIndex === "number" && playheadIndex > clamped + 2) {
+    start = Math.max(0, playheadIndex)
+    windowSize = Math.min(tabState.segments.length - start, radius + 4)
+  } else {
+    start = Math.max(0, clamped - radius)
+  }
   let needed = countPrefetchWindowNeedingFetch(tabId, tabState, start, windowSize)
   if (
     needed === 0 &&
@@ -603,15 +669,16 @@ function handleScrubVelocityPrefetch(tabId, payload = {}) {
   if (typeof ns.recordScrubPrewarmScheduled === "function") {
     ns.recordScrubPrewarmScheduled()
   }
+  const velocitySegPerSec = Number(payload.velocitySegPerSec) || 0
   addLog(
     "INFO",
-    `Scrub velocity prewarm on tab ${tabId}: predicted index ${clamped} (v=${Number(payload.velocitySegPerSec || 0).toFixed(1)} seg/s, need=${needed}/${windowSize})`
+    `Scrub velocity prewarm on tab ${tabId}: predicted index ${clamped} (v=${velocitySegPerSec.toFixed(1)} seg/s, need=${needed}/${windowSize}, from=${start})`
   )
   noteInflightSegmentIndices(tabState, start, windowSize)
   void schedulePrefetch(tabId, tabState.segments, start, {
     force: true,
     source: "scrub-velocity-prewarm",
-    prefetchWindowOverride: radius * 2 + 1
+    prefetchWindowOverride: windowSize
   })
 }
 
@@ -963,15 +1030,15 @@ function handleUnifiedSeekState(tabId, rawPayload = {}) {
       if (Number.isFinite(scrubTargetIndex)) {
         tabState.velocityPredictedIndex = Math.max(0, Math.round(scrubTargetIndex))
         tabState.velocityPredictedAt = now
-        const scrubCurrentIndex =
-          Math.abs(velocitySegPerSec) >= minScrubVelocity &&
-          typeof payload.currentIndex === "number"
-            ? payload.currentIndex
-            : estimatedIndex
+        const scrubCurrentIndex = Math.max(
+          estimatedIndex,
+          typeof payload.currentIndex === "number" ? Math.round(payload.currentIndex) : estimatedIndex
+        )
         handleScrubVelocityPrefetch(tabId, {
-          predictedIndex: scrubTargetIndex,
+          predictedIndex: Math.max(scrubTargetIndex, scrubCurrentIndex),
           velocitySegPerSec,
-          currentIndex: scrubCurrentIndex
+          currentIndex: scrubCurrentIndex,
+          estimatedIndex
         })
       }
     }
@@ -2101,7 +2168,6 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     urlsChanged &&
     !segmentCountChanged &&
     !episodeChangedByFingerprint &&
-    pageUnchanged &&
     indexQuality &&
     Number(indexQuality.coverage) >= 100
 
@@ -2118,8 +2184,7 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     seekChurnActive &&
     urlsChanged &&
     !episodeChangedByFingerprint &&
-    !segmentCountChanged &&
-    pageUnchanged
+    !segmentCountChanged
   ) {
     shouldClearPrefetch = false
     qualityVariantSwitch = false
@@ -2356,6 +2421,42 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
       if (typeof ns.recordDomAnchorSupremacyPreserved === "function") {
         ns.recordDomAnchorSupremacyPreserved()
       }
+    }
+  }
+
+  if (
+    urlsChanged &&
+    typeof anchorIndex === "number" &&
+    anchorIndex <= 2 &&
+    previous?.hasAnchor
+  ) {
+    const freshMs = Number(constants.ANCHOR_SIGNAL_FRESH_MS) || 3_000
+    const playheadCandidates = []
+    if (
+      typeof previous.predictedAnchorIndex === "number" &&
+      Date.now() - Number(previous.predictedAnchorAt || 0) < freshMs
+    ) {
+      playheadCandidates.push(previous.predictedAnchorIndex)
+    }
+    if (
+      typeof previous.lastPlayerObservedIndex === "number" &&
+      Date.now() - Number(previous.lastPlayerObservedAt || 0) < freshMs
+    ) {
+      playheadCandidates.push(previous.lastPlayerObservedIndex)
+    }
+    if (typeof previous.anchorIndex === "number" && previous.anchorIndex > anchorIndex) {
+      playheadCandidates.push(previous.anchorIndex)
+    }
+    const raisedPlayhead = playheadCandidates.length ? Math.max(...playheadCandidates) : null
+    if (typeof raisedPlayhead === "number" && raisedPlayhead > anchorIndex + 3) {
+      const nextIndex = Math.min(raisedPlayhead, normalizedSegments.length - 1)
+      addLog(
+        "DEBUG",
+        `Rotation anchor raised ${anchorIndex} -> ${nextIndex} from fresh playhead signals (tab ${tabId})`
+      )
+      anchorIndex = nextIndex
+      hasAnchor = true
+      anchorRetainedByRefresh = true
     }
   }
 
@@ -2680,11 +2781,16 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
         : typeof previous?.anchorIndex === "number"
           ? previous.anchorIndex
           : 0
-    void ns
-      .bridgePlaylistSegmentUrlAliases(previous.segments, normalizedSegments, {
+    const bridgePromise = ns.bridgePlaylistSegmentUrlAliases(
+      previous.segments,
+      normalizedSegments,
+      {
         anchorIndex: bridgeAnchor,
         radius: Math.max(Number(state.settings.prefetchWindow) * 3, 24)
-      })
+      }
+    )
+    tabState.pendingRotationBridge = bridgePromise
+    void bridgePromise
       .then((bridged) => {
         if (bridged > 0) {
           addLog(
@@ -2695,6 +2801,11 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
         }
       })
       .catch(() => {})
+      .finally(() => {
+        if (tabState?.pendingRotationBridge === bridgePromise) {
+          tabState.pendingRotationBridge = null
+        }
+      })
   }
   if (typeof scheduleWarmRecoveryPersist === "function") {
     scheduleWarmRecoveryPersist()
@@ -3688,6 +3799,12 @@ function requestPrefetchForTab(tabId, segments, startIndex = 0, source = "anchor
   })
 }
 
+function buildPlaylistRotationSyncOptions(tabState) {
+  if (!tabState?.lastUpsertUrlsChanged) return {}
+  const rotatedAt = Number(tabState.playlistRefreshedAt || 0)
+  return rotatedAt > 0 ? { playlistRotatedAt: rotatedAt } : {}
+}
+
 function syncKnownSegmentsToPage(tabId, segments, options = {}) {
   if (!segments || !segments.length) return
   if (options.resetSeeking === true) {
@@ -3729,6 +3846,10 @@ function syncKnownSegmentsToPage(tabId, segments, options = {}) {
       type: "AegisStream:KnownSegments",
       urls: segments,
       playbackHint,
+      playlistRotatedAt:
+        Number.isFinite(Number(options.playlistRotatedAt)) && Number(options.playlistRotatedAt) > 0
+          ? Number(options.playlistRotatedAt)
+          : undefined,
       resetSeeking: options.resetSeeking === true,
       anchorIndex:
         typeof options.anchorIndex === "number" ? options.anchorIndex : undefined,
@@ -3834,7 +3955,7 @@ async function parseAndPrefetchFromPlaylistWork(
       }
       rememberMediaPlaylistUrl(tabState, normalizedPlaylistUrl, tabId)
       finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
-      syncKnownSegmentsToPage(tabId, tabState.segments)
+      syncKnownSegmentsToPage(tabId, tabState.segments, buildPlaylistRotationSyncOptions(tabState))
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Playlist refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
         maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "playlist-refresh")
@@ -3858,7 +3979,7 @@ async function parseAndPrefetchFromPlaylistWork(
     if (!tabState?.segments?.length) return
     rememberMediaPlaylistUrl(tabState, normalizedPlaylistUrl, tabId)
     finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged)
-    syncKnownSegmentsToPage(tabId, tabState.segments)
+    syncKnownSegmentsToPage(tabId, tabState.segments, buildPlaylistRotationSyncOptions(tabState))
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `DASH playlist refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
       maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "playlist-refresh")
@@ -3931,7 +4052,7 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
       }
       rememberMediaPlaylistUrl(tabState, normalizedUrl, tabId)
       finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged, generation)
-      syncKnownSegmentsToPage(tabId, tabState.segments)
+      syncKnownSegmentsToPage(tabId, tabState.segments, buildPlaylistRotationSyncOptions(tabState))
       if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
         addLog("INFO", `Captured HLS refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
         const forcePrefetch =
@@ -3984,7 +4105,7 @@ async function parsePlaylistContentForTab(tabId, playlistUrl, text, options = {}
     if (!tabState?.segments?.length) return
     rememberMediaPlaylistUrl(tabState, normalizedUrl, tabId)
     finishManifestRefreshIfPending(tabId, tabState, tabState.lastUpsertUrlsChanged, generation)
-    syncKnownSegmentsToPage(tabId, tabState.segments)
+    syncKnownSegmentsToPage(tabId, tabState.segments, buildPlaylistRotationSyncOptions(tabState))
     if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
       addLog("INFO", `Captured DASH refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
       const forcePrefetch =

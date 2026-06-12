@@ -37,7 +37,13 @@ function collectAnchorSignals(tabState, now = Date.now()) {
     tabState.predictedAnchorIndex >= 0 &&
     now - Number(tabState.predictedAnchorAt || 0) < freshMs
   ) {
-    signals.push({ source: "predictor", index: tabState.predictedAnchorIndex, weight: 3 })
+    const committed =
+      typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null
+    const predicted = tabState.predictedAnchorIndex
+    // Spurious t≈0 seek after playlist rotation while slider is far ahead.
+    if (!(typeof committed === "number" && committed > 10 && predicted <= 2)) {
+      signals.push({ source: "predictor", index: predicted, weight: 3 })
+    }
   }
   if (
     typeof tabState.lastPlayerObservedIndex === "number" &&
@@ -137,6 +143,31 @@ function evaluateAnchorReconciliation(tabState, now = Date.now()) {
   if (divergence <= divergenceThreshold) {
     tabState.anchorReconcileDivergenceSince = 0
     return { promote: false, divergence, targetIndex: target, reason: "within-threshold" }
+  }
+
+  if (target < anchor - divergenceThreshold) {
+    const churnUntil = Math.max(
+      Number(tabState.seekChurnAggressiveUntil || 0),
+      Number(tabState.scrubbingTrainUntil || 0)
+    )
+    if (now < churnUntil) {
+      tabState.anchorReconcileDivergenceSince = 0
+      return {
+        promote: false,
+        divergence,
+        targetIndex: target,
+        reason: "backward-during-churn"
+      }
+    }
+    if (anchor > 10 && target <= 2) {
+      tabState.anchorReconcileDivergenceSince = 0
+      return {
+        promote: false,
+        divergence,
+        targetIndex: target,
+        reason: "stale-timeline-zero"
+      }
+    }
   }
 
   const since = Number(tabState.anchorReconcileDivergenceSince || 0)

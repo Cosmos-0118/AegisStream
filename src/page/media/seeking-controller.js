@@ -201,18 +201,27 @@ class SeekingController {
       typeof estimatedIndex === "number" && estimatedIndex >= 0
         ? estimatedIndex
         : Math.round(this.kalman.x[0])
-    const predictedIndex = this.kalman.predictIndex(
+    let predictedIndex = this.kalman.predictIndex(
       null,
       resolveSegmentCount(),
       anchorIndex
     )
+    if (velocity > 0) {
+      predictedIndex = Math.max(predictedIndex, anchorIndex)
+    } else if (velocity < 0) {
+      predictedIndex = Math.min(predictedIndex, anchorIndex)
+    }
 
     const wallNow = Date.now()
     if (wallNow - this.lastVelocityPrewarmAt < VELOCITY_PREWARM_MIN_MS) {
-      return { velocitySegPerSec: velocity }
+      return { velocitySegPerSec: velocity, currentIndex: anchorIndex }
     }
     if (predictedIndex === this.lastPrearmedPredictedIndex) {
-      return { velocitySegPerSec: velocity }
+      return {
+        velocitySegPerSec: velocity,
+        velocityPredictedIndex: predictedIndex,
+        currentIndex: anchorIndex
+      }
     }
 
     this.lastVelocityPrewarmAt = wallNow

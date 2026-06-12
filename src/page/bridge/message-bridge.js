@@ -90,6 +90,9 @@ window.addEventListener("message", (event) => {
     if (data.resetSeeking === true && typeof ns.resetAllSeekingControllers === "function") {
       ns.resetAllSeekingControllers(data.anchorIndex)
     }
+    if (Number.isFinite(Number(data.playlistRotatedAt)) && Number(data.playlistRotatedAt) > 0) {
+      ns.playlistRotatedAt = Number(data.playlistRotatedAt)
+    }
     for (const u of data.urls) {
       knownSegments.add(u.split("?")[0])
     }
