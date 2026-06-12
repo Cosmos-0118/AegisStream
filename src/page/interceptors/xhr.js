@@ -17,10 +17,6 @@ const {
   logBridge,
   notifyRuntime,
   notifyChunkObserved,
-  isYoutubeVideoPlaybackUrl,
-  buildYoutubeChunkState,
-  buildYoutubeChunkStateFromContentRange,
-  buildYouTubePrefetchHeaders,
   isLikelyChunk,
   isPlaylistUrl,
   isPlaylistContentType,
@@ -36,6 +32,33 @@ const networkFetch = fetchWithCircuitBreaker || originalFetch
 const MAX_XHR_CAPTURE_BYTES = 32 * 1024 * 1024
 
 let syncResponseTapInstalled = false
+
+function resolveBeltTimeoutMs(lane, { wireInFlight = false } = {}) {
+  const collapseMs =
+    typeof ns.resolveCollapseWaitTimeoutMs === "function"
+      ? ns.resolveCollapseWaitTimeoutMs()
+      : 8_000
+  if (
+    wireInFlight &&
+    (lane === "lookup-miss" ||
+      lane === "not-candidate-wire-inflight" ||
+      lane === "lookup-timeout")
+  ) {
+    return collapseMs
+  }
+  switch (lane) {
+    case "not-candidate":
+    case "not-candidate-wire-inflight":
+      return 1_200
+    case "lookup-miss":
+      return 1_000
+    case "lookup-timeout":
+    case "lookup-ipc-fault":
+      return 1_000
+    default:
+      return 800
+  }
+}
 
 function exceedsSafeIpcCaptureSize(byteLength) {
   return Number.isFinite(byteLength) && byteLength > MAX_XHR_CAPTURE_BYTES
@@ -119,22 +142,6 @@ function bytesFromXhrRawResponse(xhr, rawResponse) {
   return null
 }
 
-function resolveXhrYoutubeChunk(xhr, url, status) {
-  if (!isYoutubeVideoPlaybackUrl(url)) return null
-  const requestRangeHeaders = new Headers()
-  if (xhr.__aegisRangeHeader) {
-    requestRangeHeaders.set("Range", xhr.__aegisRangeHeader)
-  }
-  let youtubeChunk = buildYoutubeChunkState(url, requestRangeHeaders)
-  if (!youtubeChunk && status === 206) {
-    youtubeChunk = buildYoutubeChunkStateFromContentRange(
-      url,
-      xhr.getResponseHeader("content-range")
-    )
-  }
-  return youtubeChunk
-}
-
 let lastXhrInvalidatedWarnAt = 0
 
 function captureXhrResponseSync(xhr, rawResponse) {
@@ -150,10 +157,9 @@ function captureXhrResponseSync(xhr, rawResponse) {
   if (!url || method !== "GET") return
   if (url && globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.(url)) return
 
-  const youtubeChunk = resolveXhrYoutubeChunk(xhr, url, status)
-  const shouldIntercept = isLikelyChunk(url) || Boolean(youtubeChunk)
+  const shouldIntercept = isLikelyChunk(url)
   if (!shouldIntercept) return
-  if (!(status === 200 || (status === 206 && youtubeChunk?.type === "bytes"))) return
+  if (status !== 200) return
 
   const bytes = bytesFromXhrRawResponse(xhr, rawResponse)
   if (!bytes) {
@@ -191,11 +197,10 @@ function captureXhrResponseSync(xhr, rawResponse) {
 
   xhr.__aegisChunkCaptured = true
 
-  let cacheLookupUrl = url
-  if (youtubeChunk) {
-    cacheLookupUrl = youtubeChunk.cacheKey
+  const cacheLookupUrl = url
+  if (typeof ns.noteStoreIntent === "function") {
+    ns.noteStoreIntent(cacheLookupUrl)
   }
-
   const ct = xhr.getResponseHeader("content-type") || ""
   if (typeof logBridge === "function") {
     logBridge(
@@ -274,7 +279,6 @@ function applyXhrCachedPayload(
   xhr,
   lookupBytes,
   lookup,
-  youtubeChunk,
   cacheHeader = "HIT",
   responseSource = null,
   cacheLookupUrl = null
@@ -284,12 +288,9 @@ function applyXhrCachedPayload(
     const key = cacheLookupUrl || xhr.__aegisUrl
     if (key) ns.noteLocalCacheKey(key)
   }
-  const is206 =
-    youtubeChunk?.type === "bytes" && Number.isFinite(youtubeChunk.start)
-  const statusCode = is206 ? 206 : 200
-  Object.defineProperty(xhr, "status", { get: () => statusCode, configurable: true })
+  Object.defineProperty(xhr, "status", { get: () => 200, configurable: true })
   Object.defineProperty(xhr, "statusText", {
-    get: () => (is206 ? "Partial Content" : "OK"),
+    get: () => "OK",
     configurable: true
   })
   Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
@@ -314,12 +315,6 @@ function applyXhrCachedPayload(
       if (lower === "content-type") return lookup?.contentType || "application/octet-stream"
       if (instantHdr[lower] != null) return instantHdr[lower]
       if (lower === "x-aegisstream-cache") return cacheHeader
-      if (lower === "content-range" && is206) {
-        const actualEnd = Number.isFinite(youtubeChunk.end)
-          ? youtubeChunk.end
-          : youtubeChunk.start + lookupBytes.byteLength - 1
-        return `bytes ${youtubeChunk.start}-${actualEnd}/*`
-      }
       return null
     },
     configurable: true,
@@ -327,14 +322,7 @@ function applyXhrCachedPayload(
   })
   Object.defineProperty(xhr, "getAllResponseHeaders", {
     value: () => {
-      let headers = `content-type: ${lookup?.contentType || "application/octet-stream"}\r\nx-aegisstream-cache: ${cacheHeader}\r\n`
-      if (is206) {
-        const actualEnd = Number.isFinite(youtubeChunk.end)
-          ? youtubeChunk.end
-          : youtubeChunk.start + lookupBytes.byteLength - 1
-        headers += `content-range: bytes ${youtubeChunk.start}-${actualEnd}/*\r\n`
-      }
-      return headers
+      return `content-type: ${lookup?.contentType || "application/octet-stream"}\r\nx-aegisstream-cache: ${cacheHeader}\r\n`
     },
     configurable: true,
     writable: true
@@ -344,12 +332,19 @@ function applyXhrCachedPayload(
   xhr.dispatchEvent(new Event("loadend"))
 }
 
-async function tryCollapseXhrOntoInflightPrefetch(_url, cacheLookupUrl, youtubeChunk) {
+async function tryCollapseXhrOntoInflightPrefetch(_url, cacheLookupUrl) {
+  // Promote a queued-but-not-started prefetch into an active page wire so the
+  // player joins one shared future instead of racing it to the network.
+  const demandStarted =
+    typeof ns.demandStartQueuedPrefetch === "function" &&
+    ns.demandStartQueuedPrefetch(_url, cacheLookupUrl)
+
   const pageInflight =
-    typeof ns.hasActivePageWire === "function"
+    demandStarted ||
+    (typeof ns.hasActivePageWire === "function"
       ? ns.hasActivePageWire(_url, cacheLookupUrl)
       : typeof ns.isNetworkFetchInflight === "function" &&
-        ns.isNetworkFetchInflight(_url, cacheLookupUrl)
+        ns.isNetworkFetchInflight(_url, cacheLookupUrl))
 
   if (pageInflight && typeof ns.joinActivePageWire === "function") {
     logBridge(
@@ -525,29 +520,6 @@ function AegisXHR() {
       return originalSend(body)
     }
 
-    const requestRangeHeaders = new Headers()
-    if (_rangeHeaderValue) {
-      requestRangeHeaders.set("Range", _rangeHeaderValue)
-    }
-
-    let youtubeChunk = null
-    if (isYoutubeVideoPlaybackUrl(_url)) {
-      globalThis.AegisYoutubeCrossItag?.recordTemplate?.(_url)
-      youtubeChunk = buildYoutubeChunkState(_url, requestRangeHeaders)
-      if (youtubeChunk?.type === "bytes") {
-        logBridge(
-          `Intercepted YouTube byte-range via XHR: bytes ${youtubeChunk.start}-${youtubeChunk.end !== null ? youtubeChunk.end : "*"}`,
-          "DEBUG"
-        )
-      } else if (youtubeChunk?.type === "sq") {
-        logBridge(`Intercepted YouTube sequence via XHR: sq=${youtubeChunk.start}`, "DEBUG")
-      } else if (_hasRange) {
-        logBridge(`YouTube XHR had Range header but parse failed: ${_url.slice(0, 80)}`, "WARN")
-      } else {
-        logBridge(`YouTube videoplayback request via XHR had no range/sq identifier: ${_url.slice(0, 80)}`, "DEBUG")
-      }
-    }
-
     // Always attach a load listener to capture playlist responses from XHR
     xhr.addEventListener("load", function xhrLoadHandler() {
       try {
@@ -572,29 +544,10 @@ function AegisXHR() {
             }
           }
 
-          let responseYoutubeChunk = youtubeChunk
-          if (!responseYoutubeChunk && isYoutubeVideoPlaybackUrl(_url) && xhr.status === 206) {
-            const recovered = buildYoutubeChunkStateFromContentRange(
-              _url,
-              xhr.getResponseHeader("content-range")
-            )
-            if (recovered) {
-              responseYoutubeChunk = recovered
-              youtubeChunk = recovered
-              logBridge(
-                `Recovered YouTube byte-range from XHR response header: bytes ${recovered.start}-${recovered.end}`,
-                "DEBUG"
-              )
-            }
-          }
-
           const shouldIntercept =
-            _method === "GET" && _url && (isLikelyChunk(_url) || Boolean(responseYoutubeChunk))
+            _method === "GET" && _url && isLikelyChunk(_url)
 
-          if (
-            shouldIntercept &&
-            (xhr.status === 200 || (xhr.status === 206 && responseYoutubeChunk?.type === "bytes"))
-          ) {
+          if (shouldIntercept && xhr.status === 200) {
             let byteLength = 0
             if (xhr.response instanceof ArrayBuffer) {
               byteLength = xhr.response.byteLength
@@ -602,26 +555,7 @@ function AegisXHR() {
               byteLength = new TextEncoder().encode(xhr.response).byteLength
             }
             if (byteLength > 0 && !exceedsSafeIpcCaptureSize(byteLength)) {
-              let cacheLookupUrl = _url
-
-              if (responseYoutubeChunk) {
-                cacheLookupUrl = responseYoutubeChunk.cacheKey
-                const prefetchHeaders = buildYouTubePrefetchHeaders(
-                  requestRangeHeaders,
-                  responseYoutubeChunk,
-                  byteLength
-                )
-                window.AegisRangeBuffer.triggerHeuristicPrefetch(
-                  _url,
-                  prefetchHeaders,
-                  notifyRuntime,
-                  requestRuntime
-                )
-                globalThis.AegisYoutubeCrossItag?.maybeSpeculateFromPlayback?.(
-                  _url,
-                  responseYoutubeChunk
-                )
-              }
+              const cacheLookupUrl = _url
 
               if (xhr.__aegisChunkCaptured === true) {
                 return
@@ -686,7 +620,8 @@ function AegisXHR() {
       ns.extensionEnabled !== false &&
       _method === "GET" &&
       _url &&
-      (isLikelyChunk(_url) || Boolean(youtubeChunk))
+      isLikelyChunk(_url) &&
+      !isPlaylistUrl(_url)
     if (shouldIntercept && _url) {
       notifyChunkObserved(_url)
     }
@@ -715,15 +650,11 @@ function AegisXHR() {
     }
 
     // For non-chunk GETs, try cache-first
-    if (!shouldIntercept || (_hasRange && !youtubeChunk)) {
+    if (!shouldIntercept) {
       return originalSend(body)
     }
 
-    let cacheLookupUrl = _url
-
-    if (youtubeChunk) {
-      cacheLookupUrl = youtubeChunk.cacheKey
-    }
+    const cacheLookupUrl = _url
 
     const wireInFlight =
       typeof ns.isKeyInFlight === "function" && ns.isKeyInFlight(cacheLookupUrl)
@@ -748,7 +679,6 @@ function AegisXHR() {
         xhr,
         collapsed.bytes,
         collapsed,
-        youtubeChunk,
         collapsed.fromCache ? "HIT" : "COLLAPSED",
         responseSource,
         cacheLookupUrl
@@ -760,8 +690,7 @@ function AegisXHR() {
       try {
         const collapsed = await tryCollapseXhrOntoInflightPrefetch(
           _url,
-          cacheLookupUrl,
-          youtubeChunk
+          cacheLookupUrl
         )
         if (deliverCollapsedXhr(collapsed, viaIntent)) return true
       } catch (error) {
@@ -821,6 +750,13 @@ function AegisXHR() {
         }
         const beltBytes = resolveLookupBytes(beltLookup)
         if (beltLookup?.ok && beltLookup.hit && beltBytes) {
+          if (
+            beltLane.startsWith("not-candidate") &&
+            typeof ns.noteRegistryFalseNegative === "function"
+          ) {
+            // Registry said absent but IDB had the bytes — decay registry trust.
+            ns.noteRegistryFalseNegative()
+          }
           ns.reportRuntimeMetric("xhr_idb_belt_hit", {
             lane: beltLane,
             bytes: beltBytes.byteLength
@@ -831,7 +767,7 @@ function AegisXHR() {
               "DEBUG"
             )
           }
-          applyXhrCachedPayload(xhr, beltBytes, beltLookup, youtubeChunk, "HIT", "idb-hit", cacheLookupUrl)
+          applyXhrCachedPayload(xhr, beltBytes, beltLookup, "HIT", "idb-hit", cacheLookupUrl)
           return true
         }
         ns.reportRuntimeMetric("xhr_idb_belt_miss", {
@@ -853,25 +789,61 @@ function AegisXHR() {
       return false
     }
 
-    const fallbackToNativeWithBelt = async (beltLane, beltTimeoutMs = 250) => {
+    const fallbackToNativeWithBelt = async (beltLane) => {
+      const hadInflightIntent =
+        typeof ns.isInflightKey === "function" && ns.isInflightKey(cacheLookupUrl)
+      if (typeof ns.awaitInflightChunkStoreByUrl === "function") {
+        await ns.awaitInflightChunkStoreByUrl(cacheLookupUrl)
+      }
+      const beltTimeoutMs = resolveBeltTimeoutMs(beltLane, { wireInFlight })
       if (await tryIdbBeltBeforeNative(beltLane, beltTimeoutMs)) return
+      const retryBelt = async (lane, delayMs) => {
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs))
+        }
+        return tryIdbBeltBeforeNative(lane, beltTimeoutMs)
+      }
+      if (
+        hadInflightIntent ||
+        (typeof ns.isInflightKey === "function" && ns.isInflightKey(cacheLookupUrl))
+      ) {
+        if (await retryBelt(`${beltLane}-retry`, 90)) return
+        if (await retryBelt(`${beltLane}-retry2`, 180)) return
+      } else if (typeof ns.isSwiftStreamTransportSegment === "function" && ns.isSwiftStreamTransportSegment(cacheLookupUrl)) {
+        if (await retryBelt(`${beltLane}-segment-retry`, 120)) return
+      }
       sendAuthorizedNativeNetwork(xhr, body, originalSend)
     }
 
-    if (!cacheCandidate && wireInFlight) {
-      void (async () => {
-        const delivered = await runCollapseIntercept(true)
-        if (!delivered) await fallbackToNativeWithBelt("not-candidate-wire-inflight")
-      })()
-      return undefined
+    if (!cacheCandidate) {
+      ns.reportRuntimeMetric("cache_lookup_registry_miss", { transport: "xhr" })
     }
 
-    if (!cacheCandidate) {
+    // Future-first lane: when this segment already has an active page wire
+    // (or a queued prefetch we can demand-start), join that future directly —
+    // zero IPC — and only fall back to the lookup/belt ladder if it fails.
+    const pageWireJoinable =
+      (typeof ns.hasActivePageWire === "function" &&
+        ns.hasActivePageWire(_url, cacheLookupUrl)) ||
+      (typeof ns.demandStartQueuedPrefetch === "function" &&
+        ns.demandStartQueuedPrefetch(_url, cacheLookupUrl))
+    if (pageWireJoinable && !ns.isCachedKey?.(cacheLookupUrl)) {
+      let wireJoinAborted = false
+      const originalWireAbort = xhr.abort.bind(xhr)
+      xhr.abort = function () {
+        wireJoinAborted = true
+        ns.reportRuntimeMetric("xhr_abort_during_lookup", { transport: "xhr", lane: "wire-join" })
+        setTimeout(() => {
+          xhr.dispatchEvent(new Event("abort"))
+          xhr.dispatchEvent(new Event("loadend"))
+        }, 0)
+        return originalWireAbort()
+      }
       void (async () => {
-        const delivered = await runCollapseIntercept(true)
+        const delivered = wireJoinAborted ? true : await runCollapseIntercept(true)
+        if (wireJoinAborted) return
         if (!delivered) {
-          ns.reportRuntimeMetric("cache_lookup_skipped", { transport: "xhr" })
-          await fallbackToNativeWithBelt("not-candidate")
+          await fallbackToNativeWithBelt("wire-join-miss")
         }
       })()
       return undefined
@@ -883,7 +855,7 @@ function AegisXHR() {
         ? ns.resolveCollapseWaitTimeoutMs()
         : wireInFlight
           ? 8_000
-          : 300
+          : 1_500
 
     if (typeof logBridge === "function") {
       logBridge(
@@ -913,7 +885,7 @@ function AegisXHR() {
       void (async () => {
         const delivered = await runCollapseIntercept(false)
         if (!delivered) {
-          await fallbackToNativeWithBelt("lookup-timeout", 250)
+          await fallbackToNativeWithBelt("lookup-timeout")
         }
       })()
     }, CACHE_LOOKUP_TIMEOUT_MS)
@@ -949,7 +921,12 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
-        applyXhrCachedPayload(xhr, lookupBytes, lookup, youtubeChunk, "HIT", "idb-hit", cacheLookupUrl)
+        ns.reportRuntimeMetric("cache_lookup_page_delivered", {
+          transport: "xhr",
+          byteLength: lookupBytes.byteLength,
+          viaBase64: !lookup.bytes && typeof lookup.bytesBase64 === "string"
+        })
+        applyXhrCachedPayload(xhr, lookupBytes, lookup, "HIT", "idb-hit", cacheLookupUrl)
         return
       }
 
@@ -957,7 +934,7 @@ function AegisXHR() {
       // Miss can still race with a just-finished store; do one short belt before native.
       void (async () => {
         const delivered = await runCollapseIntercept(false)
-        if (!delivered) await fallbackToNativeWithBelt("lookup-miss", 120)
+        if (!delivered) await fallbackToNativeWithBelt("lookup-miss")
       })()
     }).catch(() => {
       clearTimeout(timeoutId)

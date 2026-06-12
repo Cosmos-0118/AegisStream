@@ -50,31 +50,10 @@ function hasOnlyIdentityQuery(urlObj) {
   return hasIdentity
 }
 
-function isUmpCacheKey(url) {
-  return typeof url === "string" && url.startsWith("ump|")
-}
-
-function getUmpBodyHashFromCacheKey(cacheKey) {
-  if (!isUmpCacheKey(cacheKey)) return null
-  const lastPipe = cacheKey.lastIndexOf("|")
-  if (lastPipe < 4 || lastPipe >= cacheKey.length - 1) return null
-  const bodyHash = cacheKey.slice(lastPipe + 1)
-  return /^[0-9a-f]{8,64}$/i.test(bodyHash) ? bodyHash : null
-}
-
 function buildCacheKeyVariants(rawUrl) {
   const normalizedUrl = stripHash(rawUrl)
   if (!normalizedUrl) return []
   if (isRangeCacheKey(normalizedUrl)) return [normalizedUrl]
-  if (isUmpCacheKey(normalizedUrl)) {
-    const variants = [normalizedUrl]
-    const bodyHash = getUmpBodyHashFromCacheKey(normalizedUrl)
-    if (bodyHash) {
-      const hashOnly = `ump|${bodyHash}`
-      if (hashOnly !== normalizedUrl) variants.push(hashOnly)
-    }
-    return variants.slice(0, constants.MAX_CACHE_KEY_VARIANTS)
-  }
 
   const variants = []
   const seen = new Set()
@@ -115,6 +94,5 @@ function buildCacheKeyVariants(rawUrl) {
 
 ns.stripHash = stripHash
 ns.buildCacheKeyVariants = buildCacheKeyVariants
-ns.isUmpCacheKey = isUmpCacheKey
-ns.getUmpBodyHashFromCacheKey = getUmpBodyHashFromCacheKey
+ns.isRangeCacheKey = isRangeCacheKey
 })()

@@ -7,7 +7,6 @@ const {
   sanitizeSettings,
   resetStats,
   stripHash,
-  isUmpCacheKey,
   extractMessageBytes,
   describeStoreMessageWire,
   formatCrcTelemetry,
@@ -15,7 +14,6 @@ const {
   cacheChunk,
   resolveCachedChunk,
   clearCacheStores,
-  rememberUmpLookupKey,
   maybeLogUmpHealthSummary,
   handleRuntimeMetric,
   bumpActivity,
@@ -196,6 +194,8 @@ function handleExtensionFetchAbort(message) {
 const pendingWriteResolvers = new Map()
 /** @type {Map<string, { resolved: object, expiresAt: number }>} */
 const wireResolvedByKey = new Map()
+/** @type {Map<string, number>} */
+const inflightChunkWriteCounts = new Map()
 const WIRE_RESOLVED_TTL_MS = 60_000
 
 function resolveCanonicalCacheKey(lookupUrl) {
@@ -297,12 +297,120 @@ function handleInflightWireResolve(message, sendResponse) {
   sendResponse({ ok: true })
 }
 
+function registerInflightChunkWrite(url) {
+  const cacheKey = resolveCanonicalCacheKey(url) || stripHash(url)
+  if (!cacheKey) return
+  inflightChunkWriteCounts.set(cacheKey, (inflightChunkWriteCounts.get(cacheKey) || 0) + 1)
+}
+
+function releaseInflightChunkWrite(url) {
+  const cacheKey = resolveCanonicalCacheKey(url) || stripHash(url)
+  if (!cacheKey) return
+  const count = inflightChunkWriteCounts.get(cacheKey) || 0
+  if (count <= 1) inflightChunkWriteCounts.delete(cacheKey)
+  else inflightChunkWriteCounts.set(cacheKey, count - 1)
+}
+
+function hasInflightChunkWrite(url) {
+  const cacheKey = resolveCanonicalCacheKey(url) || stripHash(url)
+  if (!cacheKey) return false
+  return (inflightChunkWriteCounts.get(cacheKey) || 0) > 0
+}
+
 async function flushPendingInflightLookupsAfterStore(storeUrl) {
   if (typeof resolveCachedChunk !== "function") return
   const resolved = await resolveCachedChunk(storeUrl)
   if (resolved?.item) {
     resolvePendingInflightLookups(storeUrl, resolved)
   }
+}
+
+async function resolveCachedChunkWithSegmentHistory(lookupUrl, tabId, manifestIndex) {
+  let resolved = await resolveCachedChunk(lookupUrl)
+  if (resolved?.item || !Number.isFinite(manifestIndex) || !Number.isFinite(tabId)) {
+    return resolved
+  }
+  const tabState = state.playlistByTab.get(tabId)
+  const history = tabState?.segmentUrlHistory?.get(manifestIndex)
+  if (!Array.isArray(history) || history.length === 0) return resolved
+
+  const lookupNormalized = stripHash(lookupUrl)
+  for (const altUrl of history) {
+    const normalized = stripHash(altUrl)
+    if (!normalized || normalized === lookupNormalized) continue
+    const alt = await resolveCachedChunk(normalized)
+    if (alt?.item) {
+      bumpActivity("segmentHistoryLookupHits", 1)
+      if (typeof ns.bridgeCacheAliasesForUrlPair === "function") {
+        void ns.bridgeCacheAliasesForUrlPair(normalized, lookupNormalized).catch(() => {})
+      }
+      return alt
+    }
+  }
+  return resolved
+}
+
+async function bridgeStoredChunkRotationAliases(tabId, storeUrl) {
+  if (!Number.isFinite(tabId) || !storeUrl) return
+  if (typeof ns.bridgeCacheAliasesForUrlPair !== "function") return
+  if (typeof ns.resolveSegmentIndexInManifest !== "function") return
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState?.segments?.length) return
+
+  const idx = ns.resolveSegmentIndexInManifest(storeUrl, tabState)
+  if (!Number.isFinite(idx)) return
+
+  const normalizedStore = stripHash(storeUrl)
+  const history = tabState.segmentUrlHistory?.get(idx)
+  if (Array.isArray(history)) {
+    for (const altUrl of history) {
+      const normalized = stripHash(altUrl)
+      if (!normalized || normalized === normalizedStore) continue
+      await ns.bridgeCacheAliasesForUrlPair(normalizedStore, normalized).catch(() => {})
+    }
+  }
+  const current = tabState.segments[idx]
+  if (current) {
+    const currentNorm = stripHash(current)
+    if (currentNorm && currentNorm !== normalizedStore) {
+      await ns.bridgeCacheAliasesForUrlPair(normalizedStore, currentNorm).catch(() => {})
+    }
+  }
+}
+
+async function awaitInflightChunkWrite(lookupUrl) {
+  const cacheKey = resolveCanonicalCacheKey(lookupUrl) || stripHash(lookupUrl)
+  if (!cacheKey || !hasInflightChunkWrite(lookupUrl)) return null
+
+  const existing = await resolveCachedChunk(lookupUrl)
+  if (existing?.item) return existing
+
+  const maxWaitMs = Number(constants.INFLIGHT_CHUNK_WRITE_WAIT_MS) || 3_000
+
+  const collapsed = await new Promise((resolve) => {
+    const entry = {
+      resolve: (value) => resolve(value),
+      timeoutId: null,
+      releaseConsumer: () => {}
+    }
+
+    entry.timeoutId = setTimeout(() => {
+      removePendingResolver(cacheKey, entry)
+      bumpActivity("inflightStoreWaitTimeouts", 1)
+      entry.resolve(null)
+    }, maxWaitMs)
+
+    if (!pendingWriteResolvers.has(cacheKey)) {
+      pendingWriteResolvers.set(cacheKey, [])
+    }
+    pendingWriteResolvers.get(cacheKey).push(entry)
+  })
+
+  if (collapsed?.item) {
+    bumpActivity("inflightStoreCollapseHits", 1)
+    return collapsed
+  }
+  return resolveCachedChunk(lookupUrl)
 }
 
 async function awaitInflightPrefetchCacheEntry(lookupUrl, tabId = null) {
@@ -367,7 +475,6 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     const method = (message.method || "GET").toUpperCase()
     const hasRange = Boolean(message.hasRange)
     const lookupUrl = stripHash(message.url)
-    const isUmpLookup = isUmpCacheKey(lookupUrl)
     const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
     const rapidSeek = isTabInRapidSeek(tabState)
     if (
@@ -382,19 +489,22 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       return
     }
 
+    if (
+      lookupUrl &&
+      /\/proxy\/oppai\/(kite|dio)\//i.test(lookupUrl) &&
+      !/\/EV9fQAQQ/i.test(lookupUrl)
+    ) {
+      sendResponse({ ok: true, hit: false, skipped: true, reason: "playlist-proxy" })
+      return
+    }
+
     bumpLookupMetric("cacheLookups", lookupUrl, 1)
-    if (isUmpLookup) {
-      if (typeof ns.recordStreamMetric === "function") {
-        ns.recordStreamMetric("ump", "lookups", 1)
-      }
-      bumpActivity("youtubeUmpLookups", 1)
-    } else if (typeof ns.recordStreamMetric === "function") {
+    if (typeof ns.recordStreamMetric === "function") {
       ns.recordStreamMetric("hls", "lookups", 1)
     }
 
     let lookupManifestIndex = null
     if (
-      !isUmpLookup &&
       Number.isFinite(tabId) &&
       tabState?.segments?.length &&
       tabState?.signatureToIndex &&
@@ -416,13 +526,11 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       }
     }
 
-    const isFirstSeenUmpKey = isUmpLookup && !state.umpLookupSeenAt.has(lookupUrl)
-    const stillInWarmupWindow =
-      isUmpLookup &&
-      (state.stats.youtubeUmpLookups || 0) <= constants.UMP_WARMUP_LOOKUP_LIMIT &&
-      (state.stats.youtubeUmpLookupHits || 0) === 0
-
-    let resolved = await resolveCachedChunk(lookupUrl)
+    let resolved = await resolveCachedChunkWithSegmentHistory(
+      lookupUrl,
+      tabId,
+      lookupManifestIndex
+    )
     let collapsedFromInflight = false
     if (!resolved?.item) {
       const collapsed = await awaitInflightPrefetchCacheEntry(lookupUrl, tabId)
@@ -435,34 +543,23 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         }
       }
     }
+    if (!resolved?.item) {
+      const storeCollapsed = await awaitInflightChunkWrite(lookupUrl)
+      if (storeCollapsed?.item) {
+        resolved = storeCollapsed
+        collapsedFromInflight = true
+        bumpActivity("requestCollapseHits", 1)
+        if (typeof ns.recordStreamMetric === "function") {
+          ns.recordStreamMetric("hls", "collapseHits", 1)
+        }
+      }
+    }
 
     if (!resolved?.item) {
-      if (isUmpLookup) {
-        if (isFirstSeenUmpKey && stillInWarmupWindow) {
-          bumpLookupMetric("cacheWarmups", lookupUrl, 1)
-          if (typeof ns.recordStreamMetric === "function") {
-            ns.recordStreamMetric("ump", "warmups", 1)
-          }
-          bumpActivity("youtubeUmpWarmups", 1)
-        } else if (!rapidSeek) {
-          recordCacheLookupMiss(lookupUrl)
-        }
-        if (isFirstSeenUmpKey) {
-          if (typeof ns.recordStreamMetric === "function") {
-            ns.recordStreamMetric("ump", "misses", 1)
-          }
-          bumpActivity("youtubeUmpLookupMisses", 1)
-          rememberUmpLookupKey(lookupUrl)
-        }
-        maybeLogUmpHealthSummary()
-      } else if (!rapidSeek) {
+      if (!rapidSeek) {
         recordCacheLookupMiss(lookupUrl)
       }
-      sendResponse({
-        ok: true,
-        hit: false,
-        warmup: isUmpLookup && isFirstSeenUmpKey && stillInWarmupWindow
-      })
+      sendResponse({ ok: true, hit: false })
       return
     }
 
@@ -479,18 +576,12 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         }
       }
     }
-    if (isUmpLookup) {
-      if (typeof ns.recordStreamMetric === "function") {
-        ns.recordStreamMetric("ump", "hits", 1)
-      }
-      bumpActivity("youtubeUmpLookupHits", 1)
-      rememberUmpLookupKey(lookupUrl)
+    if (typeof ns.recordStreamMetric === "function") {
+      ns.recordStreamMetric("hls", "hits", 1)
+    }
+    const hlsHits = ns.metrics?.registry?.hls?.hits || state.stats.cacheHits || 0
+    if (hlsHits % 25 === 0) {
       maybeLogUmpHealthSummary()
-    } else {
-      const hlsHits = ns.metrics?.registry?.hls?.hits || state.stats.cacheHits || 0
-      if (hlsHits % 25 === 0) {
-        maybeLogUmpHealthSummary()
-      }
     }
     if (typeof ns.recordSpeculativeUsed === "function") {
       ns.recordSpeculativeUsed(
@@ -499,9 +590,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         tabId
       )
     }
-    const hitLabel = isUmpLookup
-      ? "UMP cache HIT"
-      : collapsedFromInflight && resolved.via === "wire"
+    const hitLabel =
+      collapsedFromInflight && resolved.via === "wire"
         ? "Cache HIT via wire"
         : collapsedFromInflight
           ? "Cache HIT via collapse"
@@ -525,13 +615,25 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       "INFO",
       `${hitLabel}: ${lookupUrl.slice(-60)} (${byteLength} bytes${crcTag ? `, ${crcTag}` : ""})`
     )
-    sendResponse({
+    // Base64-encode alongside raw bytes so the relay can fall back when
+    // chrome.runtime.sendMessage neuters the ArrayBuffer during IPC.
+    let bytesBase64 = null
+    try {
+      bytesBase64 = arrayBufferToBase64(bytes)
+    } catch {
+      // Best-effort — raw bytes may still survive IPC.
+    }
+    const lookupResponse = {
       ok: true,
       hit: true,
       contentType: resolved.item.contentType,
       bytes,
       byteLength
-    })
+    }
+    if (bytesBase64) {
+      lookupResponse.bytesBase64 = bytesBase64
+    }
+    sendResponse(lookupResponse)
   })().catch(() => {
     sendResponse({ ok: false, hit: false })
   })
@@ -569,7 +671,7 @@ function handleInflightConsumerMutate(message, tabId) {
   }
 }
 
-function handleStoreChunk(message, sendResponse) {
+function handleStoreChunk(message, sendResponse, tabId = null) {
   ;(async () => {
     if (!state.settings.enabled) {
       sendResponse({ ok: false, error: "disabled" })
@@ -601,12 +703,19 @@ function handleStoreChunk(message, sendResponse) {
       "INFO",
       `StoreChunk accepted: source=${captureSource}, wire=${wireType}, persist=ArrayBuffer, bytes=${byteLength}${storeCrcTag ? `, ${storeCrcTag}` : ""}`
     )
+    registerInflightChunkWrite(storeUrl)
     const writeTask =
       typeof ns.safeCacheChunk === "function"
         ? () => ns.safeCacheChunk(storeUrl, message.contentType, bytes)
         : () => cacheChunk(storeUrl, message.contentType, bytes)
-    const storeResult = await enqueueStoreWrite(writeTask)
+    let storeResult
+    try {
+      storeResult = await enqueueStoreWrite(writeTask)
+    } finally {
+      releaseInflightChunkWrite(storeUrl)
+    }
     if (!storeResult?.ok) {
+      rejectPendingInflightLookups(storeUrl)
       sendResponse({
         ok: false,
         skipped: true,
@@ -623,12 +732,10 @@ function handleStoreChunk(message, sendResponse) {
       return
     }
     await flushPendingInflightLookupsAfterStore(storeUrl)
-    bumpActivity("cachedChunks", 1)
-    if (isUmpCacheKey(storeUrl)) {
-      bumpActivity("youtubeUmpChunks", 1)
-      rememberUmpLookupKey(storeUrl)
-      maybeLogUmpHealthSummary()
+    if (Number.isFinite(tabId)) {
+      void bridgeStoredChunkRotationAliases(tabId, storeUrl).catch(() => {})
     }
+    bumpActivity("cachedChunks", 1)
     void refreshCacheEntryCount(true).catch(() => {})
     addLog(
       "INFO",
@@ -785,7 +892,7 @@ function registerMessageRouter() {
       handleInflightWireResolve(message, sendResponse)
       return true
     case "AegisStream:StoreChunk":
-      handleStoreChunk(message, sendResponse)
+      handleStoreChunk(message, sendResponse, sender?.tab?.id)
       return true
     case "AegisStream:ClearCache":
       ;(async () => {
@@ -802,7 +909,6 @@ function registerMessageRouter() {
         state.pendingPrefetchByTab.clear()
         state.inflightPrefetches.clear()
         state.failedPrefetches.clear()
-        state.umpLookupSeenAt.clear()
         await computeAdaptiveCachePolicy(true).catch(() => {})
         resetStats()
         await refreshCacheEntryCount(true)
@@ -859,7 +965,7 @@ function registerMessageRouter() {
         ns.registerSpeculativePrefetch({
           url: message.url,
           tabId: sender?.tab?.id,
-          source: message.source || "cross-itag",
+          source: message.source || "speculative",
           fromItag: message.fromItag || null,
           toItag: message.toItag || null,
           fromRung: message.fromRung || null,
@@ -920,9 +1026,6 @@ function registerMessageRouter() {
           bumpActivity("prefetched", 1)
           if (typeof ns.recordSpeculativeCompleted === "function") {
             ns.recordSpeculativeCompleted(message.url, message.size, true)
-          }
-          if (message.source === "cross-itag") {
-            bumpActivity("youtubeCrossItagPrefetch", 1)
           }
           const sizeKB = message.size ? `(${(message.size / 1024).toFixed(1)} KB)` : ""
           addLog("INFO", `Prefetched ${sizeKB}: ${(message.url || "").slice(-80)}`)

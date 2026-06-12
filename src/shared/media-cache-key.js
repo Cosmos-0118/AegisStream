@@ -68,7 +68,7 @@
   }
 
   function isCanonicalCoalesceKey(value) {
-    return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
+    return typeof value === "string" && /^(?:range|aegis)\|/.test(value)
   }
 
   /**
@@ -85,7 +85,7 @@
   /** Canonical registry key — must match page cache-registry resolveRegistryKey contract. */
   function resolveRegistryKey(url) {
     if (!url || typeof url !== "string") return null
-    if (url.startsWith("ump|") || url.startsWith("range|")) return url
+    if (url.startsWith("range|")) return url
     const invariant = buildMediaInvariantKey(url)
     if (invariant) return invariant
     return stripHash(url)

@@ -41,20 +41,22 @@ function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
   const retainedAnchor = ns.variantSwitchAnchorIndex
   if (
     graceUntil > Date.now() &&
-    typeof retainedAnchor === "number" &&
-    currentTime < (Number(ns.variantSwitchTeleportSuppressSec) || 20)
+    typeof retainedAnchor === "number"
   ) {
+    const suppressSec = Number(ns.variantSwitchTeleportSuppressSec) || 20
     const mapper = manifestMapper || resolveManifestMapper()
     let mappedIndex = null
     if (mapper && typeof mapper.getSegmentIndexFromTime === "function") {
       mappedIndex = mapper.getSegmentIndexFromTime(currentTime)
     }
     if (typeof mappedIndex === "number" && mappedIndex < retainedAnchor - 2) {
-      logBridge?.(
-        `Skipped variant-switch DOM teleport at ${currentTime.toFixed(2)}s (mapped ${mappedIndex}, retained ${retainedAnchor})`,
-        "DEBUG"
-      )
-      return
+      if (currentTime < suppressSec || mappedIndex < retainedAnchor - 4) {
+        logBridge?.(
+          `Skipped variant-switch DOM teleport at ${currentTime.toFixed(2)}s (mapped ${mappedIndex}, retained ${retainedAnchor})`,
+          "DEBUG"
+        )
+        return
+      }
     }
   }
 

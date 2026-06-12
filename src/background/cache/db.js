@@ -1,10 +1,44 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { constants, state, addLog, stripHash, buildCacheKeyVariants, isUmpCacheKey, getUmpBodyHashFromCacheKey } = ns
+const { constants, state, addLog, stripHash, buildCacheKeyVariants } = ns
 let evictionInProgress = false
 let lastEvictionRunAt = 0
 let storageSystemOperational = true
 let storageBypassLogged = false
+
+/**
+ * Two-level in-memory cache index (P6): any key variant or alias -> primary
+ * chunk key. A warm lookup is one direct IDB get on the primary key instead
+ * of a variant-by-variant chunk + alias chain walk (each of which opens its
+ * own transaction).
+ */
+const MEMORY_KEY_INDEX_MAX = 6_000
+const memoryKeyIndex = new Map()
+
+function indexCacheKeys(primaryKey, aliasKeys = []) {
+  if (!primaryKey) return
+  memoryKeyIndex.set(primaryKey, primaryKey)
+  for (const alias of aliasKeys) {
+    if (alias) memoryKeyIndex.set(alias, primaryKey)
+  }
+  if (memoryKeyIndex.size > MEMORY_KEY_INDEX_MAX) {
+    const excess = memoryKeyIndex.size - MEMORY_KEY_INDEX_MAX
+    let removed = 0
+    for (const key of memoryKeyIndex.keys()) {
+      memoryKeyIndex.delete(key)
+      removed += 1
+      if (removed >= excess) break
+    }
+  }
+}
+
+function dropIndexedPrimaryKeys(primaryKeys) {
+  const drop = new Set((primaryKeys || []).filter(Boolean))
+  if (!drop.size) return
+  for (const [key, primary] of memoryKeyIndex.entries()) {
+    if (drop.has(primary)) memoryKeyIndex.delete(key)
+  }
+}
 
 function isStorageFailureError(error) {
   const name = String(error?.name || "")
@@ -410,6 +444,7 @@ async function runEvictionPass(force = false, options = {}) {
         reclaimedBytes += item.byteLength
       }
       if (keysToDelete.length > 0) {
+        dropIndexedPrimaryKeys(keysToDelete)
         if (typeof ns.unregisterCacheKeys === "function") {
           ns.unregisterCacheKeys(keysToDelete)
         }
@@ -495,6 +530,8 @@ async function cacheChunk(url, contentType, bytes) {
     existing.contentType === normalizedContentType &&
     now - existingCreatedAt < constants.CACHE_DUPLICATE_WRITE_WINDOW_MS
   ) {
+    // Bytes are already on disk under this primary key — keep the index warm.
+    indexCacheKeys(primaryKey, cacheKeys.slice(1))
     if (typeof ns.bumpActivity === "function") {
       ns.bumpActivity("storeDedupUrlWindowSkipped", 1)
       ns.bumpActivity("storeDedupSkipped", 1)
@@ -524,24 +561,10 @@ async function cacheChunk(url, contentType, bytes) {
       })
     )
   }
-  if (isUmpCacheKey(primaryKey)) {
-    const bodyHash = getUmpBodyHashFromCacheKey(primaryKey)
-    if (bodyHash) {
-      const hashAlias = `ump|${bodyHash}`
-      if (hashAlias !== primaryKey && !cacheKeys.includes(hashAlias)) {
-        aliasWrites.push(
-          dbPut(constants.STORE_ALIASES, {
-            alias: hashAlias,
-            targetUrl: primaryKey,
-            createdAt: aliasCreatedAt
-          })
-        )
-      }
-    }
-  }
   if (aliasWrites.length > 0) {
     await Promise.allSettled(aliasWrites)
   }
+  indexCacheKeys(primaryKey, cacheKeys.slice(1))
   if (typeof ns.scheduleEviction === "function") {
     ns.scheduleEviction(false)
   }
@@ -583,18 +606,92 @@ async function listCachedChunkKeys(limit = 1200) {
   })
 }
 
+async function bridgeCacheAliasesForUrlPair(oldUrl, newUrl) {
+  const oldNormalized = stripHash(oldUrl)
+  const newNormalized = stripHash(newUrl)
+  if (!oldNormalized || !newNormalized || oldNormalized === newNormalized) return false
+
+  const cached = await resolveCachedChunk(oldNormalized)
+  if (!cached?.item || !cached.key) return false
+
+  const primaryKey = cached.key
+  const newVariants = buildCacheKeyVariants(newNormalized)
+  if (!newVariants.length) return false
+
+  const now = Date.now()
+  let wrote = false
+  for (const alias of newVariants) {
+    if (!alias || alias === primaryKey) continue
+    const existing = await dbGet(constants.STORE_ALIASES, alias).catch(() => null)
+    if (existing?.targetUrl === primaryKey) {
+      indexCacheKeys(primaryKey, [alias])
+      continue
+    }
+    await dbPut(constants.STORE_ALIASES, {
+      alias,
+      targetUrl: primaryKey,
+      createdAt: now
+    })
+    indexCacheKeys(primaryKey, [alias])
+    wrote = true
+  }
+  return wrote
+}
+
+async function bridgePlaylistSegmentUrlAliases(previousSegments, newSegments, options = {}) {
+  if (!Array.isArray(previousSegments) || !Array.isArray(newSegments)) return 0
+  const end = Math.min(previousSegments.length, newSegments.length)
+  let bridged = 0
+
+  for (let i = 0; i < end; i += 1) {
+    const oldUrl = previousSegments[i]
+    const newUrl = newSegments[i]
+    if (!oldUrl || !newUrl) continue
+    if (
+      typeof ns.getManifestUrlSignature === "function" &&
+      ns.getManifestUrlSignature(oldUrl) === ns.getManifestUrlSignature(newUrl)
+    ) {
+      continue
+    }
+    if (await bridgeCacheAliasesForUrlPair(oldUrl, newUrl)) {
+      bridged += 1
+    }
+  }
+  return bridged
+}
+
 async function resolveCachedChunk(url) {
   if (!storageSystemOperational) return null
   try {
     const cacheKeys = buildCacheKeyVariants(url)
+
+    // Fast path: memory index points straight at the primary chunk key.
+    for (const key of cacheKeys) {
+      const primary = memoryKeyIndex.get(key)
+      if (!primary) continue
+      const indexed = await dbGet(constants.STORE_CHUNKS, primary)
+      if (indexed?.bytes) {
+        return { item: indexed, key, via: primary === key ? "direct" : "memory-index" }
+      }
+      // Entry evicted underneath us — drop the stale mapping and walk slow path.
+      dropIndexedPrimaryKeys([primary])
+      break
+    }
+
     for (const key of cacheKeys) {
       const direct = await dbGet(constants.STORE_CHUNKS, key)
-      if (direct?.bytes) return { item: direct, key, via: "direct" }
+      if (direct?.bytes) {
+        indexCacheKeys(direct.url || key)
+        return { item: direct, key, via: "direct" }
+      }
 
       const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
       if (!aliasEntry?.targetUrl) continue
       const aliased = await dbGet(constants.STORE_CHUNKS, aliasEntry.targetUrl)
-      if (aliased?.bytes) return { item: aliased, key, via: "alias" }
+      if (aliased?.bytes) {
+        indexCacheKeys(aliasEntry.targetUrl, [key])
+        return { item: aliased, key, via: "alias" }
+      }
       await dbDelete(constants.STORE_ALIASES, key).catch(() => {})
     }
     return null
@@ -611,6 +708,7 @@ async function clearCacheStores() {
   lastEvictionRunAt = 0
   storageSystemOperational = true
   storageBypassLogged = false
+  memoryKeyIndex.clear()
   state.settings.serveFromCache = true
   await dbClear(constants.STORE_CHUNKS)
   await dbClear(constants.STORE_ALIASES)
@@ -631,6 +729,8 @@ ns.runEvictionPass = runEvictionPass
 ns.isStorageSystemOperational = isStorageSystemOperational
 ns.engageStoragePassthroughValve = engageStoragePassthroughValve
 ns.resolveCachedChunk = resolveCachedChunk
+ns.bridgeCacheAliasesForUrlPair = bridgeCacheAliasesForUrlPair
+ns.bridgePlaylistSegmentUrlAliases = bridgePlaylistSegmentUrlAliases
 ns.clearCacheStores = clearCacheStores
 ns.computeAdaptiveCachePolicy = computeAdaptiveCachePolicy
 ns.getCacheEntryCount = getCacheEntryCount

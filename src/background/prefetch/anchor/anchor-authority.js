@@ -54,6 +54,49 @@ function shouldBlockDomAnchorDuringVariantGrace(tabState, targetIndex) {
   return targetIndex <= earlyBound
 }
 
+/** Seek-prediction teleport while the player reports t≈0 but anchor is far ahead. */
+function shouldBlockStaleSeekPredictionTeleport(tabState, targetIndex, currentTimeSec) {
+  if (typeof targetIndex !== "number") return false
+  const current = getEffectiveAnchorIndex(tabState)
+  const retained = tabState.variantSwitchAnchorIndex
+  const highAnchor =
+    (typeof current === "number" && current > 10) ||
+    (typeof retained === "number" && retained > 10)
+  if (!highAnchor) return false
+  if (typeof currentTimeSec === "number" && currentTimeSec > 5) return false
+  if (typeof current === "number" && targetIndex < current - 10) return true
+  if (
+    typeof retained === "number" &&
+    targetIndex < retained - 10 &&
+    isVariantSwitchGraceActive(tabState)
+  ) {
+    return true
+  }
+  return shouldBlockStaleTimelineSeekTarget(tabState, targetIndex)
+}
+
+/** Spurious t≈0 / timeline-start index while the playhead is far ahead (scrub / variant grace). */
+function shouldBlockStaleTimelineSeekTarget(tabState, targetIndex) {
+  if (typeof targetIndex !== "number" || targetIndex > 2) return false
+  const current = getEffectiveAnchorIndex(tabState)
+  const retained = tabState.variantSwitchAnchorIndex
+  const highAnchor =
+    (typeof current === "number" && current > 10) ||
+    (typeof retained === "number" && retained > 10)
+  if (!highAnchor) return false
+  if (isVariantSwitchGraceActive(tabState)) return true
+  if (isScrubbingTrainActive(tabState)) return true
+  if (Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)) return true
+  if (
+    typeof ns.resolveReconcileTargetIndex === "function" &&
+    typeof current === "number"
+  ) {
+    const consensus = ns.resolveReconcileTargetIndex(tabState)
+    if (typeof consensus === "number" && consensus - targetIndex > 5) return true
+  }
+  return false
+}
+
 /**
  * Whether an authoritative (non-network) anchor commit is allowed and how
  * aggressively to reset prefetch tracking.
@@ -72,13 +115,39 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
       return { allow: true, reason: null, jump: 0, purgeQueues: false }
     }
 
+    if (shouldBlockStaleTimelineSeekTarget(tabState, targetIndex)) {
+      return {
+        allow: false,
+        reason: "dom-stale-zero",
+        jump,
+        purgeQueues: false
+      }
+    }
+
     if (isScrubbingTrainActive(tabState, now)) {
+      // Scrub thumb DOM time→index mapping often reports 0 while the predictor
+      // and player segments agree on 30+. Let reconciliation own the anchor.
+      if (
+        typeof targetIndex === "number" &&
+        targetIndex <= 2 &&
+        typeof ns.resolveReconcileTargetIndex === "function"
+      ) {
+        const consensus = ns.resolveReconcileTargetIndex(tabState, now)
+        if (typeof consensus === "number" && consensus - targetIndex > 5) {
+          return {
+            allow: false,
+            reason: "scrub-dom-stale-zero",
+            jump,
+            purgeQueues: false
+          }
+        }
+      }
       return {
         allow: true,
         reason: null,
         jump,
-        // Every scrub step must hard-purge so in-flight prefetch slots stay near the playhead.
-        purgeQueues: jump > 0
+        // Soft commits during scrub — hard purge fights reconciliation.
+        purgeQueues: false
       }
     }
 
@@ -107,10 +176,36 @@ function evaluateAuthorityCommit(tabState, targetIndex, authority) {
         purgeQueues: false
       }
     }
-    return { allow: true, reason: null, jump, purgeQueues }
+    const backwardToStart =
+      typeof targetIndex === "number" &&
+      targetIndex <= 2 &&
+      typeof current === "number" &&
+      current > 10
+    return {
+      allow: true,
+      reason: null,
+      jump,
+      purgeQueues: backwardToStart ? false : purgeQueues
+    }
   }
 
   if (authority === AnchorAuthority.SEEK_PREDICTION) {
+    if (shouldBlockStaleTimelineSeekTarget(tabState, targetIndex)) {
+      return {
+        allow: false,
+        reason: "seek-prediction-stale-zero",
+        jump,
+        purgeQueues: false
+      }
+    }
+    if (shouldBlockDomAnchorDuringVariantGrace(tabState, targetIndex)) {
+      return {
+        allow: false,
+        reason: "variant-switch-grace",
+        jump,
+        purgeQueues: false
+      }
+    }
     return { allow: true, reason: null, jump, purgeQueues }
   }
 
@@ -137,4 +232,7 @@ ns.authorityLabel = authorityLabel
 ns.shouldPurgePrefetchQueues = shouldPurgePrefetchQueues
 ns.shouldPurgeQueuesDuringScrub = shouldPurgeQueuesDuringScrub
 ns.isScrubbingTrainActive = isScrubbingTrainActive
+ns.isVariantSwitchGraceActive = isVariantSwitchGraceActive
+ns.shouldBlockStaleTimelineSeekTarget = shouldBlockStaleTimelineSeekTarget
+ns.shouldBlockStaleSeekPredictionTeleport = shouldBlockStaleSeekPredictionTeleport
 })()

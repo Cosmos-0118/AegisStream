@@ -15,74 +15,27 @@ const {
   monotonicNow,
   reportRuntimeMetric,
   notifyChunkObserved,
-  isYoutubeVideoPlaybackUrl,
-  isYoutubeInternalApiUrl,
-  patchYoutubeInternalApiResponse,
-  buildYoutubeUmpState,
-  buildYoutubeChunkState,
-  buildYoutubeChunkStateFromContentRange,
-  buildYouTubePrefetchHeaders,
-  cloneResponseForPlayer,
-  createUmpProxyResponseAndCache,
-  cacheNetworkStreamInBackground,
   storeChunkFromPage,
   copyArrayBufferForBridge,
   formatStoreChunkError,
   isLikelyChunk,
+  isPlaylistUrl,
   isLikelyCacheHitCandidate,
   maybeCapturePlaylist,
   bodyToArrayBuffer,
-  rememberKnownUmpKey,
-  knownUmpCacheKeys,
+  cloneResponseForPlayer,
+  cacheNetworkStreamInBackground,
   smoother
 } = ns
 
 const networkFetch = fetchWithCircuitBreaker || originalFetch
-const UMP_STORE_RACE_RETRY_MS = 120
 const EXTENSION_STREAM_META_TIMEOUT_MS = 8000
 
-function scheduleImmediateFetchChunkCapture({
-  response,
-  url,
-  method,
-  youtubeChunk,
-  requestHeaders,
-  sourceUrl
-}) {
+function scheduleImmediateFetchChunkCapture({ response, url, method }) {
   if (ns.extensionEnabled === false || ns.serveFromCache === false) return
   if (!response?.ok || !url || !response.body) return
-  if (method !== "GET" && youtubeChunk?.type !== "ump") return
-
-  const status = response.status
-  if (
-    !(
-      status === 200 ||
-      (status === 206 && youtubeChunk?.type === "bytes")
-    )
-  ) {
-    return
-  }
-
-  let resolvedYoutubeChunk = youtubeChunk
-  if (
-    !resolvedYoutubeChunk &&
-    isYoutubeVideoPlaybackUrl(url) &&
-    status === 206
-  ) {
-    resolvedYoutubeChunk = buildYoutubeChunkStateFromContentRange(
-      url,
-      response.headers.get("content-range")
-    )
-  }
-
-  const shouldCapture =
-    isLikelyChunk(url) || Boolean(resolvedYoutubeChunk)
-  if (!shouldCapture) return
-
-  let cacheLookupUrl = url
-  if (resolvedYoutubeChunk) {
-    cacheLookupUrl = resolvedYoutubeChunk.cacheKey
-  }
+  if (method !== "GET" || response.status !== 200) return
+  if (!isLikelyChunk(url)) return
 
   let cloned
   try {
@@ -103,57 +56,35 @@ function scheduleImmediateFetchChunkCapture({
 
       const contentType =
         response.headers.get("content-type") || "application/octet-stream"
-      const storeMethod = resolvedYoutubeChunk?.type === "ump" ? "GET" : method
 
       return storeChunkFromPage({
-        url: cacheLookupUrl,
+        url,
         contentType,
         bytes: bytesForStore,
         status: 200,
-        method: storeMethod,
+        method,
         hasRange: false,
         captureSource: "fetch-clone"
-      })
-        .then((storeRes) => {
-          if (!storeRes?.ok && document.visibilityState === "visible") {
-            logBridge(
-              `Fetch immediate capture store failed (${formatStoreChunkError(storeRes)}): ${String(cacheLookupUrl).slice(-80)}`,
-              "WARN"
-            )
-          }
-          if (resolvedYoutubeChunk && resolvedYoutubeChunk.type !== "ump") {
-            const prefetchHeaders = buildYouTubePrefetchHeaders(
-              requestHeaders,
-              resolvedYoutubeChunk,
-              buffer.byteLength
-            )
-            window.AegisRangeBuffer?.triggerHeuristicPrefetch?.(
-              sourceUrl || url,
-              prefetchHeaders,
-              ns.notifyRuntime,
-              requestRuntime
-            )
-            globalThis.AegisYoutubeCrossItag?.maybeSpeculateFromPlayback?.(
-              sourceUrl || url,
-              resolvedYoutubeChunk
-            )
-          }
-        })
-        .catch(() => {})
+      }).then((storeRes) => {
+        if (!storeRes?.ok && document.visibilityState === "visible") {
+          logBridge(
+            `Fetch immediate capture store failed (${formatStoreChunkError(storeRes)}): ${String(url).slice(-80)}`,
+            "WARN"
+          )
+        }
+      }).catch(() => {})
     })
     .catch(() => {})
 }
 
-async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk) {
-  if (
-    typeof isLikelyCacheHitCandidate === "function" &&
-    !isLikelyCacheHitCandidate(cacheLookupUrl)
-  ) {
-    return {
-      lookup: { ok: true, hit: false, shortCircuit: true },
-      lookupBytes: null
-    }
-  }
+async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod) {
+  // Registry trust decay (P4): "absent" is a confidence signal, not an oracle.
+  // A low-confidence verdict shortens the lookup budget instead of skipping
+  // the lookup entirely — a small IPC is always cheaper than a wrong miss.
+  const isCandidate =
+    typeof isLikelyCacheHitCandidate !== "function" ||
+    isLikelyCacheHitCandidate(cacheLookupUrl)
+  const timeoutMs = isCandidate ? 1_500 : 600
 
   let lookup = await Promise.race([
     requestRuntime("CACHE_LOOKUP_REQUEST", {
@@ -161,68 +92,39 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, youtubeChunk
       method: cacheLookupMethod,
       hasRange: false
     }),
-    new Promise((resolve) => setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), 300))
+    new Promise((resolve) => setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), timeoutMs))
   ])
   if (lookup?.timeout) {
-    ns.reportRuntimeMetric("cache_lookup_timeout", { transport: "fetch", timeoutMs: 300 })
+    ns.reportRuntimeMetric("cache_lookup_timeout", { transport: "fetch", timeoutMs })
   }
-  let lookupBytes = resolveLookupBytes(lookup)
-  if (lookup?.ok && lookup.hit && lookupBytes) {
-    return { lookup, lookupBytes }
-  }
-
-  if (youtubeChunk?.type === "ump" && youtubeChunk.bodyHash && !lookup?.hit) {
-    const hashKey = `ump|${youtubeChunk.bodyHash}`
-    if (hashKey !== cacheLookupUrl) {
-      const hashLookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
-        url: hashKey,
-        method: cacheLookupMethod,
-        hasRange: false
-      })
-      const hashBytes = resolveLookupBytes(hashLookup)
-      if (hashLookup?.ok && hashLookup.hit && hashBytes) {
-        logBridge(`UMP cache hit via body-hash key: ${youtubeChunk.bodyHash}`, "DEBUG")
-        return { lookup: hashLookup, lookupBytes: hashBytes }
-      }
+  const lookupBytes = resolveLookupBytes(lookup)
+  if (!isCandidate && lookup?.ok && lookup.hit && lookupBytes) {
+    // Registry said absent but the lookup hit — decay registry trust.
+    if (typeof ns.noteRegistryFalseNegative === "function") {
+      ns.noteRegistryFalseNegative()
     }
   }
-
-  if (
-    youtubeChunk?.type === "ump" &&
-    knownUmpCacheKeys?.has?.(cacheLookupUrl)
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, UMP_STORE_RACE_RETRY_MS))
-    lookup = await requestRuntime("CACHE_LOOKUP_REQUEST", {
-      url: cacheLookupUrl,
-      method: cacheLookupMethod,
-      hasRange: false
-    })
-    lookupBytes = resolveLookupBytes(lookup)
-    if (lookup?.ok && lookup.hit && lookupBytes) {
-      logBridge(`UMP cache hit after store race retry: ${cacheLookupUrl.slice(-48)}`, "DEBUG")
-    }
-  }
-
   return { lookup, lookupBytes }
 }
 
-function buildChunkResponseFromBytes(lookupBytes, lookup, youtubeChunk) {
+function buildChunkResponseFromBytes(lookupBytes, lookup) {
   const headers = new Headers({
     "content-type": lookup?.contentType || "application/octet-stream",
     "x-aegisstream-cache": lookup?.fromCache ? "HIT" : "COLLAPSED"
   })
   globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
-  if (youtubeChunk?.type === "bytes" && Number.isFinite(youtubeChunk.start)) {
-    const actualEnd = Number.isFinite(youtubeChunk.end)
-      ? youtubeChunk.end
-      : youtubeChunk.start + lookupBytes.byteLength - 1
-    headers.set("content-range", `bytes ${youtubeChunk.start}-${actualEnd}/*`)
-    return new Response(lookupBytes, { status: 206, headers })
-  }
   return new Response(lookupBytes, { status: 200, headers })
 }
 
 async function shouldAttemptRequestCollapse(url, cacheLookupUrl) {
+  // Queued-but-not-started prefetch: start it now and join its wire instead
+  // of opening a duplicate socket for bytes the worker was about to fetch.
+  if (
+    typeof ns.demandStartQueuedPrefetch === "function" &&
+    ns.demandStartQueuedPrefetch(url, cacheLookupUrl)
+  ) {
+    return true
+  }
   if (
     typeof ns.isNetworkFetchInflight === "function" &&
     ns.isNetworkFetchInflight(url, cacheLookupUrl)
@@ -243,7 +145,6 @@ async function tryCollapseOntoInflightPrefetch({
   url,
   cacheLookupUrl,
   cacheLookupMethod,
-  youtubeChunk,
   requestStartedAt
 }) {
   if (typeof ns.awaitCollapsedNetworkDelivery !== "function") return null
@@ -255,7 +156,7 @@ async function tryCollapseOntoInflightPrefetch({
   )
   reportRuntimeMetric("request_collapse_attempt", {
     transport: "fetch",
-    streamType: youtubeChunk?.type || "generic"
+    streamType: "hls"
   })
 
   const collapsed = await ns.awaitCollapsedNetworkDelivery(
@@ -264,15 +165,14 @@ async function tryCollapseOntoInflightPrefetch({
     async () => {
       const { lookup, lookupBytes } = await lookupCachedChunk(
         cacheLookupUrl,
-        cacheLookupMethod,
-        youtubeChunk
+        cacheLookupMethod
       )
       if (lookup?.ok && lookup.hit && lookupBytes) {
         return {
           ok: true,
           bytes: lookupBytes,
           contentType: lookup.contentType,
-          status: youtubeChunk?.type === "bytes" ? 206 : 200,
+          status: 200,
           fromCache: true
         }
       }
@@ -295,18 +195,15 @@ async function tryCollapseOntoInflightPrefetch({
       : 0
   reportRuntimeMetric("request_collapse_hit", {
     transport: "fetch",
-    streamType: youtubeChunk?.type || "generic",
+    streamType: "hls",
     latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt)),
     fromCache: collapsed.fromCache === true,
     savedBytes
   })
-  if (youtubeChunk?.type === "ump") {
-    rememberKnownUmpKey(cacheLookupUrl)
-  }
   if (collapsed.fromCache === true && typeof ns.noteLocalCacheKey === "function") {
     ns.noteLocalCacheKey(cacheLookupUrl)
   }
-  return buildChunkResponseFromBytes(collapsed.bytes, collapsed, youtubeChunk)
+  return buildChunkResponseFromBytes(collapsed.bytes, collapsed)
 }
 
 async function aegisFetch(input, init) {
@@ -319,7 +216,7 @@ async function aegisFetch(input, init) {
 }
 
 async function aegisFetchInner(input, init) {
-  const { url, method, hasRange, requestHeaders } = getRequestDetails(input, init)
+  const { url, method, requestHeaders } = getRequestDetails(input, init)
   const requestStartedAt = monotonicNow()
 
   if (ns.extensionEnabled === false) {
@@ -340,107 +237,38 @@ async function aegisFetchInner(input, init) {
     }
   }
 
-  if (method === "POST" && isYoutubeInternalApiUrl(url)) {
-    const apiResponse = await networkFetch(input, init)
-    return patchYoutubeInternalApiResponse(apiResponse)
-  }
-
-  let youtubeChunk = null
-  const isYoutubePlayback = isYoutubeVideoPlaybackUrl(url)
-  if (isYoutubePlayback) {
-    globalThis.AegisYoutubeCrossItag?.recordTemplate?.(url)
-    youtubeChunk = buildYoutubeChunkState(url, requestHeaders)
-    if (!youtubeChunk && method === "POST") {
-      youtubeChunk = await buildYoutubeUmpState(url, input, init)
-    }
-
-    if (youtubeChunk?.type === "bytes") {
-      logBridge(
-        `Intercepted YouTube byte-range via fetch: bytes ${youtubeChunk.start}-${youtubeChunk.end !== null ? youtubeChunk.end : "*"}`,
-        "DEBUG"
-      )
-    } else if (youtubeChunk?.type === "sq") {
-      logBridge(`Intercepted YouTube sequence via fetch: sq=${youtubeChunk.start}`, "DEBUG")
-    } else if (youtubeChunk?.type === "ump") {
-      logBridge(
-        `Intercepted YouTube UMP POST via body hash: ${youtubeChunk.bodyHash} (${youtubeChunk.bodyLength} bytes)`,
-        "DEBUG"
-      )
-      reportRuntimeMetric("youtube_ump_request", {
-        bodyHash: youtubeChunk.bodyHash,
-        bodyLength: youtubeChunk.bodyLength
-      })
-    } else if (hasRange) {
-      logBridge(`YouTube fetch had Range header but parse failed: ${url.slice(0, 80)}`, "WARN")
-    } else if (method === "POST") {
-      logBridge(`YouTube POST videoplayback request had no hashable body: ${url.slice(0, 80)}`, "DEBUG")
-    } else {
-      logBridge(`YouTube videoplayback request had no range/sq identifier: ${url.slice(0, 80)}`, "DEBUG")
-    }
-  }
-
-  const shouldInterceptGet = method === "GET" && url && (isLikelyChunk(url) || Boolean(youtubeChunk))
-  const shouldInterceptPost = method === "POST" && youtubeChunk?.type === "ump"
-  const shouldIntercept = shouldInterceptGet || shouldInterceptPost
+  const shouldIntercept =
+    method === "GET" && url && isLikelyChunk(url) && !isPlaylistUrl(url)
   if (shouldIntercept && url) {
     notifyChunkObserved(url)
   }
 
-  // For non-chunk GETs, let them through but watch for playlist responses
-  if (!shouldIntercept || (hasRange && !youtubeChunk)) {
+  if (!shouldIntercept) {
     const networkResponse = await networkFetch(input, init)
 
-    // Check if the response is a playlist we should capture
-    if (url && networkResponse.ok && !youtubeChunk) {
+    if (url && networkResponse.ok) {
       try {
         const ct = networkResponse.headers.get("content-type") || ""
         maybeCapturePlaylist(url, ct, networkResponse.clone())
       } catch { /* ignore */ }
     }
 
-    if (url && method === "GET" && isLikelyChunk(url)) {
-      scheduleImmediateFetchChunkCapture({
-        response: networkResponse,
-        url,
-        method,
-        youtubeChunk: null,
-        requestHeaders,
-        sourceUrl: url
-      })
-    }
-
     return networkResponse
   }
 
-  let cacheLookupUrl = url
-  let cacheLookupMethod = method
+  const cacheLookupUrl = url
+  const cacheLookupMethod = method
 
-  if (youtubeChunk) {
-    cacheLookupUrl = youtubeChunk.cacheKey
-    if (youtubeChunk.type === "ump") {
-      // Background cache policies are GET-oriented; UMP keys are synthetic.
-      cacheLookupMethod = "GET"
-    }
-  }
-
-  // --- Chunk request: try cache-first ---
   try {
-    const { lookup, lookupBytes } = await lookupCachedChunk(
-      cacheLookupUrl,
-      cacheLookupMethod,
-      youtubeChunk
-    )
+    const { lookup, lookupBytes } = await lookupCachedChunk(cacheLookupUrl, cacheLookupMethod)
     if (lookup?.ok && lookup.hit && lookupBytes) {
-      if (youtubeChunk?.type === "ump") {
-        rememberKnownUmpKey(cacheLookupUrl)
-      }
       if (typeof ns.noteLocalCacheKey === "function") {
         ns.noteLocalCacheKey(cacheLookupUrl)
       }
       reportRuntimeMetric("request_first_byte", {
         source: "cache",
         transport: "fetch",
-        streamType: youtubeChunk?.type || "generic",
+        streamType: "hls",
         latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
       })
 
@@ -449,16 +277,6 @@ async function aegisFetchInner(input, init) {
         "x-aegisstream-cache": "HIT"
       })
       globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
-      if (
-        youtubeChunk?.type === "bytes" &&
-        Number.isFinite(youtubeChunk.start)
-      ) {
-        const actualEnd = Number.isFinite(youtubeChunk.end)
-          ? youtubeChunk.end
-          : youtubeChunk.start + lookupBytes.byteLength - 1
-        headers.set("content-range", `bytes ${youtubeChunk.start}-${actualEnd}/*`)
-        return new Response(lookupBytes, { status: 206, headers })
-      }
       return new Response(lookupBytes, { status: 200, headers })
     }
   } catch {
@@ -470,14 +288,13 @@ async function aegisFetchInner(input, init) {
       url,
       cacheLookupUrl,
       cacheLookupMethod,
-      youtubeChunk,
       requestStartedAt
     })
     if (collapsedResponse) {
       reportRuntimeMetric("request_first_byte", {
         source: "collapse",
         transport: "fetch",
-        streamType: youtubeChunk?.type || "generic",
+        streamType: "hls",
         latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
       })
       return collapsedResponse
@@ -489,21 +306,21 @@ async function aegisFetchInner(input, init) {
   let networkResponse
   let chunkCacheCaptureHandled = false
   try {
-    let headersObj = {};
+    const headersObj = {}
     if (requestHeaders) {
       for (const [k, v] of requestHeaders.entries()) {
-        headersObj[k] = v;
+        headersObj[k] = v
       }
     }
 
-    let bodyBytes = null;
+    let bodyBytes = null
     if (init && Object.prototype.hasOwnProperty.call(init, "body")) {
-      bodyBytes = await bodyToArrayBuffer(init.body);
+      bodyBytes = await bodyToArrayBuffer(init.body)
     } else if (input instanceof Request) {
       try {
-        bodyBytes = await input.clone().arrayBuffer();
+        bodyBytes = await input.clone().arrayBuffer()
       } catch {
-        bodyBytes = null;
+        bodyBytes = null
       }
     }
 
@@ -546,77 +363,35 @@ async function aegisFetchInner(input, init) {
     logBridge(`Extension fetch error (${e.message}), falling back`, "WARN")
     networkResponse = await networkFetch(input, init)
   }
-  if (youtubeChunk?.type !== "ump") {
-    reportRuntimeMetric("request_first_byte", {
-      source: "network",
-      transport: "fetch",
-      streamType: youtubeChunk?.type || "generic",
-      latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
-    })
-  }
 
-  // Opportunistically cache the chunk response
+  reportRuntimeMetric("request_first_byte", {
+    source: "network",
+    transport: "fetch",
+    streamType: "hls",
+    latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+  })
+
   try {
     if (
-      !youtubeChunk &&
-      isYoutubePlayback &&
-      networkResponse.status === 206
-    ) {
-      const recovered = buildYoutubeChunkStateFromContentRange(
-        url,
-        networkResponse.headers.get("content-range")
-      )
-      if (recovered) {
-        youtubeChunk = recovered
-        cacheLookupUrl = recovered.cacheKey
-        logBridge(
-          `Recovered YouTube byte-range from response header: bytes ${recovered.start}-${recovered.end}`,
-          "DEBUG"
-        )
-      }
-    }
-
-    if (
       networkResponse.ok &&
-      (
-        method === "POST" ||
-        networkResponse.status === 200 ||
-        (networkResponse.status === 206 && youtubeChunk?.type === "bytes")
-      )
+      (networkResponse.status === 200 || networkResponse.status === 206) &&
+      networkResponse.body
     ) {
       const contentType =
         networkResponse.headers.get("content-type") || "application/octet-stream"
+      const [playerStream, cacheStream] = networkResponse.body.tee()
+      const playerResponse = cloneResponseForPlayer(networkResponse, playerStream)
 
-      if (youtubeChunk?.type === "ump" && networkResponse.body) {
-        chunkCacheCaptureHandled = true
-        return createUmpProxyResponseAndCache({
-          networkResponse,
-          cacheLookupUrl,
-          contentType,
-          urlForLog: cacheLookupUrl,
-          captureForCache: true,
-          requestStartedAt
-        })
-      }
+      cacheNetworkStreamInBackground({
+        stream: cacheStream,
+        cacheLookupUrl,
+        contentType,
+        storeMethod: method,
+        urlForLog: cacheLookupUrl
+      })
 
-      if (networkResponse.body) {
-        const [playerStream, cacheStream] = networkResponse.body.tee()
-        const playerResponse = cloneResponseForPlayer(networkResponse, playerStream)
-
-        cacheNetworkStreamInBackground({
-          stream: cacheStream,
-          cacheLookupUrl,
-          contentType,
-          storeMethod: youtubeChunk?.type === "ump" ? "GET" : method,
-          urlForLog: cacheLookupUrl,
-          youtubeChunk,
-          requestHeaders,
-          sourceUrl: url
-        })
-
-        chunkCacheCaptureHandled = true
-        return playerResponse
-      }
+      chunkCacheCaptureHandled = true
+      return playerResponse
     }
   } catch {
     // Ignore store failures
@@ -626,10 +401,7 @@ async function aegisFetchInner(input, init) {
     scheduleImmediateFetchChunkCapture({
       response: networkResponse,
       url,
-      method,
-      youtubeChunk,
-      requestHeaders,
-      sourceUrl: url
+      method
     })
   }
   return networkResponse

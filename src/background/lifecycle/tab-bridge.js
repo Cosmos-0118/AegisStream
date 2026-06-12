@@ -26,17 +26,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function isYouTubeUrl(url) {
-  if (typeof url !== "string") return false
-  try {
-    const parsed = new URL(url)
-    const host = parsed.hostname || ""
-    return host === "youtube.com" || host.endsWith(".youtube.com")
-  } catch {
-    return false
-  }
-}
-
 async function pingTabBridgeOnce(tabId) {
   try {
     const response = await chrome.tabs.sendMessage(tabId, { type: "AegisStream:Ping" })
@@ -62,13 +51,6 @@ async function injectTabBridgeScripts(tabId, tabUrl) {
     files: ns.ISOLATED_CONTENT_FILES,
     world: "ISOLATED"
   })
-  if (isYouTubeUrl(tabUrl)) {
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: false },
-      files: ns.YOUTUBE_MAIN_PAGE_FILES,
-      world: "MAIN"
-    })
-  }
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: false },
     files: ns.MAIN_PAGE_SCRIPT_FILES,

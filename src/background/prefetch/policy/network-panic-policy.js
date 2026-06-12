@@ -41,7 +41,7 @@ function buildSettingsPayloadForTabs() {
       : constants.BUFFER_TARGET_RUNWAY_SEC,
     networkFirstByteP95Ms: Number(state.stats?.networkFirstByteP95Ms) || 0,
     speculativeAdaptiveMode: adaptive?.mode || state.speculativeAdaptiveMode || "full",
-    crossItagAllowed: adaptive?.crossItag === true
+    crossItagAllowed: false
   }
 }
 

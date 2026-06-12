@@ -22,7 +22,7 @@ const sandbox = {
     AegisBackground: {
       constants: {
         MAX_TTFB_SAMPLES: 50,
-        UMP_HEALTH_LOG_INTERVAL_MS: 30_000
+        HEALTH_LOG_INTERVAL_MS: 30_000
       },
       state: {
         stats: {

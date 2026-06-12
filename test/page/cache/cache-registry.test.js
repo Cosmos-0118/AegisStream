@@ -146,24 +146,13 @@ assert(
   "fresh signature on same segment must match in-flight coalesce intent"
 )
 
-const rangeKey = "range|yt|id:abc;itag:248|0-654491"
-ns.buildYoutubeChunkState = () => ({
-  type: "bytes",
-  start: 0,
-  end: 654491,
-  cacheKey: rangeKey
-})
-const rawPlaybackUrl =
-  "https://rr1---sn-abc.googlevideo.com/videoplayback?id=abc&itag=248&range=0-654491&sig=zzz"
+const rangeKey = "range|cdn|seg-1|0-654491"
 ns.clearPrefetchIntent(prefetchWithToken)
-ns.notePrefetchIntent(rawPlaybackUrl)
+ns.notePrefetchIntent(rangeKey)
+assert(ns.isKeyInFlight(rangeKey) === true, "canonical range keys track in-flight intent")
 assert(
-  ns.isKeyInFlight(rangeKey) === true,
-  "raw YouTube prefetch URL must match canonical range cache lookup key"
-)
-assert(
-  ns.resolveCanonicalCoalesceKey(rawPlaybackUrl) === rangeKey,
-  "resolveCanonicalCoalesceKey should align prefetch and XHR namespaces"
+  ns.resolveCanonicalCoalesceKey(rangeKey) === rangeKey,
+  "resolveCanonicalCoalesceKey passes through range keys"
 )
 
 console.log("cache-registry.test.js: all assertions passed")

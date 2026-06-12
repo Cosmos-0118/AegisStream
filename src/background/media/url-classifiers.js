@@ -14,7 +14,6 @@ function isLikelyChunkUrl(url) {
   if (!url) return false
   if (/\.(ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4)($|\?)/i.test(url)) return true
   if (/\b(segment|frag|chunk|Fragments)\b/i.test(url)) return true
-  if (/googlevideo\.com\/videoplayback\b/i.test(url)) return true
   if (/\bakamaihd\.net\b.*\b(media|seg)\b/i.test(url)) return true
   if (/\bcloudfront\.net\b.*\.(ts|m4s)($|\?)/i.test(url)) return true
   if (/\bttvnw\.net\b/i.test(url)) return true

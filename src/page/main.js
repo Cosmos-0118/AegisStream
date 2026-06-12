@@ -10,10 +10,6 @@ if (
 }
 const { logBridge, installFetchInterceptor, installXhrInterceptor, installPageSmoother } = ns
 
-if (window.__aegisKillUmpStatus) {
-  logBridge(`[Kill UMP] ${window.__aegisKillUmpStatus}`, "INFO")
-}
-
 logBridge("AegisStream page-bridge successfully injected into MAIN world")
 if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
   logBridge(

@@ -36,6 +36,9 @@ const {
   isCurrentNetworkGeneration
 } = sandbox.self.AegisBackground
 
+sandbox.self.AegisBackground.isVariantSwitchGraceActive = (tabState) =>
+  Date.now() < Number(tabState?.variantSwitchGraceUntil || 0)
+
 function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
@@ -69,6 +72,10 @@ assert(
 assert(
   isSoftScrubDelegateSource("delegate-scrub-snap-back"),
   "scrub snap-back is soft delegate"
+)
+assert(
+  isSoftScrubDelegateSource("delegate-anchor-reconciliation"),
+  "anchor reconciliation is soft delegate"
 )
 assert(
   !isDestructiveDelegateSource("delegate-scrub-velocity-prewarm"),
@@ -194,6 +201,12 @@ assert(
 assert(
   (tabState.playbackGeneration || tabState.networkGeneration || 0) === genBeforeDelegate,
   "delegate-chunk-observed must not increment playback generation"
+)
+
+const variantTab = { variantSwitchGraceUntil: Date.now() + 8_000, variantSwitchAnchorIndex: 37 }
+assert(
+  isSoftScrubDelegateSource("seek-prediction", variantTab) === true,
+  "seek-prediction must be soft during variant-switch grace"
 )
 
 console.log("network-generation.test.js: OK")

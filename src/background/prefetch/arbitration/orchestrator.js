@@ -303,6 +303,19 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
     : typeof ns.shouldPurgePrefetchQueues === "function"
       ? ns.shouldPurgePrefetchQueues(jump)
       : jump >= (Number(constants.TELEPORT_QUEUE_PURGE_THRESHOLD) || 20)
+  if (
+    typeof clampedTarget === "number" &&
+    clampedTarget <= 2 &&
+    typeof oldAnchor === "number" &&
+    oldAnchor > 10
+  ) {
+    purgeQueues = false
+  }
+  // Reconciliation corrects a stale anchor — never hard-teleport; that would
+  // bump generation and enter the teleport-mode abort spiral seen in logs.
+  if (source === "anchor-reconciliation") {
+    purgeQueues = false
+  }
   if (timelineRestart && !scrubbingTrain) {
     purgeQueues = false
     addLog(
@@ -319,6 +332,8 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
         Date.now() + (Number(constants.PASSIVE_HYSTERESIS_MUTE_MS) || 1_500)
     }
   }
+
+  pruneInflightSegmentIndices(tabState, clampedTarget)
 
   tabState.hasAnchor = true
   tabState.anchorIndex = clampedTarget
@@ -378,6 +393,37 @@ function commitAnchorFromAuthority(tabId, targetIndex, authority, source = "anch
     softCommitAnchor(tabId, tabState, clampedTarget, source)
   }
   return true
+}
+
+/**
+ * Anchor reconciliation: when the predictor / player-observed consensus has
+ * diverged from the committed anchor for long enough, promote it so prefetch
+ * windows chase the real playhead instead of a stale DOM anchor (the
+ * "anchor=0 while predictor wants 8" scrub failure mode).
+ */
+function maybeReconcileAnchor(tabId, tabState, now = Date.now()) {
+  if (!tabState?.segments?.length) return false
+  if (typeof ns.evaluateAnchorReconciliation !== "function") return false
+  const decision = ns.evaluateAnchorReconciliation(tabState, now)
+  if (!decision.promote || typeof decision.targetIndex !== "number") return false
+
+  const authority = ns.AnchorAuthority?.SEEK_PREDICTION ?? 2
+  addLog(
+    "INFO",
+    `Anchor reconciliation on tab ${tabId}: anchor=${tabState.anchorIndex ?? "none"} -> consensus=${decision.targetIndex} (divergence=${decision.divergence ?? "?"}, ${decision.reason})`
+  )
+  const committed = commitAnchorFromAuthority(
+    tabId,
+    decision.targetIndex,
+    authority,
+    "anchor-reconciliation"
+  )
+  // Re-arm dwell + cooldown even when the commit was skipped (e.g. effective
+  // anchor already matches) so a refused promotion cannot spin every signal.
+  if (typeof ns.markAnchorReconciliationPromoted === "function") {
+    ns.markAnchorReconciliationPromoted(tabState, now)
+  }
+  return committed
 }
 
 function anchorJumpForTab(tabState, targetIndex) {
@@ -495,8 +541,24 @@ function handleScrubVelocityPrefetch(tabId, payload = {}) {
   tabState.lastScrubVelocityDelegateAt = now
   tabState.lastScrubVelocityScheduleAt = now
 
-  const predictedIndex = Number(payload.predictedIndex)
+  let predictedIndex = Number(payload.predictedIndex)
   if (!Number.isFinite(predictedIndex)) return
+  const effectiveAnchor =
+    typeof ns.getEffectiveAnchorIndex === "function"
+      ? ns.getEffectiveAnchorIndex(tabState)
+      : tabState.anchorIndex
+  const seekObservedIndex =
+    typeof tabState.predictedAnchorIndex === "number"
+      ? tabState.predictedAnchorIndex
+      : effectiveAnchor
+  if (
+    typeof seekObservedIndex === "number" &&
+    (predictedIndex <= 2 || Math.abs(predictedIndex - seekObservedIndex) > 8) &&
+    seekObservedIndex > 6 &&
+    (ns.isScrubbingTrainActive?.(tabState) || isTabInSeekChurnAggressive(tabState))
+  ) {
+    predictedIndex = seekObservedIndex
+  }
   const radius = Math.max(1, Number(constants.SCRUB_VELOCITY_PREFETCH_RADIUS) || 3)
   let clamped = Math.max(0, Math.min(Math.round(predictedIndex), tabState.segments.length - 1))
   const currentIndex = Number(payload.currentIndex)
@@ -510,9 +572,24 @@ function handleScrubVelocityPrefetch(tabId, payload = {}) {
       )
     )
   }
+  pruneInflightSegmentIndices(tabState, clamped)
   const start = Math.max(0, clamped - radius)
   const windowSize = radius * 2 + 1
-  const needed = countPrefetchWindowNeedingFetch(tabId, tabState, start, windowSize)
+  let needed = countPrefetchWindowNeedingFetch(tabId, tabState, start, windowSize)
+  if (
+    needed === 0 &&
+    tabState.activeInflightSegmentIndices instanceof Set &&
+    tabState.activeInflightSegmentIndices.size > 0
+  ) {
+    let overlapsWindow = false
+    for (const idx of tabState.activeInflightSegmentIndices) {
+      if (idx >= start && idx < start + windowSize) overlapsWindow = true
+    }
+    if (!overlapsWindow) {
+      tabState.activeInflightSegmentIndices.clear()
+      needed = countPrefetchWindowNeedingFetch(tabId, tabState, start, windowSize)
+    }
+  }
   if (needed === 0) {
     if (typeof ns.recordScrubPrewarmSkippedDedup === "function") {
       ns.recordScrubPrewarmSkippedDedup()
@@ -559,6 +636,17 @@ function handleForceTeleportAnchor(tabId, payload = {}) {
       `Suppressed variant-switch DOM teleport on tab ${tabId}: index ${clampedTarget} (retained ${tabState.variantSwitchAnchorIndex}, t=${Number(payload.currentTimeSec).toFixed?.(2) ?? payload.currentTimeSec}s)`
     )
     scheduleVariantSwitchWarmPrefetch(tabId, tabState)
+    return
+  }
+  if (
+    typeof ns.shouldBlockStaleTimelineSeekTarget === "function" &&
+    ns.shouldBlockStaleTimelineSeekTarget(tabState, clampedTarget)
+  ) {
+    addLog(
+      "DEBUG",
+      `Suppressed stale DOM teleport on tab ${tabId}: index ${clampedTarget} (effective ${typeof ns.getEffectiveAnchorIndex === "function" ? ns.getEffectiveAnchorIndex(tabState) : tabState.anchorIndex}, t=${Number(payload.currentTimeSec).toFixed?.(2) ?? payload.currentTimeSec}s)`
+    )
+    maybeReconcileAnchor(tabId, tabState)
     return
   }
   if (typeof ns.armTeleportPriorityLane === "function") {
@@ -865,14 +953,27 @@ function handleUnifiedSeekState(tabId, rawPayload = {}) {
     }
     const predictedVelocityIndex = Number(payload.velocityPredictedIndex)
     const velocitySegPerSec = Number(payload.velocitySegPerSec)
-    if (Number.isFinite(predictedVelocityIndex) && Number.isFinite(velocitySegPerSec)) {
-      handleScrubVelocityPrefetch(tabId, {
-        predictedIndex: predictedVelocityIndex,
-        velocitySegPerSec,
-        currentIndex:
-          typeof payload.currentIndex === "number" ? payload.currentIndex : estimatedIndex
-      })
+    const minScrubVelocity = Number(constants.SCRUB_VELOCITY_MIN_SEGMENTS_PER_SEC) || 0.5
+    if (Number.isFinite(velocitySegPerSec)) {
+      const scrubTargetIndex =
+        Math.abs(velocitySegPerSec) >= minScrubVelocity &&
+        Number.isFinite(predictedVelocityIndex)
+          ? predictedVelocityIndex
+          : estimatedIndex
+      if (Number.isFinite(scrubTargetIndex)) {
+        tabState.velocityPredictedIndex = Math.max(0, Math.round(scrubTargetIndex))
+        tabState.velocityPredictedAt = now
+        handleScrubVelocityPrefetch(tabId, {
+          predictedIndex: scrubTargetIndex,
+          velocitySegPerSec,
+          currentIndex:
+            typeof payload.currentIndex === "number" ? payload.currentIndex : estimatedIndex
+        })
+      }
     }
+    // Passenger phase suppresses predictor commits, but a persistently
+    // diverged consensus must still be allowed to re-seat the anchor.
+    maybeReconcileAnchor(tabId, tabState, now)
     if (payload.isRelease === true && !isScrubbing) {
       const brokeLock = maybeBreakPassengerLockForStallRecovery(tabId, tabState, {
         isRelease: true,
@@ -934,6 +1035,11 @@ function handleSeekPrediction(tabId, currentTimeSec, options = {}) {
         source: "seek-prediction-scrub-suppressed"
       })
     }
+    if (typeof estimatedIndex === "number") {
+      tabState.predictedAnchorIndex = estimatedIndex
+      tabState.predictedAnchorAt = Date.now()
+      maybeReconcileAnchor(tabId, tabState)
+    }
     return
   }
 
@@ -978,6 +1084,20 @@ function handleSeekPrediction(tabId, currentTimeSec, options = {}) {
 
   if (typeof previousIndex === "number") {
     const jump = Math.abs(estimatedIndex - previousIndex)
+    if (
+      typeof ns.shouldBlockStaleSeekPredictionTeleport === "function" &&
+      ns.shouldBlockStaleSeekPredictionTeleport(tabState, estimatedIndex, currentTimeSec)
+    ) {
+      maybeReconcileAnchor(tabId, tabState)
+      return
+    }
+    if (
+      typeof ns.shouldBlockStaleTimelineSeekTarget === "function" &&
+      ns.shouldBlockStaleTimelineSeekTarget(tabState, estimatedIndex)
+    ) {
+      maybeReconcileAnchor(tabId, tabState)
+      return
+    }
     if (jump >= teleportThreshold) {
       const authority = ns.AnchorAuthority?.SEEK_PREDICTION ?? 2
       commitAnchorFromAuthority(tabId, estimatedIndex, authority, "seek-prediction")
@@ -1602,6 +1722,17 @@ function rememberMediaPlaylistUrl(tabState, playlistUrl, tabId = null) {
   }
 }
 
+function isTeleportModePrefetchSource(source = "") {
+  const clean =
+    typeof ns.normalizeLifecycleEventSource === "function"
+      ? ns.normalizeLifecycleEventSource(source)
+      : String(source || "")
+          .replace(/^delegate-/, "")
+          .toLowerCase()
+          .trim()
+  return clean === "teleport-mode" || clean === "teleport-mode-retained"
+}
+
 function shouldAbortDelegatedBeforeSend(tabState, source = "") {
   if (!tabState) return false
   if (
@@ -1616,9 +1747,22 @@ function shouldAbortDelegatedBeforeSend(tabState, source = "") {
   ) {
     return false
   }
-  if (Date.now() < Number(tabState.scrubbingTrainUntil || 0)) return true
-  if (Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)) return true
-  if (Date.now() < Number(tabState.teleportModeUntil || 0)) return true
+  const now = Date.now()
+  const teleportPrefetch = isTeleportModePrefetchSource(source)
+  // enterTeleportMode already bumped generation once. Re-aborting on every
+  // teleport-mode delegate was the gen-12→44 self-cancel loop in validation logs.
+  if (teleportPrefetch && now < Number(tabState.teleportModeUntil || 0)) {
+    return false
+  }
+  if (now < Number(tabState.scrubbingTrainUntil || 0)) {
+    return !teleportPrefetch
+  }
+  if (now < Number(tabState.seekChurnAggressiveUntil || 0)) {
+    return !teleportPrefetch
+  }
+  if (now < Number(tabState.teleportModeUntil || 0)) {
+    return !teleportPrefetch
+  }
   return /scrub|velocity|teleport|snap|churn/i.test(String(source || ""))
 }
 
@@ -1751,6 +1895,37 @@ async function delegatePrefetchToPage(tabId, urls, options = {}) {
     addLog("WARN", `Could not delegate prefetch to tab ${tabId}: ${e.message}`)
     return false
   }
+}
+
+function mergeSegmentUrlHistory(previousHistory, previousSegments, newSegments, anchorIndex) {
+  const history =
+    previousHistory instanceof Map ? new Map(previousHistory) : new Map()
+  if (!Array.isArray(previousSegments) || !Array.isArray(newSegments)) {
+    return history
+  }
+  const maxDepth = Number(constants.SEGMENT_URL_HISTORY_DEPTH) || 4
+  const end = Math.min(previousSegments.length, newSegments.length)
+
+  for (let i = 0; i < end; i += 1) {
+    const oldUrl = previousSegments[i]
+    const newUrl = newSegments[i]
+    if (!oldUrl && !newUrl) continue
+    const list = [...(history.get(i) || [])]
+    if (oldUrl && oldUrl !== newUrl) {
+      const oldNorm = stripHash(oldUrl)
+      if (oldNorm && !list.includes(oldNorm)) list.push(oldNorm)
+    }
+    if (newUrl) {
+      const newNorm = stripHash(newUrl)
+      if (newNorm) {
+        const without = list.filter((entry) => entry !== newNorm)
+        history.set(i, [newNorm, ...without].slice(0, maxDepth))
+        continue
+      }
+    }
+    history.set(i, list.slice(0, maxDepth))
+  }
+  return history
 }
 
 function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
@@ -2152,6 +2327,30 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     }
   }
 
+  if (
+    urlsChanged &&
+    !episodeChangedByFingerprint &&
+    previous?.hasAnchor &&
+    typeof previous.anchorIndex === "number" &&
+    typeof anchorIndex === "number" &&
+    anchorIndex < previous.anchorIndex - 1
+  ) {
+    const floorIndex = Math.max(
+      previous.anchorIndex,
+      typeof previous.predictedAnchorIndex === "number" ? previous.predictedAnchorIndex : 0
+    )
+    if (floorIndex - anchorIndex > 1) {
+      const raised = Math.min(floorIndex, normalizedSegments.length - 1)
+      addLog(
+        "DEBUG",
+        `Monotonic refresh anchor raised ${anchorIndex} -> ${raised} (tab ${tabId})`
+      )
+      anchorIndex = raised
+      hasAnchor = true
+      anchorRetainedByRefresh = true
+    }
+  }
+
   if (anchorRetainedByRefresh && typeof anchorIndex === "number") {
     const via = previous?.isLive === true ? "media-sequence" : "segment-index"
     addLog(
@@ -2195,8 +2394,25 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     )
   }
 
+  const segmentUrlHistory =
+    urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0
+      ? mergeSegmentUrlHistory(
+          previous.segmentUrlHistory,
+          previous.segments,
+          normalizedSegments,
+          typeof anchorIndex === "number"
+            ? anchorIndex
+            : typeof previous?.anchorIndex === "number"
+              ? previous.anchorIndex
+              : null
+        )
+      : previous?.segmentUrlHistory instanceof Map
+        ? new Map(previous.segmentUrlHistory)
+        : new Map()
+
   const tabState = {
     segments: normalizedSegments,
+    segmentUrlHistory,
     manifestSignatures,
     signatureToIndex,
     indexQuality,
@@ -2255,6 +2471,18 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
         ? previous.predictedAnchorIndex
         : null,
     predictedAnchorAt: Number(previous?.predictedAnchorAt || 0),
+    lastPlayerObservedIndex:
+      typeof previous?.lastPlayerObservedIndex === "number"
+        ? previous.lastPlayerObservedIndex
+        : null,
+    lastPlayerObservedAt: Number(previous?.lastPlayerObservedAt || 0),
+    velocityPredictedIndex:
+      typeof previous?.velocityPredictedIndex === "number"
+        ? previous.velocityPredictedIndex
+        : null,
+    velocityPredictedAt: Number(previous?.velocityPredictedAt || 0),
+    anchorReconcileDivergenceSince: Number(previous?.anchorReconcileDivergenceSince || 0),
+    anchorReconcileLastPromoteAt: Number(previous?.anchorReconcileLastPromoteAt || 0),
     playbackState,
     mediaPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
     fingerprintReason: fingerprintReason || null,
@@ -2359,7 +2587,7 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     warmRecovery: previous?.warmRecovery === true,
     warmRecoveryAppliedAt: Number(previous?.warmRecoveryAppliedAt || 0),
     activeInflightSegmentIndices:
-      qualityVariantSwitch || episodeChangedByFingerprint
+      qualityVariantSwitch || episodeChangedByFingerprint || urlsChanged
         ? new Set()
         : previous?.activeInflightSegmentIndices instanceof Set
           ? previous.activeInflightSegmentIndices
@@ -2375,7 +2603,67 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
   ) {
     ns.applyMatrixToTabState(tabState, meta.mediaPlaylistUrl)
   }
+  if (
+    !episodeChangedByFingerprint &&
+    tabState.hasAnchor &&
+    typeof tabState.anchorIndex === "number"
+  ) {
+    const concurrent = state.playlistByTab.get(tabId)
+    if (
+      concurrent?.hasAnchor &&
+      typeof concurrent.anchorIndex === "number" &&
+      tabState.anchorIndex < concurrent.anchorIndex - 1
+    ) {
+      const floorIndex = Math.max(
+        concurrent.anchorIndex,
+        typeof concurrent.predictedAnchorIndex === "number"
+          ? concurrent.predictedAnchorIndex
+          : 0,
+        typeof tabState.predictedAnchorIndex === "number"
+          ? tabState.predictedAnchorIndex
+          : 0
+      )
+      if (floorIndex > tabState.anchorIndex) {
+        const raised = Math.min(floorIndex, tabState.segments.length - 1)
+        addLog(
+          "DEBUG",
+          `Monotonic anchor merge ${tabState.anchorIndex} -> ${raised} (concurrent refresh, tab ${tabId})`
+        )
+        tabState.anchorIndex = raised
+        tabState.hasAnchor = true
+        tabState.anchorRetainedByRefresh = true
+      }
+    }
+  }
   state.playlistByTab.set(tabId, tabState)
+  if (
+    urlsChanged &&
+    Array.isArray(previous?.segments) &&
+    previous.segments.length > 0 &&
+    typeof ns.bridgePlaylistSegmentUrlAliases === "function"
+  ) {
+    const bridgeAnchor =
+      typeof tabState.anchorIndex === "number"
+        ? tabState.anchorIndex
+        : typeof previous?.anchorIndex === "number"
+          ? previous.anchorIndex
+          : 0
+    void ns
+      .bridgePlaylistSegmentUrlAliases(previous.segments, normalizedSegments, {
+        anchorIndex: bridgeAnchor,
+        radius: Math.max(Number(state.settings.prefetchWindow) * 3, 24)
+      })
+      .then((bridged) => {
+        if (bridged > 0) {
+          addLog(
+            "DEBUG",
+            `Bridged ${bridged} rotation cache aliases near anchor ${bridgeAnchor} (tab ${tabId})`
+          )
+          bumpActivity("rotationAliasBridged", bridged)
+        }
+      })
+      .catch(() => {})
+  }
   if (typeof scheduleWarmRecoveryPersist === "function") {
     scheduleWarmRecoveryPersist()
   }
@@ -2488,6 +2776,17 @@ function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnch
   }
 
   if (playlistGrace || tabState.anchorRetainedByRefresh === true) {
+    if (
+      isZeroReset &&
+      typeof ns.shouldBlockStaleTimelineSeekTarget === "function" &&
+      ns.shouldBlockStaleTimelineSeekTarget(tabState, chunkIndex)
+    ) {
+      return {
+        accept: false,
+        index: previousAnchorIndex,
+        reason: "retained-stale-zero"
+      }
+    }
     return { accept: true, index: chunkIndex }
   }
 
@@ -2516,10 +2815,27 @@ function evaluateAnchorCommit(tabState, chunkIndex, previousAnchorIndex, hadAnch
 
 function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex) {
   if (typeof previousAnchorIndex !== "number" || typeof chunkIndex !== "number") return false
+  if (
+    chunkIndex <= 2 &&
+    previousAnchorIndex > 10 &&
+    typeof ns.shouldBlockStaleTimelineSeekTarget === "function" &&
+    ns.shouldBlockStaleTimelineSeekTarget(tabState, chunkIndex)
+  ) {
+    return true
+  }
   const threshold = Math.max(state.settings.prefetchWindow * 2, 8)
   if (chunkIndex >= previousAnchorIndex - threshold) return false
 
   const backwardJump = previousAnchorIndex - chunkIndex
+  if (
+    backwardJump >= 10 &&
+    previousAnchorIndex > 15 &&
+    (isTabInSeekChurnAggressive(tabState) ||
+      (typeof ns.isVariantSwitchGraceActive === "function" &&
+        ns.isVariantSwitchGraceActive(tabState)))
+  ) {
+    return true
+  }
   const teleportThreshold = Number(constants.ANCHOR_TELEPORT_JUMP_THRESHOLD) || 5
   if (backwardJump >= teleportThreshold) {
     return false
@@ -2574,6 +2890,17 @@ function noteInflightSegmentIndices(tabState, startIndex, count = 1) {
   const end = Math.min(tabState.segments?.length || 0, Math.max(0, startIndex) + Math.max(1, count))
   for (let idx = Math.max(0, startIndex); idx < end; idx += 1) {
     tabState.activeInflightSegmentIndices.add(idx)
+  }
+}
+
+function pruneInflightSegmentIndices(tabState, anchorIndex) {
+  if (!(tabState?.activeInflightSegmentIndices instanceof Set)) return
+  if (typeof anchorIndex !== "number") return
+  const window = Math.max(Number(state.settings.prefetchWindow) * 2, 16)
+  for (const idx of tabState.activeInflightSegmentIndices) {
+    if (Math.abs(idx - anchorIndex) > window) {
+      tabState.activeInflightSegmentIndices.delete(idx)
+    }
   }
 }
 
@@ -2967,6 +3294,10 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
     clampedStartIndex + effectiveWindow
   )
   if (!targets.length) return
+  if (typeof ns.reorderTargetsByByteCost === "function") {
+    targets = ns.reorderTargetsByByteCost(targets, tabState)
+  }
+  // Teleport priority lane re-sorts by playhead distance and overrides byte order.
   if (typeof ns.reorderTargetsForPriorityLane === "function") {
     targets = ns.reorderTargetsForPriorityLane(targets, tabState)
   }
@@ -3610,6 +3941,11 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   if (typeof chunkIndex !== "number") return
   chunkIndex = remapChunkIndexViaMediaSequence(tabState, chunkIndex)
 
+  // Strongest playhead evidence there is — feed the reconciliation lane even
+  // when hysteresis below defers the actual anchor commit.
+  tabState.lastPlayerObservedIndex = chunkIndex
+  tabState.lastPlayerObservedAt = Date.now()
+
   const hadAnchor = tabState.hasAnchor === true
   const previousAnchorIndex = tabState.anchorIndex
   const wasRetainedAnchor = tabState.anchorRetainedByRefresh === true
@@ -3635,6 +3971,9 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
       "DEBUG",
       `Deferred anchor ${previousAnchorIndex} -> ${chunkIndex} (${anchorDecision.reason || "hysteresis"}, tab ${tabId})`
     )
+    // Hysteresis deferred this commit, but the player evidence still counts:
+    // if the consensus keeps diverging the reconciler promotes it after dwell.
+    maybeReconcileAnchor(tabId, tabState)
     return
   }
   chunkIndex = anchorDecision.index
@@ -3703,7 +4042,24 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
       )
     } else if (Math.abs(chunkIndex - previousAnchorIndex) > 1) {
       const teleportThreshold = Number(constants.TELEPORT_MODE_JUMP_THRESHOLD) || 20
-      if (Math.abs(chunkIndex - previousAnchorIndex) >= teleportThreshold) {
+      const staleBackwardTeleport =
+        previousAnchorIndex > 10 &&
+        chunkIndex < previousAnchorIndex - 10 &&
+        ((chunkIndex <= 2 &&
+          typeof ns.shouldBlockStaleTimelineSeekTarget === "function" &&
+          ns.shouldBlockStaleTimelineSeekTarget(tabState, chunkIndex)) ||
+          (typeof ns.isVariantSwitchGraceActive === "function" &&
+            ns.isVariantSwitchGraceActive(tabState)) ||
+          isTabInSeekChurnAggressive(tabState))
+      if (staleBackwardTeleport) {
+        tabState.anchorIndex = previousAnchorIndex
+        tabState.hasAnchor = true
+        addLog(
+          "DEBUG",
+          `Skipped stale chunk-observed teleport ${previousAnchorIndex} -> ${chunkIndex} (tab ${tabId})`
+        )
+        maybeReconcileAnchor(tabId, tabState)
+      } else if (Math.abs(chunkIndex - previousAnchorIndex) >= teleportThreshold) {
         enterTeleportMode(tabId, tabState, chunkIndex, "anchor-jump")
         if (typeof ns.recordTeleportHard === "function") {
           ns.recordTeleportHard()

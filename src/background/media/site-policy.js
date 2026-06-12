@@ -20,12 +20,6 @@ function hostMatchesSuffix(host, suffix) {
   return normalized === bare || normalized.endsWith(suffix)
 }
 
-function isYouTubeHost(host) {
-  const normalized = normalizeHost(host)
-  if (!normalized) return false
-  return normalized === "youtube.com" || normalized.endsWith(".youtube.com")
-}
-
 function isTwitchPageHost(host) {
   const normalized = normalizeHost(host)
   if (!normalized) return false
@@ -33,9 +27,9 @@ function isTwitchPageHost(host) {
   return TWITCH_PAGE_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(normalized, suffix))
 }
 
-/** Pages where document/header boost breaks SPA + GraphQL (YouTube, Twitch). */
+/** Pages where document/header boost breaks SPA + GraphQL (Twitch). */
 function isSkippableSmootherHost(host) {
-  return isYouTubeHost(host) || isTwitchPageHost(host)
+  return isTwitchPageHost(host)
 }
 
 function isSkippableSmootherUrl(url) {
@@ -116,7 +110,7 @@ function isMediaPageUrl(url) {
   if (typeof url !== "string" || !url) return false
   try {
     const host = normalizeHost(new URL(url).hostname)
-    return isYouTubeHost(host) || isTwitchPageHost(host)
+    return isTwitchPageHost(host)
   } catch {
     return false
   }
@@ -136,7 +130,7 @@ function isTabMediaContext(tabId, pageUrl = null) {
     (typeof pageUrl === "string" && pageUrl ? normalizeHost(new URL(pageUrl).hostname) : null) ||
     getTabPageHost(tabId)
   if (!host) return false
-  return isYouTubeHost(host) || isTwitchPageHost(host)
+  return isTwitchPageHost(host)
 }
 
 function findBackgroundMediaTabId(excludeTabId = null) {
@@ -178,7 +172,6 @@ function pruneTabPageHosts() {
 ns.TWITCH_CLIENT_ID = TWITCH_CLIENT_ID
 ns.TWITCH_ORIGIN = TWITCH_ORIGIN
 ns.TWITCH_REFERER = TWITCH_REFERER
-ns.isYouTubeHost = isYouTubeHost
 ns.isTwitchPageHost = isTwitchPageHost
 ns.isSkippableSmootherHost = isSkippableSmootherHost
 ns.isSkippableSmootherUrl = isSkippableSmootherUrl

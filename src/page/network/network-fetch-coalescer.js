@@ -25,7 +25,7 @@
   }
 
   function isCanonicalCoalesceKey(value) {
-    return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
+    return typeof value === "string" && /^(?:range|aegis)\|/.test(value)
   }
 
   const MEDIA_SEGMENT_PATH_RE =
@@ -88,15 +88,6 @@
     if (isCanonicalCoalesceKey(pageUrl)) return pageUrl
 
     const primaryUrl = pageUrl || cacheKey
-
-    if (pageUrl && typeof ns.buildYoutubeChunkState === "function") {
-      try {
-        const youtubeChunk = ns.buildYoutubeChunkState(pageUrl, new Headers())
-        if (youtubeChunk?.cacheKey) return youtubeChunk.cacheKey
-      } catch {
-        // ignore parse failures
-      }
-    }
 
     if (primaryUrl && typeof ns.buildMediaInvariantKey === "function") {
       const blobInvariant = ns.buildMediaInvariantKey(primaryUrl)

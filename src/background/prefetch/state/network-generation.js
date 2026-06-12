@@ -41,7 +41,8 @@
       .sendMessage(tabId, {
         type: "AegisStream:CancelPrefetch",
         networkGeneration: generation,
-        playbackGeneration: generation
+        playbackGeneration: generation,
+        keepUrls: options.keepUrls
       })
       .catch(() => {
         // tab may not have content script yet
@@ -92,7 +93,9 @@
     // Soft anchor commits (purgeQueues=false) schedule with this source; must not reset playback.
     "dom-seeked",
     // Teleport with retained queues — overlap prefetch instead of invalidating in-flight work.
-    "teleport-mode-retained"
+    "teleport-mode-retained",
+    // Consensus anchor promotion must not re-bump generation on every delegate.
+    "anchor-reconciliation"
   ])
 
   function isScrubbingTrainActive(tabState) {
@@ -129,8 +132,15 @@
   function isSoftScrubDelegateSource(eventSource, tabState = null) {
     const cleanSource = normalizeLifecycleEventSource(eventSource)
     if (SOFT_SCRUB_DELEGATE_SOURCES.has(cleanSource)) return true
-    if (cleanSource === "seek-prediction" && shouldDeferSeekPredictionPrefetch(tabState)) {
-      return true
+    if (cleanSource === "seek-prediction") {
+      if (shouldDeferSeekPredictionPrefetch(tabState)) return true
+      if (
+        tabState &&
+        typeof ns.isVariantSwitchGraceActive === "function" &&
+        ns.isVariantSwitchGraceActive(tabState)
+      ) {
+        return true
+      }
     }
     return false
   }
@@ -171,8 +181,10 @@
     return syncLegacyNetworkGeneration(tabState) > before
   }
 
-  function bumpPlaybackGeneration(tabId, tabState, reason) {
+  function bumpPlaybackGeneration(tabId, tabState, optionsOrReason) {
     if (!tabState) return 0
+    const options = typeof optionsOrReason === "object" && optionsOrReason !== null ? optionsOrReason : { reason: optionsOrReason }
+    const reason = options.reason
     if (isNonDestructiveLifecycleSource(reason) || isSoftScrubDelegateSource(reason, tabState)) {
       bumpPlaylistGeneration(tabState, reason)
       return syncLegacyNetworkGeneration(tabState)
@@ -195,6 +207,7 @@
     broadcastDelegatedPrefetchAbort(tabId, tabState, {
       generation: next,
       reason: reason || "playback-bump",
+      keepUrls: options.keepUrls,
       log: false
     })
     if (typeof ns.notePlaybackGenerationBump === "function") {

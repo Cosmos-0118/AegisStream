@@ -152,7 +152,6 @@ function notifyBridgeReady(reason = "startup", activeGeneration) {
 function isPassiveBrowsePageUrl(pageUrl = location.href) {
   try {
     const host = new URL(pageUrl).hostname.toLowerCase()
-    if (host === "youtube.com" || host.endsWith(".youtube.com")) return false
     if (host === "twitch.tv" || host.endsWith(".twitch.tv")) return false
     return true
   } catch {
@@ -317,7 +316,9 @@ function installRelay(activeGeneration) {
         {
           __aegisstream: true,
           type: "CANCEL_PREFETCH",
-          networkGeneration: message.networkGeneration
+          networkGeneration: message.networkGeneration,
+          // Scoped abort: fetches near the playhead survive (rescue keep-window).
+          keepUrls: Array.isArray(message.keepUrls) ? message.keepUrls : []
         },
         "*"
       )
@@ -455,8 +456,27 @@ function installRelay(activeGeneration) {
             const copied = copyArrayBuffer(payload.bytes)
             if (copied) {
               payload = { ...payload, bytes: copied }
+            } else if (typeof payload.bytesBase64 === "string" && payload.bytesBase64.length > 0) {
+              // ArrayBuffer neutered during IPC — fall back to base64.
+              // The page's resolveLookupBytes() will decode it.
+              payload = {
+                ok: payload.ok,
+                hit: payload.hit,
+                contentType: payload.contentType,
+                bytesBase64: payload.bytesBase64,
+                byteLength: payload.byteLength
+              }
             } else {
               payload = { ok: false, hit: false, error: "cache-bytes-unavailable" }
+            }
+          } else if (payload?.hit && !payload.bytes && typeof payload.bytesBase64 === "string" && payload.bytesBase64.length > 0) {
+            // BG sent only base64 (no raw bytes survived) — pass through.
+            payload = {
+              ok: payload.ok,
+              hit: payload.hit,
+              contentType: payload.contentType,
+              bytesBase64: payload.bytesBase64,
+              byteLength: payload.byteLength
             }
           }
           window.postMessage(
@@ -671,7 +691,7 @@ function installRelay(activeGeneration) {
       relay({
         type: "AegisStream:SpeculativeRegister",
         url: data.url,
-        source: data.source || "cross-itag",
+        source: data.source || "speculative",
         fromItag: data.fromItag || null,
         toItag: data.toItag || null,
         fromRung: data.fromRung || null,

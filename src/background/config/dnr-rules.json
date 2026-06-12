@@ -1,21 +1,5 @@
 [
   {
-    "id": 1,
-    "priority": 1,
-    "action": {
-      "type": "modifyHeaders",
-      "requestHeaders": [
-        { "header": "Origin", "operation": "set", "value": "https://www.youtube.com" },
-        { "header": "Referer", "operation": "set", "value": "https://www.youtube.com/" },
-        { "header": "Sec-Fetch-Mode", "operation": "set", "value": "cors" }
-      ]
-    },
-    "condition": {
-      "urlFilter": "googlevideo.com/videoplayback",
-      "resourceTypes": ["xmlhttprequest", "other"]
-    }
-  },
-  {
     "id": 3,
     "priority": 2,
     "action": {

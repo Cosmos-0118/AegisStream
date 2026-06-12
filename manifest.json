@@ -12,14 +12,12 @@
     "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
-    "<all_urls>",
-    "*://*.googlevideo.com/*",
-    "*://*.youtube.com/*"
+    "<all_urls>"
   ],
   "declarative_net_request": {
     "rule_resources": [
       {
-        "id": "youtube_accelerator_rules",
+        "id": "media_accelerator_rules",
         "enabled": true,
         "path": "src/background/config/dnr-rules.json"
       },
@@ -41,18 +39,6 @@
   "content_scripts": [
     {
       "matches": [
-        "*://youtube.com/*",
-        "*://*.youtube.com/*"
-      ],
-      "js": [
-        "src/page/media/youtube/youtube-ump-flags.js",
-        "src/page/media/youtube/kill-ump.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": [
         "<all_urls>"
       ],
       "js": [
@@ -60,8 +46,6 @@
         "src/page/media/manifest-mapper.js",
         "src/page/core/site-policy.js",
         "src/page/cache/cache-response-headers.js",
-        "src/page/cache/range-buffer.js",
-        "src/page/media/youtube/youtube-ump-flags.js",
         "src/page/bridge/core.js",
         "src/page/media/media-cache-key-page.js",
         "src/page/network/network-fetch-coalescer.js",
@@ -70,6 +54,7 @@
         "src/page/smoother/circuit-breaker/timing.js",
         "src/page/smoother/circuit-breaker/asset-breaker.js",
         "src/page/prefetch/buffer-health-monitor.js",
+        "src/page/prefetch/prefetch-failure.js",
         "src/page/prefetch/seek-predictor.js",
         "src/page/media/kalman-segment-filter.js",
         "src/page/media/seeking-controller.js",
@@ -77,8 +62,7 @@
         "src/page/bridge/extension-fetch-client.js",
         "src/page/prefetch/video.js",
         "src/page/bridge/message-bridge.js",
-        "src/page/media/youtube/playlist.js",
-        "src/page/media/youtube/cross-itag-predictor.js",
+        "src/page/media/hls-media.js",
         "src/page/interceptors/fetch.js",
         "src/page/interceptors/xhr.js",
         "src/page/smoother/navigation/hover-prefetch.js",
@@ -113,8 +97,6 @@
         "src/page/media/manifest-mapper.js",
         "src/page/core/site-policy.js",
         "src/page/cache/cache-response-headers.js",
-        "src/page/cache/range-buffer.js",
-        "src/page/media/youtube/youtube-ump-flags.js",
         "src/page/main.js",
         "src/page/bridge/core.js",
         "src/page/media/media-cache-key-page.js",
@@ -124,6 +106,7 @@
         "src/page/smoother/circuit-breaker/timing.js",
         "src/page/smoother/circuit-breaker/asset-breaker.js",
         "src/page/prefetch/buffer-health-monitor.js",
+        "src/page/prefetch/prefetch-failure.js",
         "src/page/prefetch/seek-predictor.js",
         "src/page/media/kalman-segment-filter.js",
         "src/page/media/seeking-controller.js",
@@ -131,8 +114,7 @@
         "src/page/bridge/extension-fetch-client.js",
         "src/page/prefetch/video.js",
         "src/page/bridge/message-bridge.js",
-        "src/page/media/youtube/playlist.js",
-        "src/page/media/youtube/cross-itag-predictor.js",
+        "src/page/media/hls-media.js",
         "src/page/interceptors/fetch.js",
         "src/page/interceptors/xhr.js",
         "src/page/smoother/navigation/hover-prefetch.js",

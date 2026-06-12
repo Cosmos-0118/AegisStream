@@ -10,7 +10,6 @@ function applyRuntimeSettings(settings) {
   ns.prefetchEnabled = settings.prefetchEnabled !== false
   ns.speculativePrefetchEnabled = settings.speculativePrefetchEnabled !== false
   ns.serveFromCache = settings.serveFromCache !== false
-  ns.crossItagAllowed = settings.crossItagAllowed === true
   ns.speculativeAdaptiveMode =
     typeof settings.speculativeAdaptiveMode === "string"
       ? settings.speculativeAdaptiveMode
@@ -122,7 +121,7 @@ window.addEventListener("message", (event) => {
 
   if (data.type === "CANCEL_PREFETCH") {
     if (typeof cancelPrefetchRunway === "function") {
-      cancelPrefetchRunway([], {
+      cancelPrefetchRunway(data.keepUrls || [], {
         networkGeneration: data.networkGeneration,
         reason: "cancel-prefetch"
       })

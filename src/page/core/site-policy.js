@@ -59,21 +59,14 @@
   function isSmootherSkippedHost(hostname) {
     const host = normalizeHost(hostname)
     if (!host) return true
-    if (host === "youtube.com" || host.endsWith(".youtube.com")) return true
     return isTwitchPageHost(host)
-  }
-
-  function isYouTubeHost(host) {
-    const normalized = normalizeHost(host)
-    if (!normalized) return false
-    return normalized === "youtube.com" || normalized.endsWith(".youtube.com")
   }
 
   /** Known media hosts where the fetch/XHR bridge should arm at document start. */
   function isMediaHost(hostname) {
     const host = normalizeHost(hostname)
     if (!host) return false
-    return isYouTubeHost(host) || isTwitchPageHost(host)
+    return isTwitchPageHost(host)
   }
 
   /**
@@ -92,7 +85,6 @@
     shouldPassthroughPlayerRequest,
     shouldPassthroughTwitchApi,
     isSmootherSkippedHost,
-    isYouTubeHost,
     isMediaHost,
     shouldRunMediaBridge
   }

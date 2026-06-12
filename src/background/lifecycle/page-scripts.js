@@ -14,8 +14,6 @@ ns.MAIN_PAGE_SCRIPT_FILES = [
   "src/page/media/manifest-mapper.js",
   "src/page/core/site-policy.js",
   "src/page/cache/cache-response-headers.js",
-  "src/page/cache/range-buffer.js",
-  "src/page/media/youtube/youtube-ump-flags.js",
   "src/page/bridge/core.js",
   "src/page/media/media-cache-key-page.js",
   "src/page/network/network-fetch-coalescer.js",
@@ -32,8 +30,7 @@ ns.MAIN_PAGE_SCRIPT_FILES = [
   "src/page/bridge/extension-fetch-client.js",
   "src/page/prefetch/video.js",
   "src/page/bridge/message-bridge.js",
-  "src/page/media/youtube/playlist.js",
-  "src/page/media/youtube/cross-itag-predictor.js",
+  "src/page/media/hls-media.js",
   "src/page/interceptors/fetch.js",
   "src/page/interceptors/xhr.js",
   "src/page/smoother/navigation/hover-prefetch.js",
@@ -41,7 +38,4 @@ ns.MAIN_PAGE_SCRIPT_FILES = [
   "src/page/smoother/install.js",
   "src/page/main.js"
 ]
-
-/** YouTube-only MAIN-world scripts (before the general bundle on reinject). */
-ns.YOUTUBE_MAIN_PAGE_FILES = ["src/page/media/youtube/kill-ump.js"]
 })()

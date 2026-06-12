@@ -45,7 +45,7 @@ const sandbox = {
         tabAnchorJumps: new Map(),
         activePrefetchTabId: 7,
         bridgeHeartbeatByTab: new Map(),
-        tabPageHostByTab: new Map([[7, "youtube.com"]]),
+        tabPageHostByTab: new Map([[7, "twitch.tv"]]),
         tabPageUrlFingerprintByTab: new Map(),
         cacheRegistryKeys: new Set(["aegis|seg-1"]),
         cacheRegistryGeneration: 1
@@ -84,13 +84,13 @@ vm.runInContext(fs.readFileSync(registryPath, "utf8"), ctx)
 
 const ns = sandbox.self.AegisBackground
 
-assert(ns.isTabMediaContext(7, "https://www.youtube.com/watch?v=abc") === true, "youtube tab is media")
+assert(ns.isTabMediaContext(7, "https://www.twitch.tv/channel") === true, "twitch tab is media")
 assert(
   ns.isTabMediaContext(9, "https://search.brave.com/") === false,
   "new tab search page is not media"
 )
 assert(ns.resolvePrefetchFocusTabId(9, "https://search.brave.com/") === 7, "focus stays on media tab")
-assert(ns.resolvePrefetchFocusTabId(7, "https://www.youtube.com/watch?v=abc") === 7, "youtube tab keeps focus")
+assert(ns.resolvePrefetchFocusTabId(7, "https://www.twitch.tv/channel") === 7, "twitch tab keeps focus")
 
 let cancelSent = false
 sandbox.chrome.tabs.sendMessage = async (_tabId, msg) => {
@@ -98,7 +98,7 @@ sandbox.chrome.tabs.sendMessage = async (_tabId, msg) => {
 }
 
 ns.handleTabNavigation(7, "https://search.brave.com/", "navigation")
-assert(!ns.state.playlistByTab.has(7), "playlist cleared after leaving youtube")
+assert(!ns.state.playlistByTab.has(7), "playlist cleared after leaving twitch")
 assert(cancelSent, "cancel prefetch sent to page")
 
 const sent = []

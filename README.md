@@ -47,7 +47,7 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
   - `bridge/` - intercept plumbing, message bridge, extension fetch client
   - `prefetch/` - buffer health and delegated video prefetch
   - `interceptors/` - `fetch` and `XHR` hooks
-  - `media/` - manifest mapping, cache keys, playback helpers; `youtube/` for UMP and playlist
+  - `media/` - manifest mapping, HLS/DASH chunk classification, cache keys, playback helpers
   - `smoother/` - navigation hints, circuit breaker, CPU mock scripts (`mock/`), `install.js`
   - `main.js` - installs interceptors and smoother after dependencies load
 - `src/content/` - ISOLATED-world relay and asset tracker.

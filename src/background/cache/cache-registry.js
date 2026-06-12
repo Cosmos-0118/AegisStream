@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { state, constants, addLog, buildCacheKeyVariants, isUmpCacheKey, getUmpBodyHashFromCacheKey } = ns
+const { state, constants, addLog, buildCacheKeyVariants } = ns
 
 if (!state.cacheRegistryKeys) {
   state.cacheRegistryKeys = new Set()
@@ -23,11 +23,6 @@ function invariantKeysFromCacheKeys(cacheKeys) {
     if (typeof ns.buildMediaInvariantKey === "function") {
       const invariant = ns.buildMediaInvariantKey(raw)
       if (invariant) keys.add(invariant)
-    }
-    if (isUmpCacheKey(raw)) {
-      keys.add(raw)
-      const bodyHash = getUmpBodyHashFromCacheKey(raw)
-      if (bodyHash) keys.add(`ump|${bodyHash}`)
     }
   }
   return keys

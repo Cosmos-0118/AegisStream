@@ -39,24 +39,6 @@ assert(
 )
 assert(rangeA !== rangeB, "different byte ranges must never share a wire key")
 
-ns.buildYoutubeChunkState = (url) => {
-  if (typeof url !== "string" || !url.includes("googlevideo.com/videoplayback")) {
-    return null
-  }
-  return {
-    type: "bytes",
-    start: 0,
-    end: 654491,
-    cacheKey: rangeA
-  }
-}
-const ytUrl =
-  "https://rr1---sn-abc.googlevideo.com/videoplayback?id=abc&itag=248&range=0-654491"
-assert(
-  ns.resolveNetworkCoalesceKey(ytUrl, null) === rangeA,
-  "YouTube playback must resolve to range-scoped keys before structural path"
-)
-
 const sharedTail = "ChkAT0wHWFULW0FFclNeUEBKRRAaBVkLXQNGRExxUAhVEE1BFxhZWApa"
 const rotatorA = `https://use21.playlist.ttvnw.net/v1/segment/Dwdf${sharedTail}?token=A`
 const rotatorB = `https://use21.playlist.ttvnw.net/v1/segment/Cw0V${sharedTail}?token=B`

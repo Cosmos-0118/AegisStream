@@ -42,6 +42,7 @@ importScripts(
   "./prefetch/state/playback-state-machine.js",
   "./prefetch/anchor/anchor-hysteresis.js",
   "./prefetch/anchor/anchor-authority.js",
+  "./prefetch/anchor/anchor-reconciler.js",
   "./prefetch/wire/prefetch-failure-log.js",
   "./prefetch/state/network-generation.js",
   "./prefetch/wire/unified-seek-wire.js",

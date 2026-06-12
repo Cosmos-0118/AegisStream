@@ -47,8 +47,8 @@
   function shouldExitRescue(tabState) {
     const runway = Number(tabState.bufferRunwaySec)
     const health = Number(tabState.bufferHealthScore)
-    const exitRunway = Number(constants.RESCUE_EXIT_RUNWAY_SEC) || 5
-    const exitHealth = Number(constants.RESCUE_EXIT_HEALTH_PCT) || 15
+    const exitRunway = Number(constants.RESCUE_EXIT_RUNWAY_SEC) || 8
+    const exitHealth = Number(constants.RESCUE_EXIT_HEALTH_PCT) || 25
     if (tabState.bufferTier === "emergency") return false
     const runwayOk = !Number.isFinite(runway) || runway >= exitRunway
     const healthOk = !Number.isFinite(health) || health >= exitHealth
@@ -110,21 +110,50 @@
     return mode
   }
 
+  /**
+   * Best playhead estimate for rescue targeting. The committed anchor can be
+   * stale during scrub trains (the "anchor=0, player at 8" failure mode), so
+   * prefer the reconciled multi-signal consensus when one is available.
+   */
+  function resolveRescuePlayheadIndex(tabState) {
+    if (typeof ns.resolveReconcileTargetIndex === "function") {
+      const consensus = ns.resolveReconcileTargetIndex(tabState)
+      if (typeof consensus === "number" && consensus >= 0) return consensus
+    }
+    return typeof tabState.anchorIndex === "number" && tabState.anchorIndex >= 0
+      ? tabState.anchorIndex
+      : 0
+  }
+
+  /**
+   * Scoped rescue abort window: segment URLs near the playhead whose in-flight
+   * fetches must survive the rescue abort broadcast. Only fetches outside this
+   * window (far ahead / far behind) get killed.
+   */
+  function resolveRescueKeepWindow(tabState) {
+    if (!Array.isArray(tabState?.segments) || !tabState.segments.length) return []
+    const behind = Math.max(0, Number(constants.RESCUE_KEEP_BEHIND_SEGMENTS) || 2)
+    const ahead = Math.max(1, Number(constants.RESCUE_KEEP_AHEAD_SEGMENTS) || 8)
+    const playhead = resolveRescuePlayheadIndex(tabState)
+    return tabState.segments.slice(
+      Math.max(0, playhead - behind),
+      Math.min(tabState.segments.length, playhead + ahead + 1)
+    )
+  }
+
   function resolveRescuePlayheadTargets(tabState, segments) {
     if (!tabState?.segments?.length || !Array.isArray(segments)) return []
-    const anchor =
-      typeof tabState.anchorIndex === "number" && tabState.anchorIndex >= 0
-        ? tabState.anchorIndex
-        : 0
     const ahead = Math.max(1, Number(constants.RESCUE_SEGMENTS_AHEAD) || 2)
-    const start = Math.max(0, anchor)
+    const start = Math.max(0, resolveRescuePlayheadIndex(tabState))
     const end = Math.min(segments.length, start + ahead)
     return segments.slice(start, end)
   }
 
-  function broadcastAbortWithoutGenerationBump(tabId, tabState, reason) {
+  function broadcastAbortWithoutGenerationBump(tabId, tabState, options = {}) {
     if (typeof ns.broadcastDelegatedPrefetchAbort === "function") {
-      ns.broadcastDelegatedPrefetchAbort(tabId, tabState, { reason, log: false })
+      const reason = typeof options === "string" ? options : options.reason
+      const keepUrls = options.keepUrls || []
+      ns.broadcastDelegatedPrefetchAbort(tabId, tabState, { reason, log: false, keepUrls })
     }
     if (typeof ns.noteDelegatedAbortBroadcast === "function") {
       ns.noteDelegatedAbortBroadcast()
@@ -137,6 +166,22 @@
       return
     }
     const now = Date.now()
+
+    // Cooldown: don't nuke inflight work if we armed very recently.
+    // The rescue *prefetch* still proceeds — we just skip the destructive
+    // generation bump + abort broadcast that kills existing inflight fetches.
+    const rescueCooldownMs = Number(constants.RESCUE_ARM_COOLDOWN_MS) || 2_000
+    const lastArmAt = Number(tabState.lastRescueArmAt || 0)
+    if (now - lastArmAt < rescueCooldownMs) {
+      // Still suppress speculative work and pending retries.
+      tabState.speculativeAllowed = false
+      if (typeof ns.cancelPendingPrefetchForTab === "function") {
+        ns.cancelPendingPrefetchForTab(tabId)
+      }
+      return
+    }
+    tabState.lastRescueArmAt = now
+
     tabState.speculativeAllowed = false
     if (typeof ns.cancelPendingPrefetchForTab === "function") {
       ns.cancelPendingPrefetchForTab(tabId)
@@ -156,18 +201,20 @@
     const lastBumpAt = Number(tabState.lastRescueGenerationBumpAt || 0)
     const canBumpGeneration = now - lastBumpAt >= minBumpMs
 
+    const keepUrls = resolveRescueKeepWindow(tabState)
+
     if (canBumpGeneration) {
       tabState.lastRescueGenerationBumpAt = now
       if (typeof ns.bumpPlaybackGeneration === "function") {
-        ns.bumpPlaybackGeneration(tabId, tabState, reason)
+        ns.bumpPlaybackGeneration(tabId, tabState, { reason, keepUrls })
       } else if (typeof ns.bumpNetworkGeneration === "function") {
-        ns.bumpNetworkGeneration(tabId, tabState, reason)
+        ns.bumpNetworkGeneration(tabId, tabState, { reason, keepUrls })
       }
       if (typeof ns.notePlaybackGenerationBump === "function") {
         ns.notePlaybackGenerationBump(false)
       }
     } else {
-      broadcastAbortWithoutGenerationBump(tabId, tabState, `${reason}-throttled`)
+      broadcastAbortWithoutGenerationBump(tabId, tabState, { reason: `${reason}-throttled`, keepUrls })
       if (typeof ns.notePlaybackGenerationBump === "function") {
         ns.notePlaybackGenerationBump(true)
       }
@@ -230,6 +277,9 @@
   }
 
   ns.EngineModes = EngineModes
+  ns.resolveRescueKeepWindow = resolveRescueKeepWindow
+  ns.resolveRescuePlayheadIndex = resolveRescuePlayheadIndex
+  ns.resolveRescuePlayheadTargets = resolveRescuePlayheadTargets
   ns.evaluateStreamingUrgency = evaluateStreamingUrgency
   ns.applyEngineMode = applyEngineMode
   ns.executeRescuePrefetch = executeRescuePrefetch

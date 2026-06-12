@@ -58,10 +58,7 @@ const CHUNK_CAPTURE_SOURCES = new Set([
   "xhr-load",
   "fetch-clone",
   "fetch-tee",
-  "ump",
   "prefetch",
-  "range-buffer",
-  "cross-itag",
   "unknown"
 ])
 
@@ -139,7 +136,7 @@ function shouldEmitThrottledLog(key, intervalMs) {
 
 function maybeLogUmpHealthSummary(force = false) {
   const now = Date.now()
-  if (!force && now - state.telemetry.lastUmpHealthLogAt < constants.UMP_HEALTH_LOG_INTERVAL_MS) {
+  if (!force && now - state.telemetry.lastUmpHealthLogAt < constants.HEALTH_LOG_INTERVAL_MS) {
     return
   }
 
@@ -151,21 +148,12 @@ function maybeLogUmpHealthSummary(force = false) {
     misses: state.stats.cacheMisses || 0,
     warmups: state.stats.cacheWarmups || 0
   }
-  const ump = snapshot?.ump || {
-    requests: state.stats.youtubeUmpRequests || 0,
-    lookups: state.stats.youtubeUmpLookups || 0,
-    hits: state.stats.youtubeUmpLookupHits || 0,
-    misses: state.stats.youtubeUmpLookupMisses || 0,
-    warmups: state.stats.youtubeUmpWarmups || 0
-  }
-  const hasUmp = (ump.requests || 0) > 0 || (ump.lookups || 0) > 0
   const hasHls = (hls.lookups || 0) > 0 || (hls.hits || 0) > 0 || (hls.misses || 0) > 0
   const stallCount = state.stats.videoStalls || 0
 
-  if (!force && !hasUmp && !hasHls && stallCount === 0) return
+  if (!force && !hasHls && stallCount === 0) return
 
   state.telemetry.lastUmpHealthLogAt = now
-  const captureSkipped = state.stats.youtubeUmpCaptureSkipped || 0
   const writebackSuppressed = state.stats.xhrWritebackSuppressed || 0
   const stallSeconds = (state.stats.videoStallMsTotal / 1000).toFixed(1)
   const extensionFetchLine =
@@ -188,25 +176,17 @@ function maybeLogUmpHealthSummary(force = false) {
     typeof ns.isNetworkPanicActive === "function" && ns.isNetworkPanicActive()
       ? ", panic=ON"
       : ""
-  const combined = snapshot?.combined
-
-  if (hasUmp) {
-    const umpLookups = ump.lookups || ump.hits + ump.misses + ump.warmups
-    const effective = ump.hits + ump.misses + ump.warmups
-    const hitRate = effective > 0 ? Math.round((ump.hits / effective) * 100) : 0
-    addLog(
-      "INFO",
-      `YouTube realtime health — req=${ump.requests || 0}, lookups=${umpLookups}, hits=${ump.hits}, miss=${ump.misses}, warmup=${ump.warmups}, hitRate=${hitRate}%, hls(h=${hls.hits}/m=${hls.misses}), ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s), umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}, writebackSuppressed=${writebackSuppressed}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
-    )
-    return
-  }
-
   const hlsLookups = hls.lookups || hls.hits + hls.misses + hls.warmups
   const hitRateDenominator = hls.hits + hls.misses
   const hitRate =
     hitRateDenominator > 0
       ? Math.round((hls.hits / hitRateDenominator) * 100)
-      : combined?.hitRatePercent || 0
+      : snapshot?.combined?.hitRatePercent || 0
+  const pageDelivered = state.stats.pageDeliveredHits || 0
+  const pageDeliveredRate =
+    hitRateDenominator > 0
+      ? Math.round((pageDelivered / hitRateDenominator) * 100)
+      : 0
   const seekSummary =
     typeof ns.getSeekPredictionSummary === "function"
       ? ns.getSeekPredictionSummary()
@@ -228,7 +208,7 @@ function maybeLogUmpHealthSummary(force = false) {
   const rescueTelemetry = rescueLine ? `, ${rescueLine}` : ""
   addLog(
     "INFO",
-    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, hitRate=${hitRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}${inflightLine}${rescueTelemetry}, umpStreams(abort/error)=${state.stats.youtubeUmpStreamsAborted}/${state.stats.youtubeUmpStreamsErrored}, captureSkipped=${captureSkipped}, writebackSuppressed=${writebackSuppressed}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
+    `AegisStream realtime health — lookups=${hlsLookups}, hits=${hls.hits}, miss=${hls.misses}, warmup=${hls.warmups}, bgHitRate=${hitRate}%, pageDelivered=${pageDelivered}, pageHitRate=${pageDeliveredRate}%, ttfb_p95=${state.stats.requestFirstByteP95Ms}ms, net_ttfb_p95=${state.stats.networkFirstByteP95Ms || 0}ms${panicLabel}, stalls=${stallCount} (${stallSeconds}s)${seekLine}${anchorLine}${inflightLine}${rescueTelemetry}, writebackSuppressed=${writebackSuppressed}${chunkStoreLine ? `, ${chunkStoreLine}` : ""}${congestionLine ? `, ${congestionLine}` : ""}${extensionFetchLine ? `, ${extensionFetchLine}` : ""}${workerLine ? `, ${workerLine}` : ""}`
   )
   if (typeof ns.noteInflightMismatch === "function") {
     ns.noteInflightMismatch(ns.auditInflightAccounting(), "health-summary")
@@ -239,19 +219,6 @@ function maybeLogUmpHealthSummary(force = false) {
   if (typeof ns.maybeLogObservabilitySummary === "function") {
     ns.maybeLogObservabilitySummary(force)
   }
-}
-
-function rememberUmpLookupKey(key) {
-  const now = Date.now()
-  if (state.umpLookupSeenAt.size > 5000) {
-    const cutoff = now - 15 * 60 * 1000
-    for (const [existingKey, ts] of state.umpLookupSeenAt.entries()) {
-      if (ts < cutoff) {
-        state.umpLookupSeenAt.delete(existingKey)
-      }
-    }
-  }
-  state.umpLookupSeenAt.set(key, now)
 }
 
 function handleRuntimeMetric(message, sender) {
@@ -301,52 +268,9 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
-  if (metricType === "youtube_ump_request") {
-    if (typeof ns.recordStreamMetric === "function") {
-      ns.recordStreamMetric("ump", "requests", 1)
-    }
-    bumpActivity("youtubeUmpRequests", 1)
-    if (typeof message.bodyHash === "string" && message.bodyHash.length > 0) {
-      state.telemetry.umpHashes.add(message.bodyHash)
-      if (state.telemetry.umpHashes.size > 5000) {
-        const toDelete = Array.from(state.telemetry.umpHashes).slice(0, 1000)
-        for (const hash of toDelete) state.telemetry.umpHashes.delete(hash)
-      }
-      state.stats.youtubeUmpUniqueKeys = state.telemetry.umpHashes.size
-    }
-    if (
-      state.stats.youtubeUmpRequests % 12 === 0 ||
-      shouldEmitThrottledLog("ump_request_flow", 20_000)
-    ) {
-      maybeLogUmpHealthSummary()
-    }
-    return
-  }
-
-  if (metricType === "youtube_ump_stream_outcome") {
-    const outcome = message.outcome
-    const detail = typeof message.detail === "string" ? message.detail : null
-    if (outcome === "completed") {
-      state.stats.youtubeUmpStreamsCompleted += 1
-    } else if (outcome === "capture_skipped") {
-      state.stats.youtubeUmpCaptureSkipped += 1
-      if (shouldEmitThrottledLog("ump_capture_backpressure", 8000)) {
-        addLog("INFO", "UMP cache capture throttled to protect playback (backpressure)")
-      }
-    } else if (outcome === "aborted") {
-      state.stats.youtubeUmpStreamsAborted += 1
-      if (shouldEmitThrottledLog("ump_stream_aborted", 10_000)) {
-        addLog("INFO", "YouTube UMP stream recycled/aborted; playback proxy recovered")
-      }
-    } else if (outcome === "error" || outcome === "store_failed") {
-      state.stats.youtubeUmpStreamsErrored += 1
-      if (shouldEmitThrottledLog(`ump_stream_${outcome}`, 3000)) {
-        addLog(
-          "WARN",
-          `YouTube UMP stream issue (${outcome})${tabId ? ` on tab ${tabId}` : ""}${detail ? `: ${detail}` : ""}`
-        )
-      }
-      maybeLogUmpHealthSummary()
+  if (metricType === "cache_lookup_page_delivered") {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("pageDeliveredHits", 1)
     }
     return
   }
@@ -512,7 +436,6 @@ function handleRuntimeMetric(message, sender) {
 }
 
 ns.handleRuntimeMetric = handleRuntimeMetric
-ns.rememberUmpLookupKey = rememberUmpLookupKey
 ns.maybeLogUmpHealthSummary = maybeLogUmpHealthSummary
 ns.formatChunkStoreTelemetryLine = formatChunkStoreTelemetryLine
 })()

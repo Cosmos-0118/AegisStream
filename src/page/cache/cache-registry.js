@@ -11,6 +11,12 @@
   /** Keys with delegated/in-flight prefetch — enables lookup + collapse before IDB write. */
   const inflightCacheIntentKeys = new Set()
   let registryGeneration = 0
+  /** Trust decay: how much the registry's "absent" verdict can be believed. */
+  let lastRegistrySyncAt = 0
+  let registryFalseNegativeUntil = 0
+  const REGISTRY_FRESH_MS = 10_000
+  const REGISTRY_FALSE_NEGATIVE_PENALTY_MS = 30_000
+  const LOOKUP_CONFIDENCE_THRESHOLD = 0.3
   /** Recent page-local key assertions — used to flag sync-replace evictions in traces. */
   const recentLocalAdds = new Map()
   const LOCAL_ADD_TRACE_MS = 30_000
@@ -43,12 +49,12 @@
   }
 
   function isCanonicalCoalesceKey(value) {
-    return typeof value === "string" && /^(?:range|aegis|ump)\|/.test(value)
+    return typeof value === "string" && /^(?:range|aegis)\|/.test(value)
   }
 
   function resolveRegistryKeyLegacy(url) {
     if (!url || typeof url !== "string") return null
-    if (url.startsWith("ump|") || url.startsWith("range|")) return url
+    if (url.startsWith("range|")) return url
     if (typeof ns.buildMediaInvariantKey === "function") {
       const invariant = ns.buildMediaInvariantKey(url)
       if (invariant) return invariant
@@ -150,6 +156,7 @@
 
     trimRegistry()
     registryGeneration = Number(payload.generation) || registryGeneration + 1
+    lastRegistrySyncAt = Date.now()
 
     if (typeof ns.logBridge === "function") {
       const recentEvicted = replaceAuthorized ? countRecentLocalAddsEvicted(incomingSet) : 0
@@ -180,16 +187,39 @@
     }
   }
 
+  function registerKeyVariants(url) {
+    const keys = new Set()
+    const coalesce = resolveCanonicalCoalesceKey(url)
+    if (coalesce) keys.add(coalesce)
+    const registry = resolveRegistryKey(url)
+    if (registry) keys.add(registry)
+    if (typeof ns.buildMediaInvariantKey === "function") {
+      const invariant = ns.buildMediaInvariantKey(url)
+      if (invariant) keys.add(invariant)
+    }
+    return keys
+  }
+
+  function noteStoreIntent(url) {
+    for (const key of registerKeyVariants(url)) {
+      inflightCacheIntentKeys.add(key)
+    }
+    trimInflightIntentRegistry()
+  }
+
   function noteLocalCacheKey(url) {
-    const key = resolveCanonicalCoalesceKey(url)
-    if (!key) return
-    localizedCacheKeys.add(key)
-    inflightCacheIntentKeys.delete(key)
+    const keys = registerKeyVariants(url)
+    if (!keys.size) return
+    for (const key of keys) {
+      localizedCacheKeys.add(key)
+      inflightCacheIntentKeys.delete(key)
+    }
     trimRegistry()
-    touchRecentLocalAdd(key)
+    const labelKey = [...keys][0]
+    touchRecentLocalAdd(labelKey)
     if (typeof ns.logBridge === "function") {
       ns.logBridge(
-        `[REGISTRY] local-add gen=${registryGeneration} key=${registryKeyLabel(key)} currentSize=${localizedCacheKeys.size}`,
+        `[REGISTRY] local-add gen=${registryGeneration} key=${registryKeyLabel(labelKey)} currentSize=${localizedCacheKeys.size}`,
         "DEBUG"
       )
     }
@@ -255,36 +285,58 @@
   }
 
   /**
+   * Registry trust decay: a lookup that the registry claimed was absent turned
+   * out to be an IDB hit. The registry is lagging — stop trusting its "absent"
+   * verdicts for a while so every lookup goes to background.
+   */
+  function noteRegistryFalseNegative() {
+    registryFalseNegativeUntil = Date.now() + REGISTRY_FALSE_NEGATIVE_PENALTY_MS
+    if (typeof ns.reportRuntimeMetric === "function") {
+      ns.reportRuntimeMetric("registry_false_negative", { generation: registryGeneration })
+    }
+  }
+
+  /**
+   * Confidence that a background lookup for this key is worth the IPC.
+   * The registry is never trusted as an absolute "absent" oracle — its verdict
+   * decays with sync staleness, and false negatives suspend trust entirely.
+   *
+   *   0.9  key known cached
+   *   0.8  prefetch in flight for key
+   *   0.5  registry never synced / stale / recently caught lying — lookup anyway
+   *   0.2  fresh registry positively says absent
+   */
+  function resolveCacheConfidence(url) {
+    if (isCachedKey(url)) return 0.9
+    if (isInflightKey(url)) return 0.8
+    if (
+      typeof url === "string" &&
+      /\/EV9fQAQQ/i.test(url) &&
+      typeof ns.isSwiftStreamPlaylistProxy === "function" &&
+      !ns.isSwiftStreamPlaylistProxy(url)
+    ) {
+      return 0.5
+    }
+    const now = Date.now()
+    if (now < registryFalseNegativeUntil) return 0.5
+    if (!lastRegistrySyncAt) return 0.5
+    if (now - lastRegistrySyncAt > REGISTRY_FRESH_MS) return 0.5
+    return 0.2
+  }
+
+  /**
    * Disk-backed keys resolve instantly via IPC; in-flight keys route to collapse.
+   * Unknown keys still get a lookup unless a *fresh* registry positively says absent.
    */
   function isLikelyCacheHitCandidate(url) {
     if (ns.extensionEnabled === false || ns.serveFromCache === false) return false
 
-    const key = resolveCanonicalCoalesceKey(url) || url
-    let cached = false
-    let inflight = false
-    let umpKnown = false
-
-    if (typeof url === "string" && url.startsWith("ump|")) {
-      cached = isCachedKey(url)
-      inflight = isInflightKey(url)
-      umpKnown = ns.knownUmpCacheKeys?.has?.(url) === true
-      const result = cached || inflight || umpKnown
-      if (!result && typeof ns.logBridge === "function") {
-        ns.logBridge(
-          `[REGISTRY] candidate-check gen=${registryGeneration} key=${registryKeyLabel(key)} present=false (cached=${cached}, inflight=${inflight}, umpKnown=${umpKnown})`,
-          "DEBUG"
-        )
-      }
-      return result
-    }
-
-    cached = isCachedKey(url)
-    inflight = isInflightKey(url)
-    const result = cached || inflight
+    const confidence = resolveCacheConfidence(url)
+    const result = confidence >= LOOKUP_CONFIDENCE_THRESHOLD
     if (!result && typeof ns.logBridge === "function") {
+      const key = resolveCanonicalCoalesceKey(url) || url
       ns.logBridge(
-        `[REGISTRY] candidate-check gen=${registryGeneration} key=${registryKeyLabel(key)} present=false (cached=${cached}, inflight=${inflight})`,
+        `[REGISTRY] candidate-check gen=${registryGeneration} key=${registryKeyLabel(key)} present=false confidence=${confidence.toFixed(2)}`,
         "DEBUG"
       )
     }
@@ -293,6 +345,7 @@
 
   ns.applyCacheRegistrySync = applyCacheRegistrySync
   ns.noteLocalCacheKey = noteLocalCacheKey
+  ns.noteStoreIntent = noteStoreIntent
   ns.removeLocalCacheKey = removeLocalCacheKey
   ns.notePrefetchIntent = notePrefetchIntent
   ns.notePrefetchIntentBatch = notePrefetchIntentBatch
@@ -303,6 +356,8 @@
   ns.isCachedKey = isCachedKey
   ns.isInflightKey = isInflightKey
   ns.isKeyInFlight = isInflightKey
+  ns.resolveCacheConfidence = resolveCacheConfidence
+  ns.noteRegistryFalseNegative = noteRegistryFalseNegative
   ns.isLikelyCacheHitCandidate = isLikelyCacheHitCandidate
   ns.resolveCanonicalCoalesceKey = resolveCanonicalCoalesceKey
   ns.resolveRegistryKey = resolveRegistryKey

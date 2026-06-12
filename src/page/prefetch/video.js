@@ -59,11 +59,6 @@ let pageNetworkGeneration = 0
 let pagePrefetchPriority = "low"
 let prefetchWorkersStarted = false
 const observedChunkAt = new Map()
-const knownUmpCacheKeys = new Set()
-const MAX_UMP_CAPTURE_BYTES = 20 * 1024 * 1024
-const MAX_ACTIVE_UMP_CAPTURES = 2
-ns.activeUmpCaptureCount = 0
-ns.lastUmpCaptureBackpressureLogAt = 0
 const CHUNK_OBSERVED_DEBOUNCE_MS = 2000
 
 function isPagePrefetchAllowed() {
@@ -118,17 +113,6 @@ async function storeChunkForPrefetch(payload) {
     return ns.storeChunkFromPage(payload)
   }
   return requestRuntime("STORE_CHUNK_REQUEST", payload)
-}
-
-function rememberKnownUmpKey(cacheKey) {
-  if (!cacheKey || typeof cacheKey !== "string") return
-  knownUmpCacheKeys.add(cacheKey)
-  if (knownUmpCacheKeys.size > 5000) {
-    const toDelete = Array.from(knownUmpCacheKeys).slice(0, 1000)
-    for (const key of toDelete) {
-      knownUmpCacheKeys.delete(key)
-    }
-  }
 }
 
 function clearPrefetchIntentForUrl(url) {
@@ -573,6 +557,10 @@ async function processPrefetchUrlWork(url) {
     ns.notifyInflightWireResolve(url, bytesForStore, contentType)
   }
 
+  if (typeof ns.noteStoreIntent === "function") {
+    ns.noteStoreIntent(url)
+  }
+
   // Send bytes to background for caching (decoupled async disk branch)
   const storeRes = await storeChunkForPrefetch({
     url,
@@ -626,6 +614,89 @@ async function processPrefetchUrlWork(url) {
     prefetchAbortControllers.delete(url)
     urlQueuedGeneration.delete(url)
   }
+}
+
+function findQueuedUrlForCoalesceKey(key) {
+  if (!key) return null
+  for (const url of queuedPrefetches) {
+    const urlKey =
+      typeof ns.resolvePrefetchCoalesceKey === "function"
+        ? ns.resolvePrefetchCoalesceKey(url)
+        : stripHash(url)
+    if (urlKey === key) return url
+  }
+  return null
+}
+
+/**
+ * Player-demand fast lane ("one segment, one future, many consumers").
+ *
+ * A queued-but-not-started prefetch has no page wire yet, so an intercepted
+ * player request for the same segment used to belt out to native network and
+ * re-download bytes the prefetch worker was about to fetch anyway. When the
+ * player demands a queued segment, start it immediately — bypassing worker
+ * concurrency, since the player is blocked on these exact bytes — so the
+ * consumer can join the coalesced wire instead.
+ *
+ * Returns true when a page wire is (now) active for this key.
+ */
+function demandStartQueuedPrefetch(pageUrl, cacheKey) {
+  if (typeof ns.hasActivePageWire === "function" && ns.hasActivePageWire(pageUrl, cacheKey)) {
+    return true
+  }
+  const key =
+    typeof ns.resolveNetworkCoalesceKey === "function"
+      ? ns.resolveNetworkCoalesceKey(pageUrl, cacheKey)
+      : null
+  const url = findQueuedUrlForCoalesceKey(key)
+  if (!url) return false
+
+  queuedPrefetches.delete(url)
+  prefetchQueuedAt.delete(url)
+  const queueIndex = prefetchQueue.indexOf(url)
+  if (queueIndex >= 0) prefetchQueue.splice(queueIndex, 1)
+  if (activePrefetches.has(url)) return true
+
+  // The player wants these bytes now — a stale queued generation must not
+  // cause the demand fetch to self-cancel.
+  urlQueuedGeneration.set(url, pageNetworkGeneration)
+  activePrefetches.add(url)
+  reportRuntimeMetric("prefetch_demand_promotion", {
+    queueDepth: prefetchQueue.length
+  })
+  if (typeof ns.logBridge === "function") {
+    ns.logBridge(
+      `Demand-start queued prefetch for player request: ${String(url).slice(-64)}`,
+      "DEBUG"
+    )
+  }
+
+  void (async () => {
+    try {
+      await processPrefetchUrl(url)
+    } catch (e) {
+      const message = e?.message || "unknown"
+      clearPrefetchIntentForUrl(url)
+      if (e?.name === "AbortError") {
+        emitPrefetchSkipped(url, "aborted")
+      } else {
+        emitPrefetchFailure(url, {
+          fetchPath: "originalFetch",
+          status: 0,
+          errorName: e?.name || "Error",
+          errorMessage: message,
+          transient: /failed to fetch|networkerror|load failed/i.test(String(message).toLowerCase())
+        })
+      }
+    } finally {
+      activePrefetches.delete(url)
+      urlQueuedGeneration.delete(url)
+    }
+  })()
+
+  return typeof ns.hasActivePageWire === "function"
+    ? ns.hasActivePageWire(pageUrl, cacheKey)
+    : true
 }
 
 async function runPrefetchWorker() {
@@ -774,13 +845,10 @@ async function prefetchSegmentsFromPage(urls, options = {}) {
 ns.PREFETCH_CONCURRENCY = PREFETCH_CONCURRENCY
 ns.activePrefetches = activePrefetches
 ns.observedChunkAt = observedChunkAt
-ns.knownUmpCacheKeys = knownUmpCacheKeys
-ns.MAX_UMP_CAPTURE_BYTES = MAX_UMP_CAPTURE_BYTES
-ns.MAX_ACTIVE_UMP_CAPTURES = MAX_ACTIVE_UMP_CAPTURES
 ns.CHUNK_OBSERVED_DEBOUNCE_MS = CHUNK_OBSERVED_DEBOUNCE_MS
-ns.rememberKnownUmpKey = rememberKnownUmpKey
 ns.notifyChunkObserved = notifyChunkObserved
 ns.prefetchSegmentsFromPage = prefetchSegmentsFromPage
 ns.cancelPrefetchRunway = cancelPrefetchRunway
+ns.demandStartQueuedPrefetch = demandStartQueuedPrefetch
 
 })()

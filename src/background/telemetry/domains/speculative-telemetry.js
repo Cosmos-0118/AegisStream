@@ -100,14 +100,14 @@ function getAdaptiveLimits() {
       mode,
       segmentsAhead: Math.max(1, Math.floor((constants.SPECULATIVE_SEGMENTS_AHEAD || 2) / 2)),
       maxUrls: Math.max(2, Math.floor((constants.SPECULATIVE_MAX_URLS_PER_CYCLE || 10) / 2)),
-      crossItag: true
+      crossItag: false
     }
   }
   return {
     mode: "full",
     segmentsAhead: Number(constants.SPECULATIVE_SEGMENTS_AHEAD) || 2,
     maxUrls: Number(constants.SPECULATIVE_MAX_URLS_PER_CYCLE) || 10,
-    crossItag: true
+    crossItag: false
   }
 }
 
@@ -218,14 +218,6 @@ function recordSpeculativeUsed(url, bytes = 0, tabId = null) {
         addLog(
           "INFO",
           `Speculative HLS quality-switch hit (${entry.fromRung}→${entry.toRung}, ${Math.round(byteLen / 1024)} KB)`
-        )
-      }
-      if (entry.source === "cross-itag" && entry.toItag && entry.fromItag !== entry.toItag) {
-        bumpStat("speculativeCrossItagUsed", 1)
-        bumpStat("speculativeQualitySwitchHits", 1)
-        addLog(
-          "INFO",
-          `Speculative YouTube cross-itag consumed (itag ${entry.fromItag}→${entry.toItag}, ${Math.round(byteLen / 1024)} KB)`
         )
       }
     }

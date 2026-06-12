@@ -62,16 +62,6 @@ const EMPTY_STATS = {
   cacheMisses: 0,
   cacheWarmups: 0,
   cachedChunks: 0,
-  youtubeUmpChunks: 0,
-  youtubeUmpRequests: 0,
-  youtubeUmpLookups: 0,
-  youtubeUmpLookupHits: 0,
-  youtubeUmpLookupMisses: 0,
-  youtubeUmpWarmups: 0,
-  youtubeUmpUniqueKeys: 0,
-  youtubeUmpStreamsCompleted: 0,
-  youtubeUmpStreamsAborted: 0,
-  youtubeUmpStreamsErrored: 0,
   prefetched: 0,
   prefetchFailed: 0,
   playlistsDetected: 0,
@@ -291,13 +281,6 @@ function renderStats(stats) {
     el.statsScope.textContent = `${windowLabel} · ${formatCount(stored)} stored · JIT playback`
     if (stored >= 1e4) el.statsScope.title = `${formatCountFull(stored)} chunks stored`
     else el.statsScope.removeAttribute("title")
-  }
-
-  // Make operating mode explicit so UMP behavior is not misread as "broken cache".
-  if ((safeStats.youtubeUmpRequests || 0) > 0 && (safeStats.playlistsDetected || 0) === 0) {
-    setStatus("Active (YouTube realtime mode)")
-  } else if (el.globalStatusText.textContent.startsWith("Active (YouTube")) {
-    setStatus("Active")
   }
 
   const spec = safeStats.speculative

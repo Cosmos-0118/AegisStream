@@ -82,10 +82,7 @@ const CHUNK_CAPTURE_SOURCES = new Set([
   "xhr-load",
   "fetch-clone",
   "fetch-tee",
-  "ump",
   "prefetch",
-  "range-buffer",
-  "cross-itag",
   "unknown"
 ])
 
@@ -236,7 +233,9 @@ function requestRuntime(type, payload, transferables = [], options = {}) {
         ? STORE_CHUNK_TIMEOUT_MS
         : type === "EXTENSION_FETCH_REQUEST"
           ? 65000
-          : 5000
+          : type === "CACHE_LOOKUP_REQUEST"
+            ? 12_000
+            : 5000
     let timeoutId = null
 
     const settle = (response) => {
@@ -334,6 +333,26 @@ function storeInflightKey(payload) {
   const byteLength =
     typeof payload?.bytes?.byteLength === "number" ? payload.bytes.byteLength : 0
   return `${url || ""}|${byteLength}`
+}
+
+/** Await any in-flight page→background store for this URL before a belt/native fallback. */
+async function awaitInflightChunkStoreByUrl(url) {
+  const normalized = stripHash(url)
+  if (!normalized || inflightChunkStores.size === 0) return null
+  const prefix = `${normalized}|`
+  const promises = []
+  for (const [key, ctx] of inflightChunkStores.entries()) {
+    if (key.startsWith(prefix) && ctx?.promise) {
+      promises.push(ctx.promise)
+    }
+  }
+  if (!promises.length) return null
+  const waitMs = 3_000
+  await Promise.race([
+    Promise.allSettled(promises),
+    new Promise((resolve) => setTimeout(resolve, waitMs))
+  ])
+  return null
 }
 
 function isDetachedBuffer(bytes) {
@@ -583,6 +602,7 @@ ns.copyArrayBufferForBridge = cloneBytesForBridge
 ns.wrapBytesForExtensionTransport = wrapBytesForExtensionTransport
 ns.normalizeCaptureSource = normalizeCaptureSource
 ns.storeChunkFromPage = storeChunkFromPage
+ns.awaitInflightChunkStoreByUrl = awaitInflightChunkStoreByUrl
 ns.cancelInflightChunkStores = cancelInflightChunkStores
 ns.flushPendingStoresAfterReconnect = flushPendingStoresAfterReconnect
 ns.isExtensionContextInvalidated = isExtensionContextInvalidated

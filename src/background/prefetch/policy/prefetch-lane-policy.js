@@ -97,7 +97,42 @@
     })
   }
 
+  /**
+   * Byte-aware scheduling: cheap segments first in the batch tail.
+   *
+   * The head of the batch (nearest the playhead) keeps strict playback order.
+   * The remainder is sorted by estimated download cost — segment duration is
+   * the proxy for byte size at constant bitrate — so small chunks complete
+   * early and convert to visible cache hits while large chunks stream in
+   * behind them instead of hogging all sockets up front.
+   */
+  function reorderTargetsByByteCost(targets, tabState) {
+    const headCount = Math.max(1, Number(ns.constants?.BYTE_AWARE_HEAD_SEGMENTS) || 3)
+    if (!Array.isArray(targets) || targets.length <= headCount + 1) return targets
+    const durations = Array.isArray(tabState?.segmentDurations)
+      ? tabState.segmentDurations
+      : null
+    if (!durations || !tabState?.segments?.length) return targets
+
+    const segments = tabState.segments
+    const costOf = (url) => {
+      const index = segments.indexOf(url)
+      const duration = index >= 0 ? Number(durations[index]) : NaN
+      return Number.isFinite(duration) && duration > 0 ? duration : Number.POSITIVE_INFINITY
+    }
+
+    const tail = targets.slice(headCount)
+    const knownCosts = tail.map(costOf).filter(Number.isFinite)
+    if (knownCosts.length < 2) return targets
+    // Uniform playlists (constant segment duration) keep pure playback order.
+    if (Math.max(...knownCosts) - Math.min(...knownCosts) < 0.5) return targets
+
+    const sortedTail = [...tail].sort((urlA, urlB) => costOf(urlA) - costOf(urlB))
+    return targets.slice(0, headCount).concat(sortedTail)
+  }
+
   ns.classifyPrefetchLane = classifyPrefetchLane
+  ns.reorderTargetsByByteCost = reorderTargetsByByteCost
   ns.isTeleportPriorityLaneActive = isTeleportPriorityLaneActive
   ns.armTeleportPriorityLane = armTeleportPriorityLane
   ns.activateOrExtendTeleportLease = activateOrExtendTeleportLease
