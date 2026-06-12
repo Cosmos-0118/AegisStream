@@ -120,6 +120,10 @@
       const consensus = ns.resolveReconcileTargetIndex(tabState)
       if (typeof consensus === "number" && consensus >= 0) return consensus
     }
+    if (typeof ns.getEffectiveAnchorIndex === "function") {
+      const effective = ns.getEffectiveAnchorIndex(tabState)
+      if (typeof effective === "number" && effective >= 0) return effective
+    }
     return typeof tabState.anchorIndex === "number" && tabState.anchorIndex >= 0
       ? tabState.anchorIndex
       : 0
@@ -239,30 +243,42 @@
     }
     tabState.lastRescuePrefetchAt = now
     const normalized = Array.isArray(segments) ? segments : tabState.segments
+    const source = options.source || "rescue-lane"
     const variantRecovery = isVariantSwitchRecovery(tabState, now)
-    if (!variantRecovery) {
-      armRescueLane(tabId, tabState, options.source || "rescue-lane")
+    const softRescue =
+      variantRecovery || source === "buffer-emergency" || source === "buffer-load-push"
+    if (!softRescue) {
+      armRescueLane(tabId, tabState, source)
     }
     const targets = resolveRescuePlayheadTargets(tabState, normalized)
     if (!targets.length) return false
 
-    tabState.lastScheduledFromIndex =
-      typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : 0
+    const playheadIndex =
+      typeof resolveRescuePlayheadIndex === "function"
+        ? resolveRescuePlayheadIndex(tabState)
+        : typeof tabState.anchorIndex === "number"
+          ? tabState.anchorIndex
+          : 0
+    tabState.lastScheduledFromIndex = playheadIndex
     tabState.lastScheduledAt = now
     tabState.updatedAt = now
 
     if (typeof ns.delegatePrefetchToPage === "function") {
-      const rescueSource = variantRecovery ? "variant-switch-rescue" : "rescue-lane"
+      const rescueSource = variantRecovery
+        ? "variant-switch-rescue"
+        : source === "buffer-emergency" || source === "buffer-load-push"
+          ? "buffer-load-push"
+          : "rescue-lane"
       addLog(
         "INFO",
-        variantRecovery
-          ? `Variant-switch recovery prefetch of ${targets.length} segment(s) (tab ${tabId}, non-destructive)`
+        softRescue
+          ? `Non-destructive rescue prefetch of ${targets.length} segment(s) (tab ${tabId}, source=${rescueSource})`
           : `Engine mode: ${EngineModes.RESCUE} — delegated rescue prefetch of ${targets.length} segment(s) (tab ${tabId}, priority=high)`
       )
       const ok = await ns.delegatePrefetchToPage(tabId, targets, {
         source: rescueSource,
         priority: "high",
-        replaceDelegated: variantRecovery ? false : true
+        replaceDelegated: softRescue ? false : true
       })
       if (ok && typeof ns.noteRescuePrefetchDelegated === "function") {
         ns.noteRescuePrefetchDelegated(targets.length)

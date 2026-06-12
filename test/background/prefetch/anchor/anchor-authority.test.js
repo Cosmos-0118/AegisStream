@@ -21,7 +21,8 @@ vm.runInContext(fs.readFileSync(authorityPath, "utf8"), context)
 const {
   evaluateAuthorityCommit,
   AnchorAuthority,
-  shouldBlockStaleSeekPredictionTeleport
+  shouldBlockStaleSeekPredictionTeleport,
+  getEffectiveAnchorIndex
 } = sandbox.self.AegisBackground
 
 function assert(condition, message) {
@@ -161,6 +162,29 @@ assert(
 assert(
   shouldBlockStaleSeekPredictionTeleport(staleSeekTeleport, 45, 0) === false,
   "small seek drift at t=0 should not be blocked"
+)
+
+const churnAnchor = {
+  anchorIndex: 50,
+  predictedAnchorIndex: 37,
+  predictedAnchorAt: Date.now(),
+  seekChurnAggressiveUntil: Date.now() + 5_000
+}
+assert(
+  getEffectiveAnchorIndex(churnAnchor) === 37,
+  "predicted anchor wins during seek churn when diverged"
+)
+
+const prefetchPollution = {
+  anchorIndex: 22,
+  lastPlayerObservedIndex: 62,
+  lastPlayerObservedAt: Date.now(),
+  predictedAnchorIndex: 22,
+  predictedAnchorAt: Date.now()
+}
+assert(
+  getEffectiveAnchorIndex(prefetchPollution) === 22,
+  "prefetch-far-ahead observed index must not override committed anchor"
 )
 
 console.log("anchor-authority.test.js: all assertions passed")

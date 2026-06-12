@@ -5,6 +5,7 @@
   const SOURCE_PRIORITY = {
     "rescue-lane": 100,
     "buffer-emergency": 100,
+    "buffer-load-push": 92,
     "teleport-purge": 95,
     "teleport-mode": 90,
     "teleport-lease": 88,
@@ -65,7 +66,7 @@
 
     if (mode === ns.EngineModes?.RESCUE) {
       const rescueOnly =
-        /rescue|buffer-emergency|quality-switch-warm|variant-switch-rescue/.test(label)
+        /rescue|buffer-emergency|buffer-load-push|quality-switch-warm|variant-switch-rescue/.test(label)
       if (!rescueOnly) {
         return { allow: false, mode, reason: "rescue-active", priority }
       }

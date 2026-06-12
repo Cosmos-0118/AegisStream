@@ -101,6 +101,18 @@ window.addEventListener("message", (event) => {
     return
   }
 
+  if (data.type === "BUFFER_LOAD_PUSH") {
+    if (typeof ns.pushBufferLoad === "function") {
+      ns.pushBufferLoad({
+        tier: data.tier,
+        runwaySec: data.runwaySec,
+        healthScore: data.healthScore,
+        source: "background"
+      })
+    }
+    return
+  }
+
   // Handle prefetch commands from background (via content script)
   if (data.type === "PREFETCH_SEGMENTS" && data.urls) {
     if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return

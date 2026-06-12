@@ -44,8 +44,37 @@ function collectAnchorSignals(tabState, now = Date.now()) {
     tabState.lastPlayerObservedIndex >= 0 &&
     now - Number(tabState.lastPlayerObservedAt || 0) < freshMs
   ) {
-    // The player actually requested this segment — strongest evidence.
-    signals.push({ source: "observed", index: tabState.lastPlayerObservedIndex, weight: 4 })
+    const observed = tabState.lastPlayerObservedIndex
+    const anchor =
+      typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null
+    const predicted =
+      typeof tabState.predictedAnchorIndex === "number" &&
+      now - Number(tabState.predictedAnchorAt || 0) < freshMs
+        ? tabState.predictedAnchorIndex
+        : null
+    const reference =
+      typeof predicted === "number"
+        ? predicted
+        : typeof anchor === "number"
+          ? anchor
+          : null
+    const maxAhead =
+      Number(constants.SEEK_CHURN_PREFETCH_WINDOW_MIN) ||
+      Number(constants.PANIC_PREFETCH_WINDOW) ||
+      10
+    let includeObserved = true
+    if (typeof reference === "number") {
+      if (observed > reference + maxAhead) includeObserved = false
+      if (
+        observed < reference - maxAhead &&
+        now < Number(tabState.seekChurnAggressiveUntil || 0)
+      ) {
+        includeObserved = false
+      }
+    }
+    if (includeObserved) {
+      signals.push({ source: "observed", index: observed, weight: 4 })
+    }
   }
   if (
     typeof tabState.velocityPredictedIndex === "number" &&

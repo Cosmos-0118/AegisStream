@@ -10,9 +10,30 @@ const AnchorAuthority = {
 
 function getEffectiveAnchorIndex(tabState) {
   if (!tabState) return null
-  if (typeof tabState.anchorIndex === "number") return tabState.anchorIndex
+  const now = Date.now()
+  const freshMs = Number(constants.ANCHOR_SIGNAL_FRESH_MS) || 3_000
+  const anchor = typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null
+  const predictedFresh =
+    typeof tabState.predictedAnchorIndex === "number" &&
+    now - Number(tabState.predictedAnchorAt || 0) < freshMs
+      ? tabState.predictedAnchorIndex
+      : null
+
+  const churnOrScrub =
+    now < Number(tabState.seekChurnAggressiveUntil || 0) ||
+    isScrubbingTrainActive(tabState, now)
+
+  if (predictedFresh !== null && (churnOrScrub || anchor === null)) {
+    return predictedFresh
+  }
+
+  if (predictedFresh !== null && anchor !== null) {
+    if (predictedFresh >= anchor && predictedFresh - anchor <= 3) return predictedFresh
+  }
+
+  if (anchor !== null) return anchor
   if (typeof tabState.teleportTargetIndex === "number") return tabState.teleportTargetIndex
-  if (typeof tabState.predictedAnchorIndex === "number") return tabState.predictedAnchorIndex
+  if (predictedFresh !== null) return predictedFresh
   return null
 }
 

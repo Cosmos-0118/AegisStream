@@ -42,6 +42,65 @@ function classifyTierFromRunway(runwaySec, healthScore = 50) {
   return tier
 }
 
+function shouldPushBufferLoad(runwaySec, healthScore, tier) {
+  if (!Number.isFinite(runwaySec)) return false
+  const pushRunway = Number(constants.BUFFER_LOAD_PUSH_RUNWAY_SEC) || 20
+  if (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE) return true
+  if (runwaySec < pushRunway) return true
+  if (Number.isFinite(healthScore) && healthScore < 35 && runwaySec < pushRunway + 10) {
+    return true
+  }
+  return false
+}
+
+function maybePushBufferLoad(tabId, tabState, runwaySec, healthScore, tier) {
+  if (!tabState?.segments?.length) return
+  if (!shouldPushBufferLoad(runwaySec, healthScore, tier)) return
+
+  const minGap = Number(constants.BUFFER_LOAD_PUSH_MIN_MS) || 1_200
+  const now = Date.now()
+  if (now - Number(tabState.lastBufferLoadPushAt || 0) < minGap) return
+  tabState.lastBufferLoadPushAt = now
+
+  if (typeof ns.notifyPageBufferLoadPush === "function") {
+    ns.notifyPageBufferLoadPush(tabId, { tier, runwaySec, healthScore })
+  }
+
+  const anchor =
+    typeof ns.getEffectiveAnchorIndex === "function"
+      ? ns.getEffectiveAnchorIndex(tabState)
+      : typeof tabState.anchorIndex === "number"
+        ? tabState.anchorIndex
+        : 0
+  const windowOverride =
+    tier === TIER_EMERGENCY
+      ? 12
+      : tier === TIER_AGGRESSIVE
+        ? 10
+        : 8
+
+  if (typeof ns.maybeRequestPrefetchForTab === "function") {
+    ns.maybeRequestPrefetchForTab(tabId, tabState.segments, Math.max(0, anchor), "buffer-load-push", {
+      force: true,
+      priority: "high",
+      prefetchWindowOverride: windowOverride
+    })
+  }
+
+  if (
+    tier === TIER_EMERGENCY &&
+    typeof ns.arbitrateTabStreaming === "function" &&
+    typeof ns.executeRescuePrefetch === "function"
+  ) {
+    const mode = ns.arbitrateTabStreaming(tabState)
+    if (mode === ns.EngineModes?.RESCUE) {
+      void ns.executeRescuePrefetch(tabId, tabState, tabState.segments, {
+        source: "buffer-load-push"
+      })
+    }
+  }
+}
+
 function updateTabBufferHealth(tabId, payload) {
   if (!Number.isFinite(tabId) || !payload) return
   let tabState = state.playlistByTab.get(tabId)
@@ -108,6 +167,12 @@ function updateTabBufferHealth(tabId, payload) {
         `Buffer ${tier} on tab ${tabId} (runway=${runwaySec.toFixed(1)}s, health=${scoreLabel}) — maintenance prefetch only`
       )
     }
+  }
+
+  const reactive =
+    typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)
+  if (!reactive) {
+    maybePushBufferLoad(tabId, tabState, runwaySec, healthScore, tier)
   }
 
   if (
@@ -211,6 +276,12 @@ function resolveBufferAdjustedGlobalCap(tabId) {
       adjusted = base
   }
   adjusted = Math.max(adjusted, deficitFloor)
+  if (
+    tabState &&
+    (isTabInSeekChurnAggressive(tabState) || isTabInTeleportMode(tabState))
+  ) {
+    adjusted = Math.max(adjusted, Math.min(12, base + 4))
+  }
   if (typeof ns.resolvePanicAdjustedGlobalCap === "function") {
     return ns.resolvePanicAdjustedGlobalCap(adjusted)
   }

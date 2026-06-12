@@ -139,7 +139,25 @@ function resolveCongestionGlobalCap(tabId) {
   const directives =
     tabState?.congestionDirectives || computeCongestionDirectivesForTab(tabId)
 
-  return Math.min(Math.max(1, bufferCap), Math.max(1, directives.maxInflight))
+  let tierCap = Math.max(1, directives.maxInflight)
+  const bufferTier = tabState?.bufferTier
+  const runway = Number(tabState?.bufferRunwaySec)
+  const health = Number(tabState?.bufferHealthScore)
+  const lowBuffer =
+    bufferTier === "emergency" ||
+    bufferTier === "aggressive" ||
+    (Number.isFinite(runway) && runway < 20) ||
+    (Number.isFinite(health) && health < 35)
+  const scrubGuard = isScrubGuardActive(tabState)
+
+  if (scrubGuard || lowBuffer) {
+    tierCap = Math.max(tierCap, scrubGuard ? 8 : 6)
+  }
+  if (bufferTier === "emergency") {
+    tierCap = Math.max(tierCap, 10)
+  }
+
+  return Math.min(Math.max(1, bufferCap), tierCap)
 }
 
 function formatCongestionTelemetryLine(tabId) {

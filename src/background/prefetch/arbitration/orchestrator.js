@@ -963,11 +963,15 @@ function handleUnifiedSeekState(tabId, rawPayload = {}) {
       if (Number.isFinite(scrubTargetIndex)) {
         tabState.velocityPredictedIndex = Math.max(0, Math.round(scrubTargetIndex))
         tabState.velocityPredictedAt = now
+        const scrubCurrentIndex =
+          Math.abs(velocitySegPerSec) >= minScrubVelocity &&
+          typeof payload.currentIndex === "number"
+            ? payload.currentIndex
+            : estimatedIndex
         handleScrubVelocityPrefetch(tabId, {
           predictedIndex: scrubTargetIndex,
           velocitySegPerSec,
-          currentIndex:
-            typeof payload.currentIndex === "number" ? payload.currentIndex : estimatedIndex
+          currentIndex: scrubCurrentIndex
         })
       }
     }
@@ -2093,6 +2097,34 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     qualityVariantSwitch = false
   }
 
+  const indexQualityRotation =
+    urlsChanged &&
+    !segmentCountChanged &&
+    !episodeChangedByFingerprint &&
+    pageUnchanged &&
+    indexQuality &&
+    Number(indexQuality.coverage) >= 100
+
+  if (indexQualityRotation) {
+    shouldClearPrefetch = false
+    qualityVariantSwitch = false
+  }
+
+  const seekChurnActive =
+    Date.now() < Number(previous?.seekChurnAggressiveUntil || 0) ||
+    Date.now() < Number(previous?.scrubbingTrainUntil || 0)
+
+  if (
+    seekChurnActive &&
+    urlsChanged &&
+    !episodeChangedByFingerprint &&
+    !segmentCountChanged &&
+    pageUnchanged
+  ) {
+    shouldClearPrefetch = false
+    qualityVariantSwitch = false
+  }
+
   if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0) {
     if (shouldClearPrefetch) {
       clearPrefetchTrackingForUrls(previous.segments)
@@ -2857,6 +2889,35 @@ function shouldRejectAnchorRegression(tabState, previousAnchorIndex, chunkIndex)
   return playlistGrace || rotationGrace || retained
 }
 
+function isUrlTrackedAsPrefetch(tabId, tabState, chunkUrl) {
+  if (!tabState || !chunkUrl) return false
+  const normalized = normalizePrefetchUrl(chunkUrl)
+  if (!normalized) return false
+  const inflight = state.inflightPrefetches.get(normalized)
+  if (
+    inflight?.tabId === tabId &&
+    Date.now() - Number(inflight.startedAt || 0) < constants.PREFETCH_INFLIGHT_TTL_MS
+  ) {
+    return true
+  }
+  if (tabState.prefetchDownloadRegistry instanceof Set) {
+    for (const key of tabState.prefetchDownloadRegistry) {
+      if (typeof key === "string" && key.endsWith(`|${normalized}`)) return true
+    }
+  }
+  if (
+    tabState.activeInflightSegmentIndices instanceof Set &&
+    tabState.signatureToIndex &&
+    typeof resolveSegmentIndexInManifest === "function"
+  ) {
+    const idx = resolveSegmentIndexInManifest(normalized, tabState)
+    if (typeof idx === "number" && tabState.activeInflightSegmentIndices.has(idx)) {
+      return true
+    }
+  }
+  return false
+}
+
 function segmentIndexHasActivePrefetch(tabId, tabState, segmentIndex) {
   if (!tabState?.segments?.length || typeof segmentIndex !== "number") return false
   const idx = Math.max(0, Math.min(Math.round(segmentIndex), tabState.segments.length - 1))
@@ -2897,8 +2958,13 @@ function pruneInflightSegmentIndices(tabState, anchorIndex) {
   if (!(tabState?.activeInflightSegmentIndices instanceof Set)) return
   if (typeof anchorIndex !== "number") return
   const window = Math.max(Number(state.settings.prefetchWindow) * 2, 16)
+  const behindGrace = Math.max(1, Number(constants.SCRUB_INFLIGHT_BEHIND_GRACE) || 2)
+  const scrubbing =
+    typeof ns.isScrubbingTrainActive === "function" && ns.isScrubbingTrainActive(tabState)
   for (const idx of tabState.activeInflightSegmentIndices) {
     if (Math.abs(idx - anchorIndex) > window) {
+      tabState.activeInflightSegmentIndices.delete(idx)
+    } else if (scrubbing && idx < anchorIndex - behindGrace) {
       tabState.activeInflightSegmentIndices.delete(idx)
     }
   }
@@ -2912,6 +2978,18 @@ function countPrefetchWindowNeedingFetch(tabId, tabState, startIndex, windowSize
     if (!segmentIndexHasActivePrefetch(tabId, tabState, idx)) needed += 1
   }
   return needed
+}
+
+function notifyPageBufferLoadPush(tabId, payload = {}) {
+  if (!Number.isFinite(tabId)) return
+  chrome.tabs
+    .sendMessage(tabId, {
+      type: "AegisStream:BufferLoadPush",
+      tier: payload.tier || null,
+      runwaySec: Number(payload.runwaySec),
+      healthScore: Number(payload.healthScore)
+    })
+    .catch(() => {})
 }
 
 function notifyPageSeekingStateReset(tabId, options = {}) {
@@ -3491,8 +3569,14 @@ async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   tabState.lastScheduledAt = now
   tabState.updatedAt = now
 
+  const scheduleSourceLabel = String(options.source || "schedule")
   const delegated = await delegatePrefetchToPage(tabId, batch, {
-    source: options.source || "schedule"
+    source: scheduleSourceLabel,
+    priority:
+      options.priority ||
+      (/buffer-load-push|rescue|buffer-emergency|scrub-snap-back/.test(scheduleSourceLabel)
+        ? "high"
+        : "low")
   })
   if (!delegated) {
     for (const url of batch) {
@@ -3941,11 +4025,6 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
   if (typeof chunkIndex !== "number") return
   chunkIndex = remapChunkIndexViaMediaSequence(tabState, chunkIndex)
 
-  // Strongest playhead evidence there is — feed the reconciliation lane even
-  // when hysteresis below defers the actual anchor commit.
-  tabState.lastPlayerObservedIndex = chunkIndex
-  tabState.lastPlayerObservedAt = Date.now()
-
   const hadAnchor = tabState.hasAnchor === true
   const previousAnchorIndex = tabState.anchorIndex
   const wasRetainedAnchor = tabState.anchorRetainedByRefresh === true
@@ -3971,12 +4050,12 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
       "DEBUG",
       `Deferred anchor ${previousAnchorIndex} -> ${chunkIndex} (${anchorDecision.reason || "hysteresis"}, tab ${tabId})`
     )
-    // Hysteresis deferred this commit, but the player evidence still counts:
-    // if the consensus keeps diverging the reconciler promotes it after dwell.
-    maybeReconcileAnchor(tabId, tabState)
     return
   }
   chunkIndex = anchorDecision.index
+
+  tabState.lastPlayerObservedIndex = chunkIndex
+  tabState.lastPlayerObservedAt = Date.now()
 
   const anchorMoved =
     !hadAnchor ||
@@ -4095,6 +4174,10 @@ async function handleChunkObserved(tabId, chunkUrl, options = {}) {
 
 function observeChunkFromWebRequest(tabId, chunkUrl) {
   if (!isTabEligibleForPrefetch(tabId)) return
+  const tabState = state.playlistByTab.get(tabId)
+  if (tabState && isUrlTrackedAsPrefetch(tabId, tabState, chunkUrl)) {
+    return
+  }
   void handleChunkObserved(tabId, chunkUrl)
 }
 
@@ -4114,10 +4197,12 @@ ns.isTabInScrubbingTrain = isTabInScrubbingTrain
 ns.isTabInSeekChurnAggressive = isTabInSeekChurnAggressive
 ns.isTabInTeleportMode = isTabInTeleportMode
 ns.observeChunkFromWebRequest = observeChunkFromWebRequest
+ns.isUrlTrackedAsPrefetch = isUrlTrackedAsPrefetch
 ns.isTabInRapidSeek = isTabInRapidSeek
 ns.schedulePrefetch = schedulePrefetch
 ns.requestPrefetchForTab = requestPrefetchForTab
 ns.maybeRequestPrefetchForTab = maybeRequestPrefetchForTab
+ns.notifyPageBufferLoadPush = notifyPageBufferLoadPush
 ns.syncKnownSegmentsToPage = syncKnownSegmentsToPage
 ns.updatePrefetchOutcome = updatePrefetchOutcome
 ns.noteTabPrefetchFailure = noteTabPrefetchFailure

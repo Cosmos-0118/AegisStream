@@ -76,6 +76,9 @@ assert(scrub.prefetchRadius <= 20, "scrub guard should cap radius at 20")
 
 state.playlistByTab.set(99, { ...scrubTab })
 const cap = api.resolveCongestionGlobalCap(99)
-assert(cap <= 5, `congestion cap should bind global inflight, got ${cap}`)
+assert(
+  cap >= 8,
+  `scrub guard should floor panic inflight during low buffer, got ${cap}`
+)
 
 console.log("congestion-controller.test.js: all assertions passed")

@@ -174,15 +174,27 @@ function classifyTier(runwaySec, healthScore) {
     tier = runwaySec < 30 ? TIER_NORMAL : TIER_MAINTENANCE
   }
 
-  if (isSeekSettling() && (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE)) {
+  if (
+    isSeekSettling() &&
+    (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE) &&
+    runwaySec >= 20 &&
+    healthScore >= 40
+  ) {
     return TIER_MAINTENANCE
   }
   return tier
 }
 
-function shouldReportNow(tier, healthScore) {
+function shouldReportNow(tier, healthScore, runwaySec) {
   samplesSinceReport += 1
   if (tier === TIER_EMERGENCY) return true
+  if (
+    (tier === TIER_AGGRESSIVE || healthScore < 35) &&
+    Number.isFinite(runwaySec) &&
+    runwaySec < 20
+  ) {
+    return true
+  }
   if (lastReportedTier !== tier) return true
   if (
     lastReportedScore !== null &&
@@ -250,7 +262,22 @@ function tick() {
     playbackRate: video.playbackRate
   }
 
-  if (!shouldReportNow(tier, healthScore)) {
+  if (
+    tier === TIER_EMERGENCY ||
+    tier === TIER_AGGRESSIVE ||
+    (Number.isFinite(runwaySec) && runwaySec < 20)
+  ) {
+    if (typeof ns.pushBufferLoad === "function") {
+      ns.pushBufferLoad({
+        tier,
+        runwaySec,
+        healthScore,
+        source: "page-monitor"
+      })
+    }
+  }
+
+  if (!shouldReportNow(tier, healthScore, runwaySec)) {
     ns.bufferRunwaySec = runwaySec
     ns.bufferHealthScore = healthScore
     ns.bufferTier = tier
@@ -357,6 +384,7 @@ ns.measurePrimaryVideoRunway = () => {
 ns.runwayAtPlayhead = runwayAtPlayhead
 ns.computeHealthScore = computeHealthScore
 ns.classifyTier = classifyTier
+ns.bumpSeekActivity = bumpSeekActivity
 ns.TIER_EMERGENCY = TIER_EMERGENCY
 ns.TIER_AGGRESSIVE = TIER_AGGRESSIVE
 ns.TIER_NORMAL = TIER_NORMAL

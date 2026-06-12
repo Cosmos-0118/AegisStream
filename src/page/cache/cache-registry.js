@@ -309,13 +309,15 @@
   function resolveCacheConfidence(url) {
     if (isCachedKey(url)) return 0.9
     if (isInflightKey(url)) return 0.8
-    if (
-      typeof url === "string" &&
-      /\/EV9fQAQQ/i.test(url) &&
-      typeof ns.isSwiftStreamPlaylistProxy === "function" &&
-      !ns.isSwiftStreamPlaylistProxy(url)
-    ) {
-      return 0.5
+    if (typeof url === "string") {
+      const swiftTransport = /\/EV9fQAQQ/i.test(url)
+      const swiftSegmentTail = /ChkAT0wHWFUL/i.test(url)
+      const playlistProxy =
+        typeof ns.isSwiftStreamPlaylistProxy === "function" &&
+        ns.isSwiftStreamPlaylistProxy(url)
+      if ((swiftTransport || swiftSegmentTail) && !playlistProxy) {
+        return 0.5
+      }
     }
     const now = Date.now()
     if (now < registryFalseNegativeUntil) return 0.5

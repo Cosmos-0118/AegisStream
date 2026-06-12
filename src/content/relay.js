@@ -295,6 +295,21 @@ function installRelay(activeGeneration) {
       return false
     }
 
+    if (message?.type === "AegisStream:BufferLoadPush") {
+      window.postMessage(
+        {
+          __aegisstream: true,
+          type: "BUFFER_LOAD_PUSH",
+          tier: message.tier || null,
+          runwaySec: message.runwaySec,
+          healthScore: message.healthScore
+        },
+        "*"
+      )
+      sendResponse({ ok: true })
+      return true
+    }
+
     if (message?.type === "AegisStream:PrefetchSegments" && message.urls) {
       window.postMessage(
         {

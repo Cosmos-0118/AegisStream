@@ -116,6 +116,10 @@ ns.constants = {
   BUFFER_HEALTH_SECURE_RUNWAY_SEC: 15,
   BUFFER_HEALTH_EMA_ALPHA: 0.2,
   BUFFER_HEALTH_MIN_SCORE_WHEN_SECURE: 20,
+  /** Re-push prefetch + page load when runway drops below this (seconds). */
+  BUFFER_LOAD_PUSH_RUNWAY_SEC: 20,
+  /** Minimum gap between buffer load push bursts per tab. */
+  BUFFER_LOAD_PUSH_MIN_MS: 1_200,
   ANCHOR_CONFIRM_MS: 1_500,
   ANCHOR_CONFIRM_SAMPLES: 3,
   ANCHOR_MONOTONIC_STREAK_THRESHOLD: 2,
@@ -213,6 +217,7 @@ ns.constants = {
   /** Window after seeked release where stall/runway can force macro predictor. */
   SEEK_RELEASE_STALL_OVERRIDE_MS: 3_000,
   SCRUB_VELOCITY_MAX_JUMP_SEGMENTS: 8,
+  SCRUB_INFLIGHT_BEHIND_GRACE: 2,
   SCRUB_KALMAN_LOOKAHEAD_MIN_MS: 200,
   SCRUB_KALMAN_LOOKAHEAD_MAX_MS: 800,
   SCRUB_KALMAN_LOOKAHEAD_BASE_MS: 200,

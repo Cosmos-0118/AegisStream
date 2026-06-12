@@ -20,6 +20,11 @@ const sandbox = {
   },
   location: { href: "https://example.com" },
   setInterval: () => 0,
+  setTimeout: (fn) => {
+    fn()
+    return 0
+  },
+  clearTimeout: () => {},
   MutationObserver: class {
     observe() {}
   }
@@ -33,7 +38,12 @@ sandbox.globalThis = sandbox
 
 vm.runInContext(fs.readFileSync(srcPath, "utf8"), vm.createContext(sandbox))
 
-const { runwayAtPlayhead, computeHealthScore, classifyTier } = sandbox.self.AegisPageBridge
+const {
+  runwayAtPlayhead,
+  computeHealthScore,
+  classifyTier,
+  bumpSeekActivity
+} = sandbox.self.AegisPageBridge
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -96,5 +106,17 @@ assert(
   "40+ second runway should not trigger emergency from fill-rate noise"
 )
 assert(classifyTier(3, 90) === "emergency", "critically thin runway stays emergency")
+
+if (typeof bumpSeekActivity === "function") {
+  bumpSeekActivity()
+  assert(
+    classifyTier(12, 8) === "aggressive",
+    "low runway during seek settling must stay aggressive for refill"
+  )
+  assert(
+    classifyTier(45, 60) === "maintenance",
+    "ample runway stays maintenance during seek settling"
+  )
+}
 
 console.log("buffer-health-monitor.test.js: all passed")

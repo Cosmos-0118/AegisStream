@@ -140,4 +140,29 @@ const anchorlessState = {
 decision = evaluateAnchorReconciliation(anchorlessState, now)
 assert(decision.promote === true && decision.reason === "no-anchor", "no anchor -> promote consensus")
 
+// Prefetch webRequest noise far ahead of playhead must not drag consensus.
+const prefetchNoiseState = {
+  segments,
+  anchorIndex: 22,
+  predictedAnchorIndex: 22,
+  predictedAnchorAt: now,
+  lastPlayerObservedIndex: 62,
+  lastPlayerObservedAt: now,
+  seekChurnAggressiveUntil: now + 5_000
+}
+const noiseSignals = collectAnchorSignals(prefetchNoiseState, now)
+assert(
+  !noiseSignals.some((s) => s.source === "observed"),
+  "observed signal excluded when far ahead of playhead reference"
+)
+assert(
+  resolveReconcileTargetIndex(prefetchNoiseState, now) === 22,
+  "prefetch noise filtered — consensus stays at playhead"
+)
+decision = evaluateAnchorReconciliation(prefetchNoiseState, now + 10_000)
+assert(
+  decision.promote === false,
+  "prefetch pollution must not promote anchor far ahead"
+)
+
 console.log("anchor-reconciler.test.js passed")

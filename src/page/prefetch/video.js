@@ -46,6 +46,7 @@ function isUrlGenerationCurrent(url) {
 }
 
 const PREFETCH_CONCURRENCY = 3
+const MAX_PREFETCH_WORKERS = 8
 const MAX_PREFETCH_QUEUE_SIZE = 240
 const PREFETCH_QUEUE_MAX_AGE_MS = 15_000
 const activePrefetches = new Set()
@@ -58,6 +59,9 @@ const urlQueuedGeneration = new Map()
 let pageNetworkGeneration = 0
 let pagePrefetchPriority = "low"
 let prefetchWorkersStarted = false
+let prefetchWorkerCount = 0
+let bufferLoadPushUntil = 0
+let lastBufferLoadPushAt = 0
 const observedChunkAt = new Map()
 const CHUNK_OBSERVED_DEBOUNCE_MS = 2000
 
@@ -76,8 +80,13 @@ function getBufferTier() {
 }
 
 function isMaintenancePrefetchMode() {
+  if (isBufferLoadPushActive()) return false
   const tier = getBufferTier()
   return tier === ns.TIER_MAINTENANCE || tier === ns.TIER_IDLE
+}
+
+function isBufferLoadPushActive() {
+  return Date.now() < bufferLoadPushUntil
 }
 
 function getRequiredConcurrency(healthScore) {
@@ -754,11 +763,61 @@ async function runPrefetchWorker() {
   }
 }
 
-function ensurePrefetchWorkers() {
-  if (prefetchWorkersStarted) return
+function scalePrefetchWorkers(target) {
+  const capped = Math.min(
+    MAX_PREFETCH_WORKERS,
+    Math.max(PREFETCH_CONCURRENCY, Number(target) || PREFETCH_CONCURRENCY)
+  )
   prefetchWorkersStarted = true
-  for (let i = 0; i < PREFETCH_CONCURRENCY; i += 1) {
+  while (prefetchWorkerCount < capped) {
+    prefetchWorkerCount += 1
     void runPrefetchWorker()
+  }
+}
+
+function ensurePrefetchWorkers() {
+  scalePrefetchWorkers(getBufferAdjustedConcurrency())
+}
+
+function pushBufferLoad(options = {}) {
+  const tier = options.tier || getBufferTier()
+  const runway = Number(options.runwaySec ?? ns.bufferRunwaySec)
+  const health = Number(options.healthScore ?? ns.bufferHealthScore)
+  const pushRunway = 20
+  const lowRunway = Number.isFinite(runway) && runway < pushRunway
+  const lowHealth = Number.isFinite(health) && health < 35
+  const urgent =
+    tier === ns.TIER_EMERGENCY ||
+    tier === ns.TIER_AGGRESSIVE ||
+    lowRunway ||
+    lowHealth
+  if (!urgent) return
+
+  const minGap = 900
+  const now = Date.now()
+  if (now - lastBufferLoadPushAt < minGap) return
+  lastBufferLoadPushAt = now
+
+  bufferLoadPushUntil =
+    now +
+    (tier === ns.TIER_EMERGENCY ? 8_000 : tier === ns.TIER_AGGRESSIVE ? 5_000 : 4_000)
+  pagePrefetchPriority = "high"
+
+  const workers = getBufferAdjustedConcurrency()
+  const targetWorkers =
+    tier === ns.TIER_EMERGENCY
+      ? Math.max(workers, 6)
+      : tier === ns.TIER_AGGRESSIVE
+        ? Math.max(workers, 5)
+        : Math.max(workers, 4)
+  scalePrefetchWorkers(targetWorkers)
+  notifyPrefetchWorkers()
+
+  if (typeof ns.logBridge === "function") {
+    ns.logBridge(
+      `Buffer load push (${options.source || "page"}, runway=${Number.isFinite(runway) ? runway : "?"}s, health=${Number.isFinite(health) ? health : "?"}%, workers=${prefetchWorkerCount})`,
+      tier === ns.TIER_EMERGENCY ? "WARN" : "DEBUG"
+    )
   }
 }
 
@@ -850,5 +909,7 @@ ns.notifyChunkObserved = notifyChunkObserved
 ns.prefetchSegmentsFromPage = prefetchSegmentsFromPage
 ns.cancelPrefetchRunway = cancelPrefetchRunway
 ns.demandStartQueuedPrefetch = demandStartQueuedPrefetch
+ns.pushBufferLoad = pushBufferLoad
+ns.isBufferLoadPushActive = isBufferLoadPushActive
 
 })()

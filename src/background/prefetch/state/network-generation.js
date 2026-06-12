@@ -72,7 +72,8 @@
     "maintenance",
     "visibility-resume",
     "quality-switch-warm",
-    "variant-switch-rescue"
+    "variant-switch-rescue",
+    "buffer-load-push"
   ])
 
   function normalizeLifecycleEventSource(eventSource) {
