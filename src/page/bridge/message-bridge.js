@@ -2,7 +2,7 @@
 var ns = (self.AegisPageBridge ||= {})
 if (typeof ns.claimExecutionSlot === "function" && !ns.claimExecutionSlot("message-bridge")) return
 
-const { prefetchSegmentsFromPage, pending, refreshPlaylistFromPage, cancelPrefetchRunway } = ns
+const { prefetchSegmentsFromPage, pending, cancelPrefetchRunway } = ns
 
 function applyRuntimeSettings(settings) {
   if (!settings || typeof settings !== "object") return
@@ -173,7 +173,9 @@ window.addEventListener("message", (event) => {
     } else if (typeof ns.cancelInflightChunkStores === "function") {
       ns.cancelInflightChunkStores("refresh-playlist")
     }
-    void refreshPlaylistFromPage(data.url, data.generation)
+    if (typeof ns.refreshPlaylistFromPage === "function") {
+      void ns.refreshPlaylistFromPage(data.url, data.generation)
+    }
     return
   }
 

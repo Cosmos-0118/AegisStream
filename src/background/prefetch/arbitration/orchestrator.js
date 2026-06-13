@@ -1676,6 +1676,7 @@ function tabNeedsPlaylistRecovery(tabState, options = {}) {
 async function ensureTabPlaylistRecovery(tabId, reason, options = {}) {
   if (!Number.isFinite(tabId) || tabId < 0) return false
   const tabState = state.playlistByTab.get(tabId)
+  if (!tabState) return false
   if (!options.force && !tabNeedsPlaylistRecovery(tabState, options)) return false
 
   if (!tabState.mediaPlaylistUrl && tabState.lastMediaPlaylistUrl) {
@@ -2022,20 +2023,20 @@ async function delegatePrefetchToPage(tabId, urls, options = {}) {
   }
 }
 
-function mergeSegmentUrlHistory(previousHistory, previousSegments, newSegments, anchorIndex) {
-  const history =
-    previousHistory instanceof Map ? new Map(previousHistory) : new Map()
+function mergeSegmentUrlHistory(previousHistory, previousSegments, newSegments, anchorIndex, offset = 0) {
+  const history = new Map()
+  const prevHist = previousHistory instanceof Map ? previousHistory : new Map()
   if (!Array.isArray(previousSegments) || !Array.isArray(newSegments)) {
-    return history
+    return prevHist
   }
   const maxDepth = Number(constants.SEGMENT_URL_HISTORY_DEPTH) || 4
-  const end = Math.min(previousSegments.length, newSegments.length)
 
-  for (let i = 0; i < end; i += 1) {
-    const oldUrl = previousSegments[i]
+  for (let i = 0; i < newSegments.length; i += 1) {
+    const oldIdx = i + offset
+    const oldUrl = oldIdx >= 0 && oldIdx < previousSegments.length ? previousSegments[oldIdx] : undefined
     const newUrl = newSegments[i]
     if (!oldUrl && !newUrl) continue
-    const list = [...(history.get(i) || [])]
+    const list = [...(prevHist.get(oldIdx) || [])]
     if (oldUrl && oldUrl !== newUrl) {
       const oldNorm = stripHash(oldUrl)
       if (oldNorm && !list.includes(oldNorm)) list.push(oldNorm)
@@ -2581,6 +2582,34 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
     )
   }
 
+  let sequenceOffset = 0
+  if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0) {
+    if (typeof meta.mediaSequence === "number" && typeof previous?.mediaSequence === "number") {
+      sequenceOffset = meta.mediaSequence - previous.mediaSequence
+    } else if (normalizedSegments.length > 0 && typeof getManifestUrlSignature === "function") {
+      const newSig0 = getManifestUrlSignature(normalizedSegments[0])
+      if (newSig0) {
+        for (let i = 0; i < Math.min(30, previous.segments.length); i++) {
+          if (getManifestUrlSignature(previous.segments[i]) === newSig0) {
+            sequenceOffset = i
+            break
+          }
+        }
+        if (sequenceOffset === 0) {
+          const oldSig0 = getManifestUrlSignature(previous.segments[0])
+          if (oldSig0) {
+            for (let i = 0; i < Math.min(30, normalizedSegments.length); i++) {
+              if (getManifestUrlSignature(normalizedSegments[i]) === oldSig0) {
+                sequenceOffset = -i
+                break
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   const segmentUrlHistory =
     urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0
       ? mergeSegmentUrlHistory(
@@ -2591,7 +2620,8 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
             ? anchorIndex
             : typeof previous?.anchorIndex === "number"
               ? previous.anchorIndex
-              : null
+              : null,
+          sequenceOffset
         )
       : previous?.segmentUrlHistory instanceof Map
         ? new Map(previous.segmentUrlHistory)
@@ -2837,9 +2867,18 @@ function upsertPlaylistState(tabId, normalizedSegments, meta = {}) {
         : typeof previous?.anchorIndex === "number"
           ? previous.anchorIndex
           : 0
+
+    let oldSegmentsToBridge = previous.segments
+    let newSegmentsToBridge = normalizedSegments
+    if (sequenceOffset > 0) {
+      oldSegmentsToBridge = previous.segments.slice(sequenceOffset)
+    } else if (sequenceOffset < 0) {
+      newSegmentsToBridge = normalizedSegments.slice(-sequenceOffset)
+    }
+
     const bridgePromise = ns.bridgePlaylistSegmentUrlAliases(
-      previous.segments,
-      normalizedSegments,
+      oldSegmentsToBridge,
+      newSegmentsToBridge,
       {
         anchorIndex: bridgeAnchor,
         radius: Math.max(Number(state.settings.prefetchWindow) * 3, 24)
