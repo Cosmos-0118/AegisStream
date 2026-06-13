@@ -343,7 +343,17 @@ function startBufferHealthMonitor() {
   }
   ns.bufferHealthMonitorStarted = true
   observeVideos()
-  const observer = new MutationObserver(() => observeVideos())
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof Element)) continue
+        if (node.tagName === "VIDEO") {
+          attachStallObserver(node)
+        }
+        node.querySelectorAll?.("video").forEach(attachStallObserver)
+      }
+    }
+  })
   const root = document.documentElement || document.body
   if (root) {
     observer.observe(root, { childList: true, subtree: true })

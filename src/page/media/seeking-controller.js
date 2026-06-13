@@ -284,7 +284,17 @@ function startSeekingController() {
   observeVideosForSeeking()
   const root = document.documentElement || document.body
   if (root) {
-    const observer = new MutationObserver(() => observeVideosForSeeking())
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!(node instanceof Element)) continue
+          if (node.tagName === "VIDEO") {
+            setupSeekingController(node)
+          }
+          node.querySelectorAll?.("video").forEach(setupSeekingController)
+        }
+      }
+    })
     observer.observe(root, { childList: true, subtree: true })
   }
 }

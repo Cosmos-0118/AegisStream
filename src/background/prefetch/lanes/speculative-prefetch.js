@@ -76,17 +76,44 @@ function getRungLabelForSegmentUrl(matrix, url) {
   return null
 }
 
-async function fetchMediaPlaylistSegments(variantUrl) {
+async function fetchMediaPlaylistSegments(tabId, variantUrl) {
   const normalized = stripHash(variantUrl)
   if (!normalized) return null
   try {
-    const res = await fetch(normalized, {
-      credentials: "include",
-      cache: "no-store",
-      priority: "low"
-    })
-    if (!res.ok) return null
-    const text = await res.text()
+    let text = null
+    if (Number.isFinite(tabId)) {
+      try {
+        const [injection] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: async (url) => {
+            try {
+              const res = await fetch(url, { credentials: "include" })
+              return res.ok ? await res.text() : null
+            } catch {
+              return null
+            }
+          },
+          args: [normalized],
+          world: "MAIN"
+        })
+        text = injection?.result
+      } catch (e) {
+        // Fallback
+      }
+    }
+    
+    if (!text) {
+      const res = await fetch(normalized, {
+        credentials: "include",
+        cache: "no-store",
+        priority: "low"
+      })
+      if (!res.ok) return null
+      text = await res.text()
+    }
+    
+    if (!text) return null
+
     const parsed = parseHlsPlaylist(text, normalized)
     if (parsed.kind !== "media" || !parsed.segments.length) return null
     return {
@@ -112,7 +139,7 @@ async function ingestMasterPlaylist(tabId, masterUrl, variantEntries) {
 
   const results = await Promise.all(
     variants.map(async (variant, index) => {
-      const media = await fetchMediaPlaylistSegments(variant.url)
+      const media = await fetchMediaPlaylistSegments(tabId, variant.url)
       if (!media) return null
       return {
         label: variant.label || labelFromVariantMeta(variant, index),
@@ -140,6 +167,10 @@ async function ingestMasterPlaylist(tabId, masterUrl, variantEntries) {
   tabState.masterPlaylistUrl = stripHash(masterUrl)
   tabState.matrixBuiltAt = matrix.builtAt
   tabState.updatedAt = Date.now()
+
+  if (tabState.mediaPlaylistUrl && typeof ns.applyMatrixToTabState === "function") {
+    ns.applyMatrixToTabState(tabState, tabState.mediaPlaylistUrl)
+  }
 
   addLog(
     "INFO",

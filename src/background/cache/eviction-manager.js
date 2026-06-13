@@ -190,7 +190,6 @@
     if (!snapshot?.summary || !snapshot?.policy) return
     const pressure = evaluatePressure(snapshot.summary, snapshot.policy)
     if (!pressure.lane3Eligible) return
-    if (!shouldScheduleSoftEviction(pressure)) return
     await ns.runEvictionPass(false, { lane: "reconcile" })
   }
 

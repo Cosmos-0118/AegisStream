@@ -69,6 +69,13 @@
         const dropRatio = 1 - (currentIndex / highestIndex)
         const progressiveBoost = 1.3 + (1.2 * dropRatio)
         structuralScore *= progressiveBoost
+        
+        // Force a minimum speculative score to aggressively recover quality 
+        // even if confidence is temporarily low (e.g. right after a drop or seek).
+        const minRecoveryScore = 0.35 + (0.45 * dropRatio)
+        if (structuralScore < minRecoveryScore) {
+          structuralScore = minRecoveryScore
+        }
       }
     }
 

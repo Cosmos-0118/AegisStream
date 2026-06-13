@@ -2,7 +2,7 @@
 var ns = (self.AegisBackground ||= {})
 const { constants, state, addLog, stripHash, buildCacheKeyVariants } = ns
 let evictionInProgress = false
-let lastEvictionRunAt = 0
+let lastEvictionRunAtByLane = { hard: 0, soft: 0, reconcile: 0 }
 let storageSystemOperational = true
 let storageBypassLogged = false
 
@@ -358,16 +358,16 @@ async function runEvictionPass(force = false, options = {}) {
   if (
     !force &&
     lane === "reconcile" &&
-    now - lastEvictionRunAt < constants.CACHE_RECONCILE_INTERVAL_MS
+    now - lastEvictionRunAtByLane.reconcile < constants.CACHE_RECONCILE_INTERVAL_MS
   ) {
     return
   }
-  if (!force && lane === "soft" && now - lastEvictionRunAt < constants.CACHE_RECONCILE_INTERVAL_MS) {
+  if (!force && lane === "soft" && now - lastEvictionRunAtByLane.soft < constants.CACHE_RECONCILE_INTERVAL_MS) {
     return
   }
   if (evictionInProgress) return
   evictionInProgress = true
-  lastEvictionRunAt = now
+  lastEvictionRunAtByLane[lane] = now
 
   try {
     const policy = await computeAdaptiveCachePolicy(false)
@@ -392,8 +392,12 @@ async function runEvictionPass(force = false, options = {}) {
 
       if (!force && !pressure.overSoftThreshold && !pressure.overBudget) return
 
-      let overflowEntries = summary.totalEntries - policy.maxEntries
-      let overflowBytes = summary.totalBytes - policy.maxBytes
+      const targetRatio = lane === "reconcile" ? 0.6 : (lane === "soft" ? 0.75 : 0.85)
+      const targetBytes = Math.floor(policy.maxBytes * targetRatio)
+      const targetEntries = Math.floor(policy.maxEntries * targetRatio)
+
+      let overflowEntries = summary.totalEntries - targetEntries
+      let overflowBytes = summary.totalBytes - targetBytes
       if (overflowEntries <= 0 && overflowBytes <= 0 && !force) return
 
       const guardRingSet =
@@ -732,7 +736,7 @@ async function resolveCachedChunk(url, expectedScope = null) {
 
 async function clearCacheStores() {
   evictionInProgress = false
-  lastEvictionRunAt = 0
+  lastEvictionRunAtByLane = { hard: 0, soft: 0, reconcile: 0 }
   storageSystemOperational = true
   storageBypassLogged = false
   memoryKeyIndex.clear()

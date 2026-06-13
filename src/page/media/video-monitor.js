@@ -168,7 +168,20 @@ function startVideoAnchorMonitor() {
   startWorkerLivelinessBridge()
   const root = document.documentElement || document.body
   if (!root) return
-  const observer = new MutationObserver(() => observeVideosForAnchorBridge())
+  const mapper = resolveManifestMapper()
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof Element)) continue
+        if (node.tagName === "VIDEO") {
+          setupVideoElementAnchorBridge(node, mapper)
+        }
+        node.querySelectorAll?.("video").forEach((video) => {
+          setupVideoElementAnchorBridge(video, mapper)
+        })
+      }
+    }
+  })
   observer.observe(root, { childList: true, subtree: true })
 }
 
