@@ -110,6 +110,7 @@ function buildWarmRecoverySnapshot() {
   }
   return {
     entries,
+    stats: state.stats,
     persistedAt: Date.now(),
     workerStartCount: state.workerLifecycle?.startCount || 0
   }
@@ -150,6 +151,10 @@ async function loadWarmRecoverySnapshot() {
 }
 
 function applyWarmRecoverySnapshot(snapshot) {
+  if (snapshot?.stats) {
+    state.stats = { ...constants.createInitialStats(), ...snapshot.stats }
+  }
+
   if (!snapshot?.entries?.length) return 0
   let applied = 0
   for (const entry of snapshot.entries) {

@@ -59,10 +59,16 @@
     // because speculation is the only mechanism that prefetches adjacent quality rungs.
     if (networkProfile?.activeRungLabel && networkProfile?.rungLabels?.length > 1) {
       const rungs = networkProfile.rungLabels
-      const lowestLabel = rungs[0] // sorted by bandwidth, index 0 = lowest
-      if (networkProfile.activeRungLabel === lowestLabel) {
-        // Player is at the lowest quality — boost by 1.8× to help recovery
-        structuralScore *= 1.8
+      const currentIndex = rungs.indexOf(networkProfile.activeRungLabel)
+      const highestIndex = rungs.length - 1
+      
+      if (currentIndex >= 0 && currentIndex < highestIndex) {
+        // Player is below maximum quality. Provide a progressive boost
+        // based on how far it dropped to help recovery.
+        // Bottom rung gets 2.5x, next rung gets less, but always at least 1.3x
+        const dropRatio = 1 - (currentIndex / highestIndex)
+        const progressiveBoost = 1.3 + (1.2 * dropRatio)
+        structuralScore *= progressiveBoost
       }
     }
 
