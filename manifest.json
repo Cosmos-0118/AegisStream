@@ -5,6 +5,7 @@
   "description": "Adaptive media and web-page acceleration with proactive prefetching and smoother navigation.",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "webRequest",
     "tabs",
     "scripting",

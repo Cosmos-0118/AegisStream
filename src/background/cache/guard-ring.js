@@ -82,6 +82,13 @@ function scoreEvictionCandidate(item, protectedSet) {
   if (!item?.url) return Number.POSITIVE_INFINITY
   if (isUrlGuardRingProtected(item.url, protectedSet)) return Number.POSITIVE_INFINITY
 
+  const ageMs = Date.now() - Number(item.createdAt || 0)
+  if (ageMs < 15000) {
+    // Protect recently fetched chunks (e.g. from false seeks) by pushing them to the end of the queue.
+    // Score gradually rises from -15000 to 0 as they age, so oldest-recent are evicted first if needed.
+    return -15000 + ageMs
+  }
+
   let bestEvictionPriority = -1
   for (const tabState of state.playlistByTab.values()) {
     if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue

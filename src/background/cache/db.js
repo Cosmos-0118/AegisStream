@@ -118,17 +118,21 @@ async function computeAdaptiveCachePolicy(force = false) {
     return state.cachePolicy
   }
 
-  const configuredMaxEntries = Math.max(50, Number(state.settings.maxEntries) || 50)
+  const defaultMaxEntries = constants?.DEFAULT_SETTINGS?.maxEntries || 500
+  const configuredMaxEntries = Math.max(50, Number(state.settings?.maxEntries) || defaultMaxEntries)
   const avgChunkBytes = Math.max(
     64 * 1024,
     Number(state.cachePolicy?.avgChunkBytes || constants.CACHE_DEFAULT_AVG_CHUNK_BYTES)
   )
 
+  // Assume a worst-case chunk size (e.g. 1080p chunks at ~5MB) to prevent cache thrashing 
+  // when jumping from low quality to high quality.
+  const assumedPeakChunkBytes = 5 * 1024 * 1024
   let maxBytes = Math.min(
     constants.CACHE_MAX_BYTES,
     Math.max(
       constants.CACHE_MIN_BYTES,
-      Math.round(avgChunkBytes * configuredMaxEntries * 1.25)
+      Math.round(assumedPeakChunkBytes * configuredMaxEntries * 1.25)
     )
   )
 

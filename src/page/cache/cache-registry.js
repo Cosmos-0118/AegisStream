@@ -226,10 +226,11 @@
   }
 
   function removeLocalCacheKey(url) {
-    const key = resolveCanonicalCoalesceKey(url)
-    if (!key) return
-    localizedCacheKeys.delete(key)
-    inflightCacheIntentKeys.delete(key)
+    const keys = registerKeyVariants(url)
+    for (const key of keys) {
+      localizedCacheKeys.delete(key)
+      inflightCacheIntentKeys.delete(key)
+    }
   }
 
   function hasLocalizedDiskEntry(url) {

@@ -7,7 +7,6 @@
   const HLS_EXT =
     /\.(ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4|cmfv|cmfa|cmft)($|[?#])/i
   const OBFUSCATED_BLOB_RE = /^[A-Za-z0-9+/_=-]+$/
-  const INVARIANT_TAIL_LEN = 56
 
   function stripHash(url) {
     if (typeof url !== "string") return null
@@ -23,7 +22,7 @@
 
   function extractInvariantBlobTail(segment) {
     if (typeof segment !== "string" || !segment) return null
-    const tailLen = Math.min(segment.length, INVARIANT_TAIL_LEN)
+    const tailLen = Math.min(segment.length, 56)
     return segment.slice(-tailLen)
   }
 
@@ -52,6 +51,11 @@
 
       if (isObfuscatedBlobSegment(last)) {
         const fingerprint = extractInvariantBlobTail(last)
+        return fingerprint ? `aegis|blob|${host}|${fingerprint}` : null
+      }
+
+      if (segments.length === 1 && isObfuscatedBlobSegment(segments[0])) {
+        const fingerprint = extractInvariantBlobTail(segments[0])
         return fingerprint ? `aegis|blob|${host}|${fingerprint}` : null
       }
     } catch {

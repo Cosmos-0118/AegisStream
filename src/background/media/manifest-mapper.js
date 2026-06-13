@@ -8,9 +8,31 @@ const { state } = ns
  */
 function getManifestUrlSignature(url) {
   if (typeof url !== "string" || !url) return null
+  
+  if (typeof ns.buildMediaInvariantKey === "function") {
+    const invariant = ns.buildMediaInvariantKey(url)
+    if (invariant && (invariant.startsWith("aegis|blob|") || invariant.startsWith("aegis|fallback|"))) {
+      return invariant
+    }
+  }
+
   try {
     const parsed = new URL(url)
-    return `${parsed.origin}${parsed.pathname}`
+    let search = ""
+    
+    if (parsed.search && typeof ns.constants?.IDENTITY_QUERY_PARAMS?.has === "function") {
+      const identityParams = []
+      for (const [key, value] of parsed.searchParams.entries()) {
+        if (ns.constants.IDENTITY_QUERY_PARAMS.has(key.toLowerCase())) {
+          identityParams.push(`${key}=${value}`)
+        }
+      }
+      if (identityParams.length > 0) {
+        search = `?${identityParams.sort().join("&")}`
+      }
+    }
+    
+    return `${parsed.origin}${parsed.pathname}${search}`
   } catch {
     const stripped = url.split("#")[0].split("?")[0]
     return stripped || null

@@ -4,11 +4,11 @@ var ns = (self.AegisBackground ||= {})
 function arrayBufferToBase64(buffer) {
   if (!buffer || typeof buffer.byteLength !== "number") return null
   const bytes = new Uint8Array(buffer)
-  const chunkSize = 0x8000
+  const chunkSize = 4096
   let binary = ""
   for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize)
-    binary += String.fromCharCode(...chunk)
+    const chunk = Array.from(bytes.subarray(i, i + chunkSize))
+    binary += String.fromCharCode.apply(null, chunk)
   }
   return btoa(binary)
 }
