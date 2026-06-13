@@ -9,7 +9,8 @@
     "tabs",
     "scripting",
     "declarativeNetRequest",
-    "declarativeNetRequestWithHostAccess"
+    "declarativeNetRequestWithHostAccess",
+    "browsingData"
   ],
   "host_permissions": [
     "<all_urls>"

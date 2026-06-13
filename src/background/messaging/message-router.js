@@ -325,8 +325,8 @@ async function flushPendingInflightLookupsAfterStore(storeUrl) {
   }
 }
 
-async function resolveCachedChunkWithSegmentHistory(lookupUrl, tabId, manifestIndex) {
-  let resolved = await resolveCachedChunk(lookupUrl)
+async function resolveCachedChunkWithSegmentHistory(lookupUrl, tabId, manifestIndex, expectedScope = null) {
+  let resolved = await resolveCachedChunk(lookupUrl, expectedScope)
   if (resolved?.item || !Number.isFinite(manifestIndex) || !Number.isFinite(tabId)) {
     return resolved
   }
@@ -338,7 +338,7 @@ async function resolveCachedChunkWithSegmentHistory(lookupUrl, tabId, manifestIn
   for (const altUrl of history) {
     const normalized = stripHash(altUrl)
     if (!normalized || normalized === lookupNormalized) continue
-    const alt = await resolveCachedChunk(normalized)
+    const alt = await resolveCachedChunk(normalized, expectedScope)
     if (alt?.item) {
       bumpActivity("segmentHistoryLookupHits", 1)
       if (typeof ns.bridgeCacheAliasesForUrlPair === "function") {
@@ -526,10 +526,13 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       }
     }
 
+    const fp = tabState?.playlistFingerprint
+    const expectedScope = fp ? `${fp.pageUrlHash || ""}|${fp.mediaPlaylistPath || ""}` : null
     let resolved = await resolveCachedChunkWithSegmentHistory(
       lookupUrl,
       tabId,
-      lookupManifestIndex
+      lookupManifestIndex,
+      expectedScope
     )
     if (
       !resolved?.item &&
@@ -547,7 +550,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       resolved = await resolveCachedChunkWithSegmentHistory(
         lookupUrl,
         tabId,
-        lookupManifestIndex
+        lookupManifestIndex,
+        expectedScope
       )
     }
     let collapsedFromInflight = false
@@ -723,10 +727,14 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
       `StoreChunk accepted: source=${captureSource}, wire=${wireType}, persist=ArrayBuffer, bytes=${byteLength}${storeCrcTag ? `, ${storeCrcTag}` : ""}`
     )
     registerInflightChunkWrite(storeUrl)
+    const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
+    const fp = tabState?.playlistFingerprint
+    const expectedScope = fp ? `${fp.pageUrlHash || ""}|${fp.mediaPlaylistPath || ""}` : null
+
     const writeTask =
       typeof ns.safeCacheChunk === "function"
-        ? () => ns.safeCacheChunk(storeUrl, message.contentType, bytes)
-        : () => cacheChunk(storeUrl, message.contentType, bytes)
+        ? () => ns.safeCacheChunk(storeUrl, message.contentType, bytes, expectedScope)
+        : () => cacheChunk(storeUrl, message.contentType, bytes, expectedScope)
     let storeResult
     try {
       storeResult = await enqueueStoreWrite(writeTask)
@@ -948,6 +956,13 @@ function registerMessageRouter() {
         state.inflightPrefetches.clear()
         state.failedPrefetches.clear()
         await computeAdaptiveCachePolicy(true).catch(() => {})
+        
+        if (chrome.browsingData && typeof chrome.browsingData.removeCache === "function") {
+          await new Promise((resolve) => {
+            chrome.browsingData.remove({ since: 0 }, { cache: true }, resolve)
+          }).catch(() => {})
+        }
+
         resetStats()
         await refreshCacheEntryCount(true)
         addLog("INFO", "Cache and stats cleared by user")

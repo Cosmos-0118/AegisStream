@@ -128,7 +128,7 @@ async function computeAdaptiveCachePolicy(force = false) {
     constants.CACHE_MAX_BYTES,
     Math.max(
       constants.CACHE_MIN_BYTES,
-      Math.round(Math.min(resolveBudgetFromDeviceMemory(), avgChunkBytes * configuredMaxEntries * 1.25))
+      Math.round(avgChunkBytes * configuredMaxEntries * 1.25)
     )
   )
 
@@ -136,19 +136,15 @@ async function computeAdaptiveCachePolicy(force = false) {
     if (navigator?.storage?.estimate) {
       const estimate = await navigator.storage.estimate()
       const quota = Number(estimate?.quota || 0)
-      const usage = Number(estimate?.usage || 0)
       if (Number.isFinite(quota) && quota > 0) {
-        const free = Math.max(0, quota - usage)
-        const quotaBudget = quota * constants.CACHE_QUOTA_TARGET_FRACTION
-        const freeAfterHeadroom = Math.max(0, free - constants.CACHE_POLICY_HEADROOM_BYTES)
-        const freeBudget = Math.max(
-          constants.CACHE_MIN_BYTES / 2,
-          freeAfterHeadroom * constants.CACHE_FREE_SPACE_TARGET_FRACTION
-        )
+        // The browser already determines a safe `quota` based on the user's free disk space.
+        // Instead of arbitrarily throttling to 12% of the quota, we allow the cache to use
+        // the user's requested capacity, capped safely below the browser's hard quota limit.
+        const safeQuotaLimit = Math.max(0, quota - 100 * 1024 * 1024) // 100MB headroom for extension state
         maxBytes = Math.round(
           Math.max(
             constants.CACHE_MIN_BYTES / 2,
-            Math.min(maxBytes, quotaBudget, freeBudget, constants.CACHE_MAX_BYTES)
+            Math.min(maxBytes, safeQuotaLimit, constants.CACHE_MAX_BYTES)
           )
         )
       }
@@ -478,12 +474,12 @@ async function runEvictionPass(force = false, options = {}) {
   }
 }
 
-async function safeCacheChunk(url, contentType, bytes) {
+async function safeCacheChunk(url, contentType, bytes, scope = null) {
   if (!storageSystemOperational) {
     return { ok: false, error: "storage-bypass", bypass: true }
   }
   try {
-    return await cacheChunk(url, contentType, bytes)
+    return await cacheChunk(url, contentType, bytes, scope)
   } catch (error) {
     if (isStorageFailureError(error)) {
       engageStoragePassthroughValve("write-failed", error)
@@ -493,7 +489,7 @@ async function safeCacheChunk(url, contentType, bytes) {
   }
 }
 
-async function cacheChunk(url, contentType, bytes) {
+async function cacheChunk(url, contentType, bytes, scope = null) {
   const normalizedUrl = stripHash(url)
   if (!normalizedUrl) return { ok: false, error: "invalid-url" }
   const cacheKeys = buildCacheKeyVariants(normalizedUrl)
@@ -546,6 +542,7 @@ async function cacheChunk(url, contentType, bytes) {
     contentType: normalizedContentType,
     bytes,
     byteLength,
+    scope,
     createdAt: now
   })
 
@@ -674,7 +671,7 @@ async function bridgePlaylistSegmentUrlAliases(previousSegments, newSegments, op
   return bridged
 }
 
-async function resolveCachedChunk(url) {
+async function resolveCachedChunk(url, expectedScope = null) {
   if (!storageSystemOperational) return null
   try {
     const cacheKeys = buildCacheKeyVariants(url)
@@ -685,7 +682,11 @@ async function resolveCachedChunk(url) {
       if (!primary) continue
       const indexed = await dbGet(constants.STORE_CHUNKS, primary)
       if (indexed?.bytes) {
-        return { item: indexed, key, via: primary === key ? "direct" : "memory-index" }
+        if (expectedScope && indexed.scope && indexed.scope !== expectedScope) {
+          // Scope mismatch, skip memory index fast-path
+        } else {
+          return { item: indexed, key, via: primary === key ? "direct" : "memory-index" }
+        }
       }
       // Entry evicted underneath us — drop the stale mapping and walk slow path.
       dropIndexedPrimaryKeys([primary])
@@ -695,16 +696,24 @@ async function resolveCachedChunk(url) {
     for (const key of cacheKeys) {
       const direct = await dbGet(constants.STORE_CHUNKS, key)
       if (direct?.bytes) {
-        indexCacheKeys(direct.url || key)
-        return { item: direct, key, via: "direct" }
+        if (expectedScope && direct.scope && direct.scope !== expectedScope) {
+          // Scope mismatch
+        } else {
+          indexCacheKeys(direct.url || key)
+          return { item: direct, key, via: "direct" }
+        }
       }
 
       const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
       if (!aliasEntry?.targetUrl) continue
       const aliased = await dbGet(constants.STORE_CHUNKS, aliasEntry.targetUrl)
       if (aliased?.bytes) {
-        indexCacheKeys(aliasEntry.targetUrl, [key])
-        return { item: aliased, key, via: "alias" }
+        if (expectedScope && aliased.scope && aliased.scope !== expectedScope) {
+          // Scope mismatch
+        } else {
+          indexCacheKeys(aliasEntry.targetUrl, [key])
+          return { item: aliased, key, via: "alias" }
+        }
       }
       await dbDelete(constants.STORE_ALIASES, key).catch(() => {})
     }

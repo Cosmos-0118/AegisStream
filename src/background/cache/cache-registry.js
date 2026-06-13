@@ -63,7 +63,11 @@ function clearCacheRegistry() {
   if (state.cacheRegistryKeys.size === 0) return
   state.cacheRegistryKeys.clear()
   state.cacheRegistryGeneration += 1
-  scheduleCacheRegistrySync()
+  if (registrySyncTimer) {
+    clearTimeout(registrySyncTimer)
+    registrySyncTimer = null
+  }
+  void flushCacheRegistrySync("manual-purge")
 }
 
 /**
