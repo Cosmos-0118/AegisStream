@@ -54,8 +54,6 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 - `src/shared/` - cache key helpers used by background and page contexts.
 - `src/popup/` - popup UI controls and diagnostics.
 - `test/` - unit tests mirroring `src/` layout (run with `node test/...`).
-- `docs/ROADMAP.md` - detailed build and rollout roadmap.
-- `docs/idea.md` - revised architecture direction and success criteria.
 
 ## Run locally (Chrome/Edge)
 
