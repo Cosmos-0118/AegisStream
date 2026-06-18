@@ -16,13 +16,10 @@
 .logo-icon {
   width: 24px;
   height: 24px;
-  background: linear-gradient(
-    135deg,
-    var(--icon-logo-gradient-start),
-    var(--icon-logo-gradient-end)
-  );
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-button);
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
 .status-indicator {
