@@ -843,6 +843,15 @@ function registerMessageRouter() {
       const tabId = sender?.tab?.id
       if (tabId) {
         if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
+        
+        if (message.reason === "startup" || message.reason === "dom-ready" || message.reason === "late-init") {
+          state.playlistByTab.delete(tabId)
+          state.tabAnchorJumps.delete(tabId)
+          const pending = state.pendingPrefetchByTab.get(tabId)
+          if (pending?.timerId) clearTimeout(pending.timerId)
+          state.pendingPrefetchByTab.delete(tabId)
+        }
+
         const now = Date.now()
         const lastHeartbeat = Number(state.bridgeHeartbeatByTab.get(tabId) || 0)
         state.bridgeHeartbeatByTab.set(tabId, now)

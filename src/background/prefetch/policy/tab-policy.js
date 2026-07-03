@@ -84,7 +84,11 @@ async function notifyTabCancelPrefetch(tabId, reason = "navigation-away") {
 
 function handleTabNavigation(tabId, pageUrl, reason = "navigation") {
   if (!Number.isFinite(tabId) || tabId < 0 || typeof pageUrl !== "string" || !pageUrl) return
-  if (typeof ns.isMediaPageUrl === "function" && ns.isMediaPageUrl(pageUrl)) return
+  
+  const currentFp = typeof ns.getTabPageUrlFingerprint === "function" ? ns.getTabPageUrlFingerprint(tabId) : null
+  const newFp = typeof ns.getPageUrlFingerprint === "function" ? ns.getPageUrlFingerprint(pageUrl) : null
+  if (currentFp && newFp && currentFp === newFp) return
+
   if (typeof ns.tabHasPlaybackState !== "function" || !ns.tabHasPlaybackState(tabId)) return
 
   releaseInflightForTab(tabId, { notifyPage: false, reason: `${reason}-away` })
