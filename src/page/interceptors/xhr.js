@@ -534,14 +534,18 @@ function AegisXHR() {
           const ct = xhr.getResponseHeader("content-type") || ""
 
           // Check for playlist content
-          if (isPlaylistUrl(_url) || isPlaylistContentType(ct)) {
-            let text = null
-            if (typeof xhr.responseText === "string") {
-              text = xhr.responseText
-            } else if (xhr.response && typeof xhr.response === "string") {
-              text = xhr.response
-            }
-            if (text && looksLikePlaylistBody(text)) {
+          let isPlaylist = isPlaylistUrl(_url) || isPlaylistContentType(ct)
+          let text = null
+          if (typeof xhr.responseText === "string") {
+            text = xhr.responseText
+          } else if (xhr.response && typeof xhr.response === "string") {
+            text = xhr.response
+          }
+          if (!isPlaylist && text && _url && _url.startsWith("blob:")) {
+            if (looksLikePlaylistBody(text)) isPlaylist = true
+          }
+          if (isPlaylist) {
+            if (text && (isPlaylistUrl(_url) || looksLikePlaylistBody(text))) {
               if (canRelayPlaylist(_url)) {
                 markPlaylistRelayed(_url)
                 if (ns.extensionEnabled !== false) {

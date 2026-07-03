@@ -194,8 +194,9 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 
   const isUrlMatch = isPlaylistUrl(url)
   const isCtMatch = isPlaylistContentType(contentType)
+  const isBlob = url && url.startsWith("blob:")
 
-  if (!isUrlMatch && !isCtMatch) return
+  if (!isUrlMatch && !isCtMatch && !isBlob) return
 
   markPlaylistRelayed(url)
 
