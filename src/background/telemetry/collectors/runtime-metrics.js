@@ -282,6 +282,21 @@ function handleRuntimeMetric(message, sender) {
 
   if (metricType === "chunk_store_outcome") {
     recordChunkStoreOutcomeMetric(message)
+    if (message.ok === true) {
+      const byteLength = Number(message.byteLength)
+      if (typeof ns.bumpActivity === "function") {
+        ns.bumpActivity("cacheFillWrites", 1)
+        if (Number.isFinite(byteLength) && byteLength > 0) {
+          ns.bumpActivity("cacheFillBytes", byteLength)
+        }
+        if (normalizeChunkCaptureSource(message.captureSource) === "prefetch") {
+          ns.bumpActivity("prefetchFillWrites", 1)
+          if (Number.isFinite(byteLength) && byteLength > 0) {
+            ns.bumpActivity("prefetchFillBytes", byteLength)
+          }
+        }
+      }
+    }
     const totals = state.telemetry.chunkStore
     if (
       totals &&

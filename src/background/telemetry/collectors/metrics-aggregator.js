@@ -190,7 +190,12 @@
     "lookupMappingUnresolved",
     "cacheLookups",
     "cacheHits",
-    "cacheMisses"
+    "cacheMisses",
+    "cachedChunks",
+    "cacheFillWrites",
+    "cacheFillBytes",
+    "prefetchFillWrites",
+    "prefetchFillBytes"
   ]
 
   let lastCacheRollupBaseline = Object.create(null)
@@ -253,6 +258,7 @@
       `stalls=${rollup.total_stall_duration_ms}ms`,
       `kalmanResets=${rollup.z_axis_kalman_resets}`,
       `lookups=${cache.cacheLookups || 0}(hits=${cache.cacheHits || 0},miss=${cache.cacheMisses || 0},hitRate=${cacheHitRate})`,
+      `fill=${cache.cachedChunks || 0}/${cache.cacheFillWrites || 0}(${formatBytesMb(cache.cacheFillBytes || 0)},prefetch=${cache.prefetchFillWrites || 0})`,
       `cacheDedup=${cache.storeDedupSkipped || 0}(crc=${cache.storeDedupInvariantCrcSkipped || 0},url=${cache.storeDedupUrlWindowSkipped || 0})`,
       `lookupMap=${cache.lookupMappingChecks || 0}(ok=${cache.lookupMappingResolved || 0},miss=${cache.lookupMappingUnresolved || 0},coverage=${lookupCoverage})`,
       `evictMiss=${cache.recentlyEvictedMisses || 0}(${evictMissRate})`,
@@ -260,6 +266,11 @@
       `evictMissUnmapped=${cache.evictedMissUnmapped || 0}`,
       `cacheEvicted=${cache.cacheChunksEvicted || 0}`
     ].join(", ")
+  }
+
+  function formatBytesMb(bytes) {
+    const value = Number(bytes) || 0
+    return `${(value / (1024 * 1024)).toFixed(1)}MB`
   }
 
   async function sinkRollupToSessionStorage(flushPayload) {

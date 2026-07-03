@@ -145,6 +145,58 @@ async function refreshCacheEntryCount(force = false) {
   return cacheCountSnapshot
 }
 
+function buildBufferHealthDisplaySummary(now = Date.now()) {
+  const byTab = state?.playlistByTab
+  if (!(byTab instanceof Map)) return null
+  let latest = null
+  let bestRunwaySec = null
+  let activeTabs = 0
+  let totalRunwaySec = 0
+
+  for (const [tabId, tabState] of byTab.entries()) {
+    const updatedAt = Number(tabState?.bufferUpdatedAt || 0)
+    if (updatedAt <= 0 || now - updatedAt > constants.BUFFER_HEALTH_STALE_MS) continue
+    const runwaySec = Number(tabState.bufferRunwaySec)
+    if (!Number.isFinite(runwaySec)) continue
+    activeTabs += 1
+    totalRunwaySec += runwaySec
+    bestRunwaySec = bestRunwaySec === null ? runwaySec : Math.max(bestRunwaySec, runwaySec)
+    if (!latest || updatedAt > latest.updatedAt) {
+      latest = {
+        tabId,
+        runwaySec,
+        runwayPct: Number(tabState.bufferRunwayPct),
+        healthScore: Number(tabState.bufferHealthScore),
+        tier: tabState.bufferTier || null,
+        netFillRate: Number(tabState.bufferNetFillRate),
+        updatedAt
+      }
+    }
+  }
+
+  if (!latest) return null
+  return {
+    ...latest,
+    activeTabs,
+    bestRunwaySec,
+    averageRunwaySec: activeTabs > 0 ? Math.round((totalRunwaySec / activeTabs) * 10) / 10 : null
+  }
+}
+
+function buildChunkStoreDisplaySummary() {
+  const totals = state?.telemetry?.chunkStore || {}
+  const bySource = totals.bySource || {}
+  const prefetch = bySource.prefetch || {}
+  return {
+    successfulStores: Number(totals.successfulStores || 0),
+    failedStores: Number(totals.failedStores || 0),
+    totalBytesStored: Number(totals.totalBytesStored || 0),
+    prefetchStores: Number(prefetch.success || 0),
+    prefetchBytes: Number(prefetch.bytes || 0),
+    bySource
+  }
+}
+
 async function buildDisplayStats() {
   const windowTotals = sumWindowCounters()
   const cacheEntries = await refreshCacheEntryCount()
@@ -167,6 +219,8 @@ async function buildDisplayStats() {
   const hitRatePercent =
     hitRateDenominator > 0 ? Math.round((hits / hitRateDenominator) * 100) : 0
   const chunksStoredInWindow = windowTotals.cachedChunks || 0
+  const cacheFillWrites = windowTotals.cacheFillWrites || 0
+  const cacheFillBytes = windowTotals.cacheFillBytes || 0
 
   return {
     cacheHits: hits,
@@ -205,6 +259,12 @@ async function buildDisplayStats() {
         : null,
     hitRatePercent,
     chunksStoredInWindow,
+    cacheFillWrites,
+    cacheFillBytes,
+    prefetchFillWrites: windowTotals.prefetchFillWrites || 0,
+    prefetchFillBytes: windowTotals.prefetchFillBytes || 0,
+    chunkStore: buildChunkStoreDisplaySummary(),
+    bufferHealth: buildBufferHealthDisplaySummary(),
     cacheEntries,
     cachedChunks: cacheEntries,
     prefetched: windowTotals.prefetched || 0,

@@ -62,6 +62,30 @@ const bogus = api.resolveSegmentIndexInManifest(
 )
 assert(bogus === null, "unknown segment must not guess an index")
 
+const rotatedTabState = {
+  segments: [
+    "https://swiftstream.top/proxy/oppai/kite/EV9fQAQQ/NEW-000",
+    "https://swiftstream.top/proxy/oppai/kite/EV9fQAQQ/NEW-111"
+  ]
+}
+const rotatedIndex = api.buildManifestSequenceIndex(rotatedTabState.segments)
+rotatedTabState.manifestSignatures = rotatedIndex.signatures
+rotatedTabState.signatureToIndex = rotatedIndex.signatureToIndex
+rotatedTabState.segmentUrlHistory = new Map([
+  [
+    1,
+    [
+      "https://swiftstream.top/proxy/oppai/kite/EV9fQAQQ/NEW-111",
+      "https://swiftstream.top/proxy/oppai/kite/EV9fQAQQ/OLD-111"
+    ]
+  ]
+])
+const historyIdx = api.resolveSegmentIndexInManifest(
+  "https://swiftstream.top/proxy/oppai/kite/EV9fQAQQ/OLD-111",
+  rotatedTabState
+)
+assert(historyIdx === 1, "rotated segment URL history maps stale player requests")
+
 const targets = api.getSequentialPrefetchTargets(segments, 0, 2)
 assert(targets.length === 2, "prefetch runway follows manifest order")
 assert(targets[0] === segments[1], "runway starts at anchor index + 1")

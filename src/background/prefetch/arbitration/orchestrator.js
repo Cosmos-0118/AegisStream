@@ -1468,9 +1468,28 @@ async function executeManifestRefreshAttempt(tabId, reason) {
   scheduleManifestRefreshTimeout(tabId, tabState)
   const delegated = await delegatePlaylistRefreshToPage(tabId, playlistUrl, generation)
   const pageFirstMs = Math.max(0, Number(constants.MANIFEST_REFRESH_PAGE_FIRST_MS) || 300)
+  const backgroundFallbackMs = delegated
+    ? Math.max(
+        pageFirstMs,
+        Number(constants.MANIFEST_REFRESH_BACKGROUND_FALLBACK_MS) || 2_500
+      )
+    : pageFirstMs
+  const refreshStartedAt = Number(tabState.lastManifestRefreshAt || Date.now())
   setTimeout(() => {
+    const latest = state.playlistByTab.get(tabId)
+    if (delegated && latest) {
+      const alreadyCaptured =
+        Number(latest.playlistRefreshedAt || 0) >= refreshStartedAt ||
+        Number(latest.tokensRefreshedAt || 0) >= refreshStartedAt ||
+        latest.refreshState === REFRESH_STATE_RECOVERING ||
+        latest.refreshState === REFRESH_STATE_HEALTHY
+      const generationMoved =
+        Number(latest.pendingManifestGeneration || 0) > 0 &&
+        Number(latest.pendingManifestGeneration || 0) !== generation
+      if (alreadyCaptured || generationMoved) return
+    }
     void parseAndPrefetchFromPlaylist(tabId, playlistUrl, 0)
-  }, pageFirstMs)
+  }, backgroundFallbackMs)
   if (!delegated) {
     scheduleRefreshRetry(tabId, tabState, "delegate-failed")
   }

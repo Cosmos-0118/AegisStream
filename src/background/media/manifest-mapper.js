@@ -358,7 +358,44 @@ function resolveSegmentIndexInManifest(chunkUrl, tabState) {
       if (second < 0) return idx
     }
   }
+
+  const historyIndex = resolveSegmentIndexFromHistory(chunkUrl, tabState, signature)
+  if (typeof historyIndex === "number") return historyIndex
   return null
+}
+
+function resolveSegmentIndexFromHistory(chunkUrl, tabState, signature = null) {
+  if (!tabState?.segmentUrlHistory || typeof tabState.segmentUrlHistory.entries !== "function") {
+    return null
+  }
+
+  const normalized = typeof ns.stripHash === "function"
+    ? ns.stripHash(chunkUrl)
+    : String(chunkUrl || "").split("#")[0]
+  if (!normalized) return null
+
+  for (const [index, history] of tabState.segmentUrlHistory.entries()) {
+    if (!Array.isArray(history)) continue
+    for (const entry of history) {
+      const historical = typeof ns.stripHash === "function"
+        ? ns.stripHash(entry)
+        : String(entry || "").split("#")[0]
+      if (historical && historical === normalized) return index
+    }
+  }
+
+  const targetSignature = signature || getManifestUrlSignature(normalized)
+  if (!targetSignature) return null
+  let resolvedIndex = null
+  for (const [index, history] of tabState.segmentUrlHistory.entries()) {
+    if (!Array.isArray(history)) continue
+    for (const entry of history) {
+      if (getManifestUrlSignature(entry) !== targetSignature) continue
+      if (resolvedIndex !== null && resolvedIndex !== index) return null
+      resolvedIndex = index
+    }
+  }
+  return resolvedIndex
 }
 
 function getSequentialPrefetchTargets(segments, anchorIndex, windowSize) {
@@ -671,6 +708,7 @@ ns.getManifestIndexQualitySummary = getManifestIndexQualitySummary
 ns.recordLookupMappingCoverage = recordLookupMappingCoverage
 ns.getLookupMappingCoverageSummary = getLookupMappingCoverageSummary
 ns.resolveSegmentIndexInManifest = resolveSegmentIndexInManifest
+ns.resolveSegmentIndexFromHistory = resolveSegmentIndexFromHistory
 ns.getSequentialPrefetchTargets = getSequentialPrefetchTargets
 ns.getPageUrlFingerprint = getPageUrlFingerprint
 ns.getRelativePathTail = getRelativePathTail

@@ -158,6 +158,8 @@ ns.constants = {
   SCRUB_SNAP_BACK_INDEX_DELTA: 3,
   /** Let the page playlist delegate run before the extension background fetch. */
   MANIFEST_REFRESH_PAGE_FIRST_MS: 300,
+  /** If page refresh was delegated, only use background playlist fetch as a delayed fallback. */
+  MANIFEST_REFRESH_BACKGROUND_FALLBACK_MS: 2_500,
   VARIANT_SWITCH_COOLDOWN_MS: 2_000,
   /** After manual quality change: ignore spurious DOM teleports near t≈0 while playhead mapping catches up. */
   VARIANT_SWITCH_GRACE_MS: 8_000,

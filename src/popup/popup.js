@@ -24,6 +24,8 @@ const el = {
   statChunks: document.getElementById("stat-chunks"),
   statLookups: document.getElementById("stat-lookups"),
   statWarmups: document.getElementById("stat-warmups"),
+  statRunway: document.getElementById("stat-runway"),
+  statCacheFilled: document.getElementById("stat-cache-filled"),
   statTtfb: document.getElementById("stat-ttfb"),
   statStalls: document.getElementById("stat-stalls"),
   statEvictSuppressed: document.getElementById("stat-evict-suppressed"),
@@ -78,6 +80,10 @@ const EMPTY_STATS = {
   activityWindowLabel: "Last 5 min",
   hitRatePercent: 0,
   chunksStoredInWindow: 0,
+  cacheFillWrites: 0,
+  cacheFillBytes: 0,
+  bufferHealth: null,
+  chunkStore: null,
   evictionSuppressedByScrub: 0,
   consumerProtectedSkips: 0
 }
@@ -170,6 +176,14 @@ function formatMs(value) {
   return `${Math.round(ms)} ms`
 }
 
+function formatSeconds(value) {
+  const seconds = coerceFiniteNumber(value, null)
+  if (seconds === null) return "n/a"
+  if (seconds >= 3600) return `${trimCompact(seconds / 3600)}h`
+  if (seconds >= 60) return `${trimCompact(seconds / 60)}m`
+  return `${trimCompact(seconds)}s`
+}
+
 function formatBytesShort(bytes) {
   const n = coerceFiniteNumber(bytes, 0)
   const mb = n / (1024 * 1024)
@@ -246,6 +260,27 @@ function renderStats(stats) {
   setMetricCount(el.statLookups, safeStats.cacheLookups || resolvedLookups)
   setMetricCount(el.statWarmups, safeStats.cacheWarmups)
 
+  const buffer = safeStats.bufferHealth || null
+  const runwaySec = coerceFiniteNumber(buffer?.runwaySec, null)
+  const healthScore = coerceFiniteNumber(buffer?.healthScore, null)
+  const tier = buffer?.tier || "unknown"
+  setMetricValue(el.statRunway, runwaySec === null ? "n/a" : formatSeconds(runwaySec), {
+    title:
+      runwaySec === null
+        ? undefined
+        : `${runwaySec.toFixed(1)}s runway · ${healthScore ?? "n/a"}% health · ${tier}`,
+    pulse: false
+  })
+
+  const fillBytes = coerceFiniteNumber(safeStats.cacheFillBytes, 0)
+  const fillWrites = coerceFiniteNumber(safeStats.cacheFillWrites, 0)
+  const totalStoreBytes = coerceFiniteNumber(safeStats.chunkStore?.totalBytesStored, 0)
+  const totalStores = coerceFiniteNumber(safeStats.chunkStore?.successfulStores, 0)
+  setMetricValue(el.statCacheFilled, formatBytesShort(fillBytes || totalStoreBytes), {
+    title: `${formatCountFull(fillWrites || totalStores)} writes · ${formatBytesShort(fillBytes || totalStoreBytes)} stored`,
+    pulse: false
+  })
+
   const p95Ms = coerceFiniteNumber(safeStats.requestFirstByteP95Ms, null)
   setMetricValue(el.statTtfb, p95Ms === null ? "n/a" : formatMs(p95Ms), {
     title: p95Ms === null ? undefined : `${formatCountFull(Math.round(p95Ms))} ms`,
@@ -278,7 +313,13 @@ function renderStats(stats) {
   if (el.statsScope) {
     const windowLabel = safeStats.activityWindowLabel || "Last 5 min"
     const stored = coerceFiniteNumber(safeStats.chunksStoredInWindow, 0)
-    el.statsScope.textContent = `${windowLabel} · ${formatCount(stored)} stored · JIT playback`
+    const writes = coerceFiniteNumber(safeStats.cacheFillWrites, 0)
+    const filled = coerceFiniteNumber(safeStats.cacheFillBytes, 0)
+    const fillLabel =
+      writes > 0
+        ? `${formatCount(writes)} fills · ${formatBytesShort(filled)}`
+        : `${formatCount(stored)} stored`
+    el.statsScope.textContent = `${windowLabel} · ${fillLabel} · JIT playback`
     if (stored >= 1e4) el.statsScope.title = `${formatCountFull(stored)} chunks stored`
     else el.statsScope.removeAttribute("title")
   }
