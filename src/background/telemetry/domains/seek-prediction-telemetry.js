@@ -68,19 +68,6 @@ function recordSeekPrediction(tabId, payload) {
     pendingByTab.set(tabId, entry)
   }
   bumpActivity("seekPredictions", 1)
-
-  const timeLabel = Number.isFinite(entry.currentTimeSec)
-    ? `${entry.currentTimeSec.toFixed(1)}s`
-    : "n/a"
-  const sourceLabel =
-    entry.source === "seek-prediction-scrub-suppressed" ||
-    entry.source === "seek-prediction-scrub-observe"
-      ? ", passenger=true"
-      : ""
-  addLog(
-    "INFO",
-    `Seek prediction on tab ${tabId}: time=${timeLabel}, estimatedIndex=${entry.predictedIndex}${entry.teleport ? ", teleportEligible=true" : ""}${sourceLabel}`
-  )
 }
 
 function evictSeekPredictionPending(tabId, reason = "evicted") {

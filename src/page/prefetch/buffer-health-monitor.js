@@ -166,12 +166,12 @@ function classifyTier(runwaySec, healthScore) {
   let tier
   if (runwaySec < 5) tier = TIER_EMERGENCY
   else if (runwaySec < 15) tier = TIER_AGGRESSIVE
-  else if (runwaySec < 30) tier = TIER_NORMAL
-  else if (runwaySec < 60) tier = TIER_MAINTENANCE
+  else if (runwaySec < 120) tier = TIER_NORMAL
+  else if (runwaySec < 300) tier = TIER_MAINTENANCE
   else tier = TIER_IDLE
 
   if (runwaySec >= 15 && (tier === TIER_EMERGENCY || tier === TIER_AGGRESSIVE)) {
-    tier = runwaySec < 30 ? TIER_NORMAL : TIER_MAINTENANCE
+    tier = runwaySec < 120 ? TIER_NORMAL : TIER_MAINTENANCE
   }
 
   if (

@@ -25,6 +25,7 @@ coverage/
 .vscode/
 .idea/
 *.swp
+.commandcode
 *.swo
 
 # Go binaries and build artifacts

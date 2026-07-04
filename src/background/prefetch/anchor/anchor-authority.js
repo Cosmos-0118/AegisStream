@@ -98,23 +98,6 @@ function shouldBlockStaleSeekPredictionTeleport(tabState, targetIndex, currentTi
 
 /** Spurious t≈0 / timeline-start index while the playhead is far ahead (scrub / variant grace). */
 function shouldBlockStaleTimelineSeekTarget(tabState, targetIndex) {
-  if (typeof targetIndex !== "number" || targetIndex > 2) return false
-  const current = getEffectiveAnchorIndex(tabState)
-  const retained = tabState.variantSwitchAnchorIndex
-  const highAnchor =
-    (typeof current === "number" && current > 10) ||
-    (typeof retained === "number" && retained > 10)
-  if (!highAnchor) return false
-  if (isVariantSwitchGraceActive(tabState)) return true
-  if (isScrubbingTrainActive(tabState)) return true
-  if (Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)) return true
-  if (
-    typeof ns.resolveReconcileTargetIndex === "function" &&
-    typeof current === "number"
-  ) {
-    const consensus = ns.resolveReconcileTargetIndex(tabState)
-    if (typeof consensus === "number" && consensus - targetIndex > 5) return true
-  }
   return false
 }
 

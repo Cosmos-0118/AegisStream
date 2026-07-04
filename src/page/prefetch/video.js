@@ -812,13 +812,6 @@ function pushBufferLoad(options = {}) {
         : Math.max(workers, 4)
   scalePrefetchWorkers(targetWorkers)
   notifyPrefetchWorkers()
-
-  if (typeof ns.logBridge === "function") {
-    ns.logBridge(
-      `Buffer load push (${options.source || "page"}, runway=${Number.isFinite(runway) ? runway : "?"}s, health=${Number.isFinite(health) ? health : "?"}%, workers=${prefetchWorkerCount})`,
-      tier === ns.TIER_EMERGENCY ? "WARN" : "DEBUG"
-    )
-  }
 }
 
 async function prefetchSegmentsFromPage(urls, options = {}) {

@@ -158,19 +158,6 @@
     registryGeneration = Number(payload.generation) || registryGeneration + 1
     lastRegistrySyncAt = Date.now()
 
-    if (typeof ns.logBridge === "function") {
-      const recentEvicted = replaceAuthorized ? countRecentLocalAddsEvicted(incomingSet) : 0
-      const mode = replaceAuthorized
-        ? "replace-authoritative"
-        : replaceCoerced
-          ? "replace-coerced-to-additive"
-          : "additive"
-      ns.logBridge(
-        `[REGISTRY] sync gen=${payload.generation ?? "?"} reason=${reason} mode=${mode} incoming=${incomingKeys.length} removed=${appliedRemovals} preSize=${preSize} postSize=${localizedCacheKeys.size} evicted=${evictedPageAhead} recentLocalEvicted=${recentEvicted}`,
-        replaceCoerced || recentEvicted > 0 ? "WARN" : "DEBUG"
-      )
-    }
-
     if (replaceCoerced && typeof ns.reportRuntimeMetric === "function") {
       ns.reportRuntimeMetric("registry_sync_replace_coerced", { reason })
     }
@@ -215,14 +202,7 @@
       inflightCacheIntentKeys.delete(key)
     }
     trimRegistry()
-    const labelKey = [...keys][0]
-    touchRecentLocalAdd(labelKey)
-    if (typeof ns.logBridge === "function") {
-      ns.logBridge(
-        `[REGISTRY] local-add gen=${registryGeneration} key=${registryKeyLabel(labelKey)} currentSize=${localizedCacheKeys.size}`,
-        "DEBUG"
-      )
-    }
+    touchRecentLocalAdd([...keys][0])
   }
 
   function removeLocalCacheKey(url) {
@@ -336,13 +316,6 @@
 
     const confidence = resolveCacheConfidence(url)
     const result = confidence >= LOOKUP_CONFIDENCE_THRESHOLD
-    if (!result && typeof ns.logBridge === "function") {
-      const key = resolveCanonicalCoalesceKey(url) || url
-      ns.logBridge(
-        `[REGISTRY] candidate-check gen=${registryGeneration} key=${registryKeyLabel(key)} present=false confidence=${confidence.toFixed(2)}`,
-        "DEBUG"
-      )
-    }
     return result
   }
 

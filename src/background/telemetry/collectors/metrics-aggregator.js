@@ -185,6 +185,7 @@
     "beltLookupTimeouts",
     "beltLookupRecentlyEvictedMisses",
     "beltLookupMissNeverStored",
+    "beltLookupSavedFromNetwork",
     "lookupMappingChecks",
     "lookupMappingResolved",
     "lookupMappingUnresolved",
@@ -195,7 +196,10 @@
     "cacheFillWrites",
     "cacheFillBytes",
     "prefetchFillWrites",
-    "prefetchFillBytes"
+    "prefetchFillBytes",
+    "lookupKeyRawUrlCount",
+    "lookupKeyInvariantCount",
+    "registryFalseNegativeCount"
   ]
 
   let lastCacheRollupBaseline = Object.create(null)
@@ -259,11 +263,11 @@
       `kalmanResets=${rollup.z_axis_kalman_resets}`,
       `lookups=${cache.cacheLookups || 0}(hits=${cache.cacheHits || 0},miss=${cache.cacheMisses || 0},hitRate=${cacheHitRate})`,
       `fill=${cache.cachedChunks || 0}/${cache.cacheFillWrites || 0}(${formatBytesMb(cache.cacheFillBytes || 0)},prefetch=${cache.prefetchFillWrites || 0})`,
-      `cacheDedup=${cache.storeDedupSkipped || 0}(crc=${cache.storeDedupInvariantCrcSkipped || 0},url=${cache.storeDedupUrlWindowSkipped || 0})`,
+      `belt=${cache.beltLookupMisses || 0}(timeout=${cache.beltLookupTimeouts || 0},evict=${cache.beltLookupRecentlyEvictedMisses || 0}/${cache.beltLookupClassified || 0},rate=${beltEvictRate},saved=${cache.beltLookupSavedFromNetwork || 0})`,
+      `keyFormat=rawUrl:${cache.lookupKeyRawUrlCount || 0}/invariant:${cache.lookupKeyInvariantCount || 0}`,
+      `registryFalseNeg=${cache.registryFalseNegativeCount || 0}`,
       `lookupMap=${cache.lookupMappingChecks || 0}(ok=${cache.lookupMappingResolved || 0},miss=${cache.lookupMappingUnresolved || 0},coverage=${lookupCoverage})`,
       `evictMiss=${cache.recentlyEvictedMisses || 0}(${evictMissRate})`,
-      `beltMiss=${cache.beltLookupMisses || 0}(timeout=${cache.beltLookupTimeouts || 0},evict=${cache.beltLookupRecentlyEvictedMisses || 0}/${cache.beltLookupClassified || 0},rate=${beltEvictRate})`,
-      `evictMissUnmapped=${cache.evictedMissUnmapped || 0}`,
       `cacheEvicted=${cache.cacheChunksEvicted || 0}`
     ].join(", ")
   }

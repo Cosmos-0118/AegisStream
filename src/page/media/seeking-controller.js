@@ -150,7 +150,6 @@ class SeekingController {
         if (this.kalman && typeof measuredIndex === "number") {
           this.kalman.reset(measuredIndex)
         }
-        logBridge?.("Scrubbing train active (rapid seeking)", "DEBUG")
       }
     }
 
@@ -186,7 +185,6 @@ class SeekingController {
         if (typeof index === "number") this.kalman.reset(index)
       }
     }
-    logBridge?.("Scrubbing train idle", "DEBUG")
     this.emitPayload(false, true)
   }
 
@@ -226,10 +224,6 @@ class SeekingController {
 
     this.lastVelocityPrewarmAt = wallNow
     this.lastPrearmedPredictedIndex = predictedIndex
-    logBridge?.(
-      `Scrub velocity prewarm: index ${anchorIndex} -> ${predictedIndex} (${velocity.toFixed(1)} seg/s)`,
-      "DEBUG"
-    )
     return {
       velocitySegPerSec: velocity,
       velocityPredictedIndex: predictedIndex,

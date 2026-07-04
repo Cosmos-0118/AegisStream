@@ -329,6 +329,16 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "xhr_idb_belt_hit") {
+    bumpActivity("beltLookupSavedFromNetwork", 1)
+    return
+  }
+
+  if (metricType === "registry_false_negative") {
+    bumpActivity("registryFalseNegativeCount", 1)
+    return
+  }
+
   if (metricType === "cache_lookup_skipped") {
     if (typeof ns.bumpActivity === "function") {
       ns.bumpActivity("cacheLookupSkipped", 1)

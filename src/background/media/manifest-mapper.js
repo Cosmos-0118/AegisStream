@@ -184,8 +184,8 @@ function recordManifestIndexQuality(tabId, quality, context = {}) {
     quality.ambiguousMappings > 0 ||
     quality.mappingCoveragePercent < 100 ||
     quality.nullSignatureSegments > 0
-  if (typeof ns.addLog === "function") {
-    ns.addLog(interesting ? "INFO" : "DEBUG", message)
+  if (interesting && typeof ns.addLog === "function") {
+    ns.addLog("INFO", message)
   }
 
   if (typeof state === "object" && state !== null) {

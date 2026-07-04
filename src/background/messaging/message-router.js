@@ -499,6 +499,11 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     }
 
     bumpLookupMetric("cacheLookups", lookupUrl, 1)
+    if (lookupUrl && lookupUrl.startsWith("aegis|")) {
+      bumpActivity("lookupKeyInvariantCount", 1)
+    } else {
+      bumpActivity("lookupKeyRawUrlCount", 1)
+    }
     if (typeof ns.recordStreamMetric === "function") {
       ns.recordStreamMetric("hls", "lookups", 1)
     }
@@ -613,14 +618,6 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         tabId
       )
     }
-    const hitLabel =
-      collapsedFromInflight && resolved.via === "wire"
-        ? "Cache HIT via wire"
-        : collapsedFromInflight
-          ? "Cache HIT via collapse"
-          : resolved.via === "alias"
-            ? "Cache HIT via alias"
-            : "Cache HIT"
     const rawBytes = resolved.item.bytes
     const byteLength =
       rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
@@ -633,11 +630,6 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       rawBytes instanceof ArrayBuffer
         ? rawBytes
         : rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
-    const crcTag = typeof formatCrcTelemetry === "function" ? formatCrcTelemetry(bytes) : ""
-    addLog(
-      "INFO",
-      `${hitLabel}: ${lookupUrl.slice(-60)} (${byteLength} bytes${crcTag ? `, ${crcTag}` : ""})`
-    )
     // Base64-encode alongside raw bytes so the relay can fall back when
     // chrome.runtime.sendMessage neuters the ArrayBuffer during IPC.
     let bytesBase64 = null
@@ -721,11 +713,6 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
       sendResponse({ ok: false, skipped: true, error: "invalid-payload" })
       return
     }
-    const storeCrcTag = typeof formatCrcTelemetry === "function" ? formatCrcTelemetry(bytes) : ""
-    addLog(
-      "INFO",
-      `StoreChunk accepted: source=${captureSource}, wire=${wireType}, persist=ArrayBuffer, bytes=${byteLength}${storeCrcTag ? `, ${storeCrcTag}` : ""}`
-    )
     registerInflightChunkWrite(storeUrl)
     const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
     const fp = tabState?.playlistFingerprint
@@ -764,10 +751,6 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
     }
     bumpActivity("cachedChunks", 1)
     void refreshCacheEntryCount(true).catch(() => {})
-    addLog(
-      "INFO",
-      `Cached chunk from page (${(bytes.byteLength / 1024).toFixed(1)} KB, ${captureSource}, ${wireType}): ${storeUrl.slice(-60)}`
-    )
     sendResponse({ ok: true })
   })().catch((e) => {
     addLog("ERROR", `StoreChunk exception: ${e.message}`)
@@ -1090,7 +1073,6 @@ function registerMessageRouter() {
             ns.recordSpeculativeCompleted(message.url, message.size, true)
           }
           const sizeKB = message.size ? `(${(message.size / 1024).toFixed(1)} KB)` : ""
-          addLog("INFO", `Prefetched ${sizeKB}: ${(message.url || "").slice(-80)}`)
           sendResponse({ ok: true })
           return
         }
