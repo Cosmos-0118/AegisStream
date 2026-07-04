@@ -386,29 +386,54 @@ async function flushPendingInflightLookupsAfterStore(storeUrl) {
   }
 }
 
+async function resolveCachedChunkWithCandidates(candidateUrls, expectedScope = null) {
+  const seen = new Set()
+  for (const candidate of candidateUrls) {
+    const normalized = stripHash(candidate)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    const resolved = await resolveCachedChunk(normalized, expectedScope)
+    if (resolved?.item) {
+      return { ...resolved, lookupUrl: normalized }
+    }
+  }
+  return null
+}
+
 async function resolveCachedChunkWithSegmentHistory(lookupUrl, tabId, manifestIndex, expectedScope = null) {
-  let resolved = await resolveCachedChunk(lookupUrl, expectedScope)
-  if (resolved?.item || !Number.isFinite(manifestIndex) || !Number.isFinite(tabId)) {
-    return resolved
+  const initial = await resolveCachedChunk(lookupUrl, expectedScope)
+  if (initial?.item || !Number.isFinite(manifestIndex) || !Number.isFinite(tabId)) {
+    return initial
   }
   const tabState = state.playlistByTab.get(tabId)
   const history = tabState?.segmentUrlHistory?.get(manifestIndex)
-  if (!Array.isArray(history) || history.length === 0) return resolved
+  if (!Array.isArray(history) || history.length === 0) return initial
 
-  const lookupNormalized = stripHash(lookupUrl)
-  for (const altUrl of history) {
-    const normalized = stripHash(altUrl)
-    if (!normalized || normalized === lookupNormalized) continue
-    const alt = await resolveCachedChunk(normalized, expectedScope)
-    if (alt?.item) {
-      bumpActivity("segmentHistoryLookupHits", 1)
-      if (typeof ns.bridgeCacheAliasesForUrlPair === "function") {
-        void ns.bridgeCacheAliasesForUrlPair(normalized, lookupNormalized).catch(() => {})
-      }
-      return alt
-    }
+  const expectedKeys = buildCacheKeyVariants(lookupUrl)
+  const candidateSet = new Set()
+  const addCandidate = (value) => {
+    const normalized = stripHash(value)
+    if (!normalized || candidateSet.has(normalized)) return
+    candidateSet.add(normalized)
   }
-  return resolved
+
+  addCandidate(lookupUrl)
+  for (const key of expectedKeys) addCandidate(key)
+  for (const altUrl of history) addCandidate(altUrl)
+
+  const resolved = await resolveCachedChunkWithCandidates(candidateSet, expectedScope)
+  if (resolved?.item) {
+    bumpActivity("segmentHistoryLookupHits", 1)
+    if (typeof ns.bridgeCacheAliasesForUrlPair === "function") {
+      const lookupNormalized = stripHash(lookupUrl)
+      const canonical = resolved.lookupUrl || stripHash(resolved.item?.url) || stripHash(resolved.key)
+      if (canonical && lookupNormalized && canonical !== lookupNormalized) {
+        void ns.bridgeCacheAliasesForUrlPair(canonical, lookupNormalized).catch(() => {})
+      }
+    }
+    return resolved
+  }
+  return initial
 }
 
 async function bridgeStoredChunkRotationAliases(tabId, storeUrl) {
@@ -613,7 +638,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       tabState?.lastVisibilityChangeAt ||
       /quality-switch-warm|bridge-ready|playlist-url-rotation|warm-recovery|next-episode|tab-visible|tab-hidden|focus|blur/i.test(transitionSource)
     )
-    const transitionDelayMs = isTransitionFirst ? 250 : 0
+    const transitionDelayMs = isTransitionFirst ? 80 : 0
     if (transitionDelayMs > 0) {
       try {
         await Promise.race([
@@ -715,7 +740,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
           Date.now() < Number(tabState?.prefetchPausedUntil || 0) ||
           Date.now() < Number(tabState?.authBlockedUntil || 0) ||
           tabState?.playlistCaptureState === ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED
-        if (recoveryHint && !recoveryUnhealthy) {
+        const recentCollapseWindow = Date.now() < Number(tabState?.lastRotationBridgeAttemptAt || 0) + 1000
+        if (recoveryHint && !recoveryUnhealthy && !recentCollapseWindow) {
           void ns.ensureTabPlaylistRecovery(tabId, "cache-miss-recovery", {
             force: true,
             preferRecapture: true,

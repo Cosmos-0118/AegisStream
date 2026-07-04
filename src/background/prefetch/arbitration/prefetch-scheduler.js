@@ -48,6 +48,15 @@ ns.resolveEffectivePrefetchWindow = function resolveEffectivePrefetchWindow(tabI
   else if (tabState && ns.isTabInSeekChurnAggressive(tabState)) windowSize = Math.max(windowSize, Number(constants.SEEK_CHURN_PREFETCH_WINDOW_MIN) || 10)
   else if (jumps >= constants.PREFETCH_TAB_BURST_THRESHOLD && !recentVariantSwitch) windowSize = Math.max(baseWindow, constants.PREFETCH_BURST_WINDOW_CAP)
 
+  const runwaySec = Number(tabState?.bufferRunwaySec || tabState?.runwaySec || 0)
+  if (Number.isFinite(runwaySec) && runwaySec > 0) {
+    if (runwaySec <= Number(constants.BUFFER_RUNWAY_EMERGENCY_SEC) || runwaySec <= Number(constants.SEEK_PASSENGER_STALL_RUNWAY_SEC) + 1) {
+      windowSize = Math.max(windowSize, Math.min(baseWindow + 4, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8))
+    } else if (runwaySec <= Number(constants.BUFFER_RUNWAY_AGGRESSIVE_SEC)) {
+      windowSize = Math.max(windowSize, Math.min(baseWindow + 2, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8))
+    }
+  }
+
   if (typeof ns.isInRefreshRecovery === "function" && ns.isInRefreshRecovery(tabState)) windowSize = Math.min(windowSize, constants.REFRESH_RECOVERY_MAX_CHUNKS)
   if (typeof ns.resolveBufferAdjustedPrefetchWindow === "function") windowSize = ns.resolveBufferAdjustedPrefetchWindow(tabId, windowSize)
   if (typeof ns.applyCongestionPrefetchRadius === "function") windowSize = ns.applyCongestionPrefetchRadius(tabId, windowSize)
@@ -130,9 +139,20 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const now = Date.now()
   const clampedStartIndex = Math.max(0, Math.min(startIndex, normalized.length))
   if (typeof ns.computeCongestionDirectivesForTab === "function") ns.computeCongestionDirectivesForTab(tabId)
+  const runwaySec = Number(tabState?.bufferRunwaySec || tabState?.runwaySec || 0)
+  const windowPressure = Number.isFinite(runwaySec) && runwaySec > 0 ? Math.max(0, (Number(constants.BUFFER_RUNWAY_NORMAL_SEC) || 30) - runwaySec) : 0
   if (shouldSkipDuplicateSchedule(tabState, clampedStartIndex, now, force)) return
 
   let effectiveWindow = ns.resolveEffectivePrefetchWindow(tabId)
+  if (windowPressure > 0) {
+    effectiveWindow = Math.max(
+      effectiveWindow,
+      Math.min(
+        normalized.length,
+        Math.round(effectiveWindow + Math.min(windowPressure / 6, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8))
+      )
+    )
+  }
   const windowOverride = Number(options.prefetchWindowOverride)
   if (Number.isFinite(windowOverride) && windowOverride > 0) effectiveWindow = Math.max(effectiveWindow, Math.min(windowOverride, normalized.length))
   if (effectiveWindow === 0) { tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.updatedAt = now; return }

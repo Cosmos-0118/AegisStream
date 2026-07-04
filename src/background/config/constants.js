@@ -13,14 +13,14 @@ ns.constants = {
   PREFETCH_CAP_RETRY_MAX_MS: 3_200,
   PREFETCH_CAP_RETRY_MAX_ATTEMPTS: 10,
   PREFETCH_QUEUE_MAX_AGE_MS: 15_000,
-  PREFETCH_ANCHOR_COOLDOWN_MS: 2_500,
-  CHUNK_OBSERVED_DEBOUNCE_MS: 2_000,
+  PREFETCH_ANCHOR_COOLDOWN_MS: 1_500,
+  CHUNK_OBSERVED_DEBOUNCE_MS: 1_500,
   RAPID_SEEK_WINDOW_MS: 2_000,
   RAPID_SEEK_CHANGE_THRESHOLD: 5,
   RAPID_SEEK_PAUSE_MS: 2_500,
   PREFETCH_BATCH_DEBOUNCE_MS: 80,
   PREFETCH_DUPLICATE_WINDOW_MS: 1200,
-  PREFETCH_INFLIGHT_TTL_MS: 12_000,
+  PREFETCH_INFLIGHT_TTL_MS: 15_000,
   PREFETCH_BASE_RETRY_MS: 2_500,
   PREFETCH_MAX_RETRY_MS: 120_000,
   PREFETCH_MAX_BACKOFF_EXPONENT: 6,
@@ -140,9 +140,9 @@ ns.constants = {
   /** Duration to suppress non-transition prefetch after episode switch / playlist rotation. */
   TRANSITION_WARMUP_MS: 12_000,
   /** Background cache lookup waits for in-flight prefetch to land in IDB. */
-  CACHE_LOOKUP_COLLAPSE_WAIT_MS: 8_000,
+  CACHE_LOOKUP_COLLAPSE_WAIT_MS: 4_500,
   /** Lookup may await an in-flight page→background chunk store for the same key. */
-  INFLIGHT_CHUNK_WRITE_WAIT_MS: 3_000,
+  INFLIGHT_CHUNK_WRITE_WAIT_MS: 2_000,
   /** Prior signed URLs kept per manifest index for rotation lookup fallback. */
   SEGMENT_URL_HISTORY_DEPTH: 4,
   DOM_TELEPORT_COOLDOWN_MS: 500,

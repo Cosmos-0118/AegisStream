@@ -78,6 +78,10 @@
     const caps = resolveLaneCaps(globalCap)
     const inflight = countInflightByLane(tabId)
     const maxForLane = caps[lane] || caps.maintenance
+    const runwaySec = Number(tabState?.bufferRunwaySec || tabState?.runwaySec || 0)
+    if (Number.isFinite(runwaySec) && runwaySec <= Number(constants.BUFFER_RUNWAY_AGGRESSIVE_SEC)) {
+      return inflight[lane] < Math.max(maxForLane, caps.teleport)
+    }
     return inflight[lane] < maxForLane
   }
 
