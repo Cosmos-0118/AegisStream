@@ -122,6 +122,24 @@
     const requestedReplace = payload.replace === true
     const replaceAuthorized = requestedReplace && AUTHORITATIVE_REPLACE_REASONS.has(reason)
     const replaceCoerced = requestedReplace && !replaceAuthorized
+    const structuralCoalesceKeyResolver =
+      typeof ns.resolveStructuralPathCoalesceKey === "function"
+        ? ns.resolveStructuralPathCoalesceKey
+        : null
+
+    const normalizeIncomingKey = (key) => {
+      if (typeof key !== "string" || !key) return null
+      if (isCanonicalCoalesceKey(key)) return key
+      if (typeof ns.buildMediaInvariantKey === "function") {
+        const invariant = ns.buildMediaInvariantKey(key)
+        if (invariant) return invariant
+      }
+      if (structuralCoalesceKeyResolver) {
+        const structural = structuralCoalesceKeyResolver(key)
+        if (structural) return structural
+      }
+      return resolveRegistryKey(key)
+    }
 
     const incomingKeys = Array.isArray(payload.keys)
       ? payload.keys.filter((key) => typeof key === "string" && key)
@@ -129,7 +147,13 @@
     const removedKeys = Array.isArray(payload.removedKeys)
       ? payload.removedKeys.filter((key) => typeof key === "string" && key)
       : []
-    const incomingSet = new Set(incomingKeys)
+    const normalizedIncomingKeys = incomingKeys
+      .map((key) => normalizeIncomingKey(key))
+      .filter((key) => typeof key === "string" && key)
+    const normalizedRemovedKeys = removedKeys
+      .map((key) => normalizeIncomingKey(key))
+      .filter((key) => typeof key === "string" && key)
+    const incomingSet = new Set(normalizedIncomingKeys)
     const preSize = localizedCacheKeys.size
     let evictedPageAhead = 0
 
@@ -143,13 +167,13 @@
     // Additive merge — routine syncs can only ADD keys, never silently remove
     // them. Removals must come through `removedKeys` (explicit delta) or
     // `removeLocalCacheKey` on eviction.
-    for (const key of incomingKeys) {
+    for (const key of normalizedIncomingKeys) {
       localizedCacheKeys.add(key)
     }
 
     let appliedRemovals = 0
-    if (!replaceAuthorized && removedKeys.length > 0) {
-      for (const key of removedKeys) {
+    if (!replaceAuthorized && normalizedRemovedKeys.length > 0) {
+      for (const key of normalizedRemovedKeys) {
         if (localizedCacheKeys.delete(key)) appliedRemovals += 1
       }
     }
@@ -226,10 +250,23 @@
     return false
   }
 
+  function hasLocalizedIntent(url) {
+    if (typeof url === "string" && isCanonicalCoalesceKey(url) && inflightCacheIntentKeys.has(url)) {
+      return true
+    }
+    const coalesce = resolveCanonicalCoalesceKey(url)
+    if (coalesce && inflightCacheIntentKeys.has(coalesce)) return true
+    if (typeof ns.buildMediaInvariantKey === "function") {
+      const invariant = ns.buildMediaInvariantKey(url)
+      if (invariant && inflightCacheIntentKeys.has(invariant)) return true
+    }
+    return false
+  }
+
   function notePrefetchIntent(url) {
-    const key = resolveCanonicalCoalesceKey(url)
-    if (!key || hasLocalizedDiskEntry(url)) return
-    inflightCacheIntentKeys.add(key)
+    const keys = registerKeyVariants(url)
+    if (!keys.size || hasLocalizedIntent(url)) return
+    for (const key of keys) inflightCacheIntentKeys.add(key)
     trimInflightIntentRegistry()
   }
 
@@ -241,9 +278,9 @@
   }
 
   function clearPrefetchIntent(url) {
-    const key = resolveCanonicalCoalesceKey(url)
-    if (!key) return
-    inflightCacheIntentKeys.delete(key)
+    const keys = registerKeyVariants(url)
+    if (!keys.size) return
+    for (const key of keys) inflightCacheIntentKeys.delete(key)
   }
 
   function clearPrefetchIntentBatch(urls) {
@@ -261,8 +298,7 @@
     if (typeof url === "string" && isCanonicalCoalesceKey(url)) {
       return inflightCacheIntentKeys.has(url)
     }
-    const key = resolveCanonicalCoalesceKey(url)
-    return key ? inflightCacheIntentKeys.has(key) : false
+    return hasLocalizedIntent(url)
   }
 
   /**
@@ -288,8 +324,27 @@
    *   0.2  fresh registry positively says absent
    */
   function resolveCacheConfidence(url) {
-    if (isCachedKey(url)) return 0.9
-    if (isInflightKey(url)) return 0.8
+    if (isCachedKey(url)) return 0.95
+    if (isInflightKey(url)) return 0.9
+
+    const now = Date.now()
+    const urlLike = typeof url === "string" && /^https?:\/\//i.test(url)
+    const mediaLike =
+      urlLike && /\/(?:[^/?#]+\.(?:ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4|cmfv|cmfa|cmft))($|[/?#])/i.test(url)
+    const structuralCoalesceKey = mediaLike ? resolveCanonicalCoalesceKey(url) : null
+    const structuralMediaKey =
+      mediaLike && typeof ns.buildMediaInvariantKey === "function"
+        ? ns.buildMediaInvariantKey(url)
+        : null
+    const hasStructuralIdentity = Boolean(structuralCoalesceKey || structuralMediaKey)
+
+    if (hasStructuralIdentity) {
+      const recentlySynced = lastRegistrySyncAt > 0 && now - lastRegistrySyncAt <= REGISTRY_FRESH_MS
+      if (recentlySynced) return 0.72
+      if (now < registryFalseNegativeUntil) return 0.62
+      return 0.68
+    }
+
     if (typeof url === "string") {
       const swiftTransport = /\/EV9fQAQQ/i.test(url)
       const swiftSegmentTail = /ChkAT0wHWFUL/i.test(url)
@@ -300,10 +355,9 @@
         return 0.5
       }
     }
-    const now = Date.now()
+
     if (now < registryFalseNegativeUntil) return 0.5
-    if (!lastRegistrySyncAt) return 0.5
-    if (now - lastRegistrySyncAt > REGISTRY_FRESH_MS) return 0.5
+    if (!lastRegistrySyncAt) return 0.2
     return 0.2
   }
 

@@ -44,11 +44,23 @@ const otherUrl = `https://use21.playlist.ttvnw.net/v1/segment/Cw0VHUcGQAoCCFscFy
 assert(ns.isLikelyCacheHitCandidate(otherUrl) === true, "rotator URL with same invariant tail should match")
 
 assert(
-  ns.isLikelyCacheHitCandidate("https://cdn.example.com/live/seg-999.ts") === false,
-  "unknown segment should short-circuit as miss"
+  ns.isLikelyCacheHitCandidate("plain-string-key") === false,
+  "unknown key should short-circuit as miss"
 )
 
-const intentUrl = "https://cdn.example.com/live/seg-intent.ts"
+const structuralOnly = "https://media.example.com/catalog/seg-88.ts?token=rotate"
+const structuralBeforeSync = ns.isLikelyCacheHitCandidate(structuralOnly)
+ns.applyCacheRegistrySync({ keys: [structuralOnly], replace: true, reason: "routine-sync" })
+assert(
+  structuralBeforeSync === true,
+  "structural media keys should be strong candidates even before explicit sync"
+)
+assert(
+  ns.isLikelyCacheHitCandidate(structuralOnly) === true,
+  "structural media keys should remain strong candidates after sync"
+)
+
+const intentUrl = "https://cdn.example.com/live/seg-intent.txt"
 assert(ns.isLikelyCacheHitCandidate(intentUrl) === false, "intent-only URL should not match before registration")
 ns.notePrefetchIntent(intentUrl)
 assert(ns.isLikelyCacheHitCandidate(intentUrl) === true, "in-flight intent should enable lookup/collapse")
@@ -57,12 +69,50 @@ assert(ns.isInflightKey(intentUrl) === true, "isInflightKey should match isKeyIn
 ns.clearPrefetchIntent(intentUrl)
 assert(ns.isLikelyCacheHitCandidate(intentUrl) === false, "cleared intent should disable candidate again")
 
-ns.notePrefetchIntent(intentUrl)
-ns.noteLocalCacheKey(intentUrl)
+const mediaIntentUrl = "https://cdn.example.com/live/seg-intent.ts"
+ns.notePrefetchIntent(mediaIntentUrl)
+ns.noteLocalCacheKey(mediaIntentUrl)
 assert(
-  ns.isLikelyCacheHitCandidate(intentUrl) === true,
+  ns.isLikelyCacheHitCandidate(mediaIntentUrl) === true,
   "stored key should remain a hit candidate after intent clears"
 )
+ns.clearPrefetchIntent(mediaIntentUrl)
+assert(
+  ns.isLikelyCacheHitCandidate(mediaIntentUrl) === true,
+  "stored key should remain a hit candidate after clearing intent"
+)
+
+const signedTokenA = "https://media.example.com/hls/720p/segment-77.ts?token=alpha&expires=1"
+const signedTokenB = "https://media.example.com/hls/720p/segment-77.ts?token=beta&expires=2"
+assert(
+  ns.isLikelyCacheHitCandidate(signedTokenA) === true,
+  "fresh signed URL should now be a hit candidate before sync"
+)
+ns.applyCacheRegistrySync({ keys: [signedTokenA], replace: true, reason: "routine-sync" })
+assert(
+  ns.isLikelyCacheHitCandidate(signedTokenB) === true,
+  "signed URL variants should be lookup candidates after a matching sync"
+)
+assert(
+  ns.isCachedKey(signedTokenB) === true,
+  "signed URL variants should map to the same cached registry entry"
+)
+assert(
+  ns.isInflightKey(signedTokenB) === false,
+  "cache-hit path should not require intent to be present"
+)
+
+ns.notePrefetchIntent(signedTokenA)
+assert(
+  ns.isInflightKey(signedTokenB) === true,
+  "matching signed URL variants should share one in-flight intent"
+)
+
+const staleUrl = "https://cdn.example.com/live/stale/seg-200.ts"
+ns.applyCacheRegistrySync({ keys: [staleUrl], replace: true, reason: "routine-sync" })
+assert(ns.isLikelyCacheHitCandidate(staleUrl) === true, "freshly synced key should start as a candidate")
+ns.applyCacheRegistrySync({ keys: [staleUrl], replace: true, reason: "manual-purge" })
+assert(ns.isLikelyCacheHitCandidate(staleUrl) === true, "authoritative replace should preserve a valid candidate")
 
 const hlsSegment = "https://cdn.example.com/live/720p/segment_0045.ts"
 const prefetchWithToken = `${hlsSegment}?token=abc&expires=111`
@@ -144,6 +194,10 @@ ns.notePrefetchIntent(tokenRotateA)
 assert(
   ns.isKeyInFlight(tokenRotateB) === true,
   "fresh signature on same segment must match in-flight coalesce intent"
+)
+assert(
+  ns.isLikelyCacheHitCandidate(tokenRotateB) === true,
+  "fresh signature on same segment should also be treated as a lookup candidate"
 )
 
 const rangeKey = "range|cdn|seg-1|0-654491"
