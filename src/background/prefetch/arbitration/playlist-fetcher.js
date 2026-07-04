@@ -5,7 +5,7 @@ const { constants, state, addLog } = ns
 const playlistParsePromises = new Map()
 const playlistFetchCompletedAt = new Map()
 
-async function parseAndPrefetchFromPlaylistWork(tabId, normalizedPlaylistUrl, depth, inflightKey) {
+async function parseAndPrefetchFromPlaylistWork(tabId, normalizedPlaylistUrl, depth) {
   try {
     addLog("DEBUG", `Fetching playlist (depth=${depth}): ${normalizedPlaylistUrl.slice(-100)}`)
     const fetchResult = typeof ns.coalescedFetchPlaylistText === "function" ? await ns.coalescedFetchPlaylistText(tabId, normalizedPlaylistUrl, { depth }) : null
@@ -74,7 +74,7 @@ ns.parseAndPrefetchFromPlaylist = async function parseAndPrefetchFromPlaylist(ta
   const completedAt = Number(playlistFetchCompletedAt.get(inflightKey) || 0)
   if (Date.now() - completedAt < 5000) return
 
-  const work = parseAndPrefetchFromPlaylistWork(tabId, normalizedPlaylistUrl, depth, inflightKey)
+  const work = parseAndPrefetchFromPlaylistWork(tabId, normalizedPlaylistUrl, depth)
   playlistParsePromises.set(inflightKey, work)
   try { await work } finally { playlistParsePromises.delete(inflightKey); playlistFetchCompletedAt.set(inflightKey, Date.now()) }
 }
@@ -126,10 +126,26 @@ ns.parsePlaylistContentForTab = async function parsePlaylistContentForTab(tabId,
         const forcePrefetch = tabState.anchorRetainedByRefresh === true || Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 3000
         const variantWarm = Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 5000
         const churnWarm = ns.isTabInSeekChurnAggressive(tabState)
-        const warmFrom = churnWarm ? Math.max(tabState.anchorIndex, typeof tabState.predictedAnchorIndex === "number" ? tabState.predictedAnchorIndex : tabState.anchorIndex) : Math.max(0, tabState.anchorIndex)
-        ns.maybeRequestPrefetchForTab(tabId, tabState.segments, warmFrom, variantWarm ? "quality-switch-warm" : "captured-playlist", {
+        const predicted = typeof tabState.predictedAnchorIndex === "number" ? tabState.predictedAnchorIndex : tabState.anchorIndex
+        const adaptiveWindow = typeof ns.resolveAdaptivePrefetchWindow === "function" ? ns.resolveAdaptivePrefetchWindow(tabState) : null
+        const hotWindow = typeof ns.getRecentHotIndexWindow === "function" ? ns.getRecentHotIndexWindow(tabState) : null
+        const warmFrom = churnWarm
+          ? Math.max(tabState.anchorIndex, predicted, hotWindow?.start ?? 0)
+          : Math.max(0, tabState.anchorIndex, hotWindow?.start ?? 0)
+        const overrideWindow = variantWarm
+          ? Math.max(Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12, Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15, adaptiveWindow || 0, hotWindow?.size || 0)
+          : churnWarm
+            ? Math.max(
+                Number(state.settings.prefetchWindow) || 8,
+                Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15,
+                adaptiveWindow || 0,
+                hotWindow?.size || 0,
+                24
+              )
+            : adaptiveWindow || hotWindow?.size || undefined
+        ns.maybeRequestPrefetchForTab(tabId, tabState.segments, warmFrom, variantWarm ? "quality-switch-warm" : churnWarm ? "captured-playlist-churn" : "captured-playlist", {
           force: forcePrefetch || churnWarm,
-          prefetchWindowOverride: variantWarm ? Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12 : churnWarm ? Math.max(10, Number(state.settings.prefetchWindow) || 8, Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15) : undefined
+          prefetchWindowOverride: overrideWindow
         })
       } else {
         const startSeconds = typeof ns.extractStartSecondsFromPageUrl === "function" ? ns.extractStartSecondsFromPageUrl(pageUrl) : null
@@ -162,8 +178,13 @@ ns.parsePlaylistContentForTab = async function parsePlaylistContentForTab(tabId,
       addLog("INFO", `Captured DASH refresh retained anchor at index ${tabState.anchorIndex}; continuing JIT prefetch`)
       const forcePrefetch = tabState.anchorRetainedByRefresh === true || Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 3000
       const variantWarm = Date.now() - Number(tabState.lastQualityVariantSwitchAt || 0) < 5000
-      ns.maybeRequestPrefetchForTab(tabId, tabState.segments, Math.max(0, tabState.anchorIndex), variantWarm ? "quality-switch-warm" : "captured-playlist", {
-        force: forcePrefetch, prefetchWindowOverride: variantWarm ? Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12 : undefined
+      const churnWarm = ns.isTabInSeekChurnAggressive(tabState)
+      const warmFrom = churnWarm ? Math.max(tabState.anchorIndex, typeof tabState.predictedAnchorIndex === "number" ? tabState.predictedAnchorIndex : tabState.anchorIndex) : Math.max(0, tabState.anchorIndex)
+      const adaptiveWindow = typeof ns.resolveAdaptivePrefetchWindow === "function" ? ns.resolveAdaptivePrefetchWindow(tabState) : null
+      const hotWindow = typeof ns.getRecentHotIndexWindow === "function" ? ns.getRecentHotIndexWindow(tabState) : null
+      ns.maybeRequestPrefetchForTab(tabId, tabState.segments, warmFrom, variantWarm ? "quality-switch-warm" : churnWarm ? "captured-playlist-churn" : "captured-playlist", {
+        force: forcePrefetch || churnWarm,
+        prefetchWindowOverride: variantWarm ? Math.max(Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12, Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15, adaptiveWindow || 0, hotWindow?.size || 0) : churnWarm ? Math.max(Number(state.settings.prefetchWindow) || 8, Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15, adaptiveWindow || 0, hotWindow?.size || 0, 24) : adaptiveWindow || hotWindow?.size || undefined
       })
     } else { addLog("INFO", "Awaiting player segment request to anchor captured DASH prefetch (JIT mode)") }
   } catch (e) { addLog("ERROR", `Error parsing captured playlist: ${e.message}`) }

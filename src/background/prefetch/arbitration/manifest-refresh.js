@@ -2,6 +2,34 @@
 var ns = (self.AegisBackground ||= {})
 const { constants, state, addLog } = ns
 
+const PLAYLIST_CAPTURE_STATE = {
+  HEALTHY: "healthy",
+  NEEDS_CAPTURE: "needs-capture",
+  REFRESHING: "refreshing",
+  RECOVERING: "recovering",
+  AUTH_BLOCKED: "auth-blocked"
+}
+
+ns.PLAYLIST_CAPTURE_STATE = PLAYLIST_CAPTURE_STATE
+
+function setPlaylistCaptureState(tabState, nextState, meta = {}) {
+  if (!tabState) return
+  tabState.playlistCaptureState = nextState
+  tabState.playlistCaptureStateAt = Date.now()
+  if (nextState === PLAYLIST_CAPTURE_STATE.AUTH_BLOCKED) {
+    tabState.authBlockedUntil = meta.until || (Date.now() + Math.max(30_000, Number(constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS) || 120_000))
+    tabState.playlistRecaptureRequired = false
+    tabState.warmRecovery = false
+    tabState.recoveryPreferredMode = "blocked"
+    tabState.pendingRotationBridge = null
+    tabState.lastRecoveryReason = "auth-blocked"
+    tabState.recoveryAttemptKey = null
+    tabState.recoveryAttemptAt = 0
+    tabState.lastPlaylistRecoveryReason = null
+    tabState.lastPlaylistRecoveryAttemptKey = null
+  }
+}
+
 function snapshotAnchorBeforeRefresh(tabState) {
   if (!tabState?.hasAnchor || typeof tabState.anchorIndex !== "number") return
   tabState.lastAnchorBeforeRefresh = tabState.anchorIndex
@@ -29,6 +57,9 @@ function scheduleRefreshRetry(tabId, tabState, reason) {
 
   if (attempt > maxRetries) {
     ns.transitionRefreshState(tabId, tabState, ns.REFRESH_STATE_AUTH_EXPIRED, "retries exhausted")
+    if (typeof ns.blockPlaylistAuthRecovery === "function") {
+      ns.blockPlaylistAuthRecovery(tabState, Number(constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS) || 120_000)
+    }
     addLog("WARN", `Soft recovery failed on tab ${tabId} — page authentication may have expired. Playback may resume if the player refreshes its manifest; reload only if it stays broken.`)
     return
   }
@@ -77,8 +108,12 @@ ns.transitionRefreshState = function transitionRefreshState(tabId, tabState, new
     tabState.refreshRetryAttempt = 0
     clearManifestRefreshTimeout(tabState)
     clearManifestRefreshRetryTimer(tabState)
+    setPlaylistCaptureState(tabState, PLAYLIST_CAPTURE_STATE.HEALTHY)
+    tabState.playlistRecaptureRequired = false
+    tabState.warmRecovery = false
   } else if (newState === ns.REFRESH_STATE_REFRESHING) {
     tabState.prefetchPausedUntil = Date.now() + constants.PREFETCH_PAUSE_AFTER_REFRESH_MS
+    setPlaylistCaptureState(tabState, PLAYLIST_CAPTURE_STATE.REFRESHING)
   } else if (newState === ns.REFRESH_STATE_RECOVERING) {
     tabState.prefetchPausedUntil = 0
     tabState.manifestRefreshPending = false
@@ -90,11 +125,13 @@ ns.transitionRefreshState = function transitionRefreshState(tabId, tabState, new
       tabState.refreshRecoveryUntil = Date.now() + constants.REFRESH_RECOVERY_MAX_MS
       tabState.refreshRecoverySuccessCount = 0
     }
+    setPlaylistCaptureState(tabState, PLAYLIST_CAPTURE_STATE.RECOVERING)
   } else if (newState === ns.REFRESH_STATE_AUTH_EXPIRED) {
     tabState.manifestRefreshPending = false
     tabState.prefetchPausedUntil = Date.now() + constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS
     clearManifestRefreshTimeout(tabState)
     clearManifestRefreshRetryTimer(tabState)
+    setPlaylistCaptureState(tabState, PLAYLIST_CAPTURE_STATE.AUTH_BLOCKED)
   }
 
   ns.logTabState(tabId, tabState, reason)
@@ -214,6 +251,8 @@ ns.requestManifestRefreshForTab = async function requestManifestRefreshForTab(ta
   }
   const now = Date.now()
   const reentrant = tabState.refreshState === ns.REFRESH_STATE_REFRESHING
+  const blockedUntil = Number(tabState.authBlockedUntil || 0)
+  if (blockedUntil && now < blockedUntil) return false
   if (tabState.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED && now - Number(tabState.lastManifestRefreshAt || 0) < constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS) return false
   if (!reentrant && tabState.refreshState !== ns.REFRESH_STATE_AUTH_EXPIRED && now - Number(tabState.lastManifestRefreshAt || 0) < constants.MANIFEST_REFRESH_DEBOUNCE_MS) return false
 

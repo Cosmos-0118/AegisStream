@@ -748,6 +748,12 @@ async function resolveCachedChunk(url, expectedScope = null) {
   if (!storageSystemOperational) return null
   try {
     const cacheKeys = buildCacheKeyVariants(url)
+    if (typeof ns.addLog === "function") {
+      ns.addLog(
+        "DEBUG",
+        `resolveCachedChunk start: url=${String(url).slice(-72)} variants=${cacheKeys.length} scope=${expectedScope || "*"} memKeys=${memoryKeyIndex.size} storeOperational=${storageSystemOperational}`
+      )
+    }
 
     // Fast path: memory index points straight at the primary chunk key.
     for (const key of cacheKeys) {
@@ -758,6 +764,12 @@ async function resolveCachedChunk(url, expectedScope = null) {
         if (expectedScope && indexed.scope && indexed.scope !== expectedScope) {
           // Scope mismatch, skip memory index fast-path
         } else {
+          if (typeof ns.addLog === "function") {
+            ns.addLog(
+              "DEBUG",
+              `resolveCachedChunk memory hit: key=${key.slice(-48)} primary=${String(primary).slice(-48)} via=${primary === key ? "direct" : "memory-index"}`
+            )
+          }
           return { item: indexed, key, via: primary === key ? "direct" : "memory-index" }
         }
       }
@@ -772,6 +784,12 @@ async function resolveCachedChunk(url, expectedScope = null) {
         if (expectedScope && direct.scope && direct.scope !== expectedScope) {
           // Scope mismatch
         } else {
+          if (typeof ns.addLog === "function") {
+            ns.addLog(
+              "DEBUG",
+              `resolveCachedChunk direct hit: key=${key.slice(-48)} url=${String(direct.url || key).slice(-48)}`
+            )
+          }
           indexCacheKeys(direct.url || key)
           return { item: direct, key, via: "direct" }
         }
@@ -784,6 +802,12 @@ async function resolveCachedChunk(url, expectedScope = null) {
         if (expectedScope && aliased.scope && aliased.scope !== expectedScope) {
           // Scope mismatch
         } else {
+          if (typeof ns.addLog === "function") {
+            ns.addLog(
+              "DEBUG",
+              `resolveCachedChunk alias hit: key=${key.slice(-48)} target=${String(aliasEntry.targetUrl).slice(-48)}`
+            )
+          }
           indexCacheKeys(aliasEntry.targetUrl, [key])
           return { item: aliased, key, via: "alias" }
         }

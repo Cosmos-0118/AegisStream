@@ -66,6 +66,67 @@ function resolveTabSettingsPayload() {
     : state.settings
 }
 
+function markTabRecoveryRequired(tabId, reason, options = {}) {
+  if (!Number.isFinite(tabId)) return null
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState) return null
+  const now = Date.now()
+  const captureState = ns.PLAYLIST_CAPTURE_STATE || {}
+  if (tabState.playlistCaptureState === captureState.AUTH_BLOCKED && now < Number(tabState.authBlockedUntil || 0)) return null
+  tabState.updatedAt = now
+  tabState.lastRecoveryReason = reason
+  tabState.warmRecovery = true
+  tabState.playlistRecaptureRequired = true
+  tabState.recoveryArmedAt = now
+  tabState.recoveryAttemptKey = options.recoveryAttemptKey || tabState.recoveryAttemptKey || null
+  tabState.recoveryAttemptAt = now
+  if (!tabState.playlistCaptureState || tabState.playlistCaptureState === captureState.HEALTHY || tabState.playlistCaptureState === "healthy") tabState.playlistCaptureState = captureState.NEEDS_CAPTURE || "needs-capture"
+  if (options.clearBridge !== false) {
+    tabState.pendingRotationBridge = null
+  }
+  if (options.clearVisibility !== false) {
+    tabState.lastVisibilityHidden = false
+  }
+  return tabState
+}
+
+function shouldSkipRecoveryRetry(tabState, attemptKey) {
+  if (!tabState || !attemptKey) return false
+  const lastKey = tabState.recoveryAttemptKey
+  const lastAt = Number(tabState.recoveryAttemptAt || 0)
+  return lastKey === attemptKey && Date.now() - lastAt < 4000
+}
+
+function scheduleTabRecovery(tabId, reason, options = {}) {
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState) return false
+  const attemptKey = options.attemptKey || `${reason}:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`
+  if (shouldSkipRecoveryRetry(tabState, attemptKey)) return false
+  const armed = markTabRecoveryRequired(tabId, reason, { ...options, recoveryAttemptKey: attemptKey })
+  if (!armed) return false
+  const deferMs = Number(options.deferMs) || 0
+  if (typeof ns.ensureTabPlaylistRecovery !== "function") return true
+  const run = () => {
+    void ns.ensureTabPlaylistRecovery(tabId, reason, {
+      force: true,
+      preferRecapture: true,
+      ...options
+    })
+  }
+  if (deferMs > 0) setTimeout(run, deferMs)
+  else run()
+  return true
+}
+
+function clearRecoveryIntent(tabState) {
+  if (!tabState) return
+  tabState.warmRecovery = false
+  tabState.playlistRecaptureRequired = false
+  tabState.recoveryAttemptKey = null
+  tabState.recoveryAttemptAt = 0
+  tabState.lastRecoveryReason = null
+}
+
 function shouldLogLayoutRecord(origin, pathname, reason) {
   const key = `${origin}|${pathname}|${reason}`
   const now = Date.now()
@@ -533,12 +594,24 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
 
     const fp = tabState?.playlistFingerprint
     const expectedScope = fp ? `${fp.pageUrlHash || ""}|${fp.mediaPlaylistPath || ""}` : null
+    addLog(
+      "DEBUG",
+      `Cache lookup request: tab=${Number.isFinite(tabId) ? tabId : "n/a"} source=${String(message.source || message.captureSource || message.type || "unknown")} ` +
+        `url=${lookupUrl.slice(-72)} manifestIndex=${Number.isFinite(lookupManifestIndex) ? lookupManifestIndex : "n/a"} ` +
+        `scope=${expectedScope || "*"} rapidSeek=${rapidSeek} ` +
+        `pendingBridge=${Boolean(tabState?.pendingRotationBridge)} warmRecovery=${Boolean(tabState?.warmRecovery)} ` +
+        `recapture=${Boolean(tabState?.playlistRecaptureRequired)} variantSwitch=${Boolean(tabState?.lastQualityVariantSwitchAt)} ` +
+        `inflightPrefetch=${Boolean(state.inflightPrefetches.get(inflightTrackingKey(lookupUrl) || lookupUrl))} ` +
+        `pendingWrite=${hasInflightChunkWrite(lookupUrl)} lookups=${state.stats.cacheLookups || 0} hits=${state.stats.cacheHits || 0} misses=${state.stats.cacheMisses || 0}`
+    )
+    const transitionSource = String(message.source || message.captureSource || "")
     const isTransitionFirst = Boolean(
       tabState?.warmRecovery ||
       tabState?.playlistRecaptureRequired ||
       tabState?.pendingRotationBridge ||
       tabState?.lastQualityVariantSwitchAt ||
-      /quality-switch-warm|bridge-ready|playlist-url-rotation|warm-recovery|next-episode/i.test(String(message.source || message.captureSource || ""))
+      tabState?.lastVisibilityChangeAt ||
+      /quality-switch-warm|bridge-ready|playlist-url-rotation|warm-recovery|next-episode|tab-visible|tab-hidden|focus|blur/i.test(transitionSource)
     )
     const transitionDelayMs = isTransitionFirst ? 250 : 0
     if (transitionDelayMs > 0) {
@@ -551,12 +624,21 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         // ignore
       }
     }
+    if (tabState?.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED) {
+      addLog("DEBUG", `Bypassing recovery on auth-expired tab ${tabId} to avoid miss-loop`)
+    }
     let resolved = await resolveCachedChunkWithSegmentHistory(
       lookupUrl,
       tabId,
       lookupManifestIndex,
       expectedScope
     )
+    if (resolved?.item) {
+      addLog(
+        "DEBUG",
+        `Cache lookup resolved on first pass: tab=${Number.isFinite(tabId) ? tabId : "n/a"} via=${resolved.via || "unknown"} key=${String(resolved.key || "").slice(-48)}`
+      )
+    }
     if (
       !resolved?.item &&
       tabState?.pendingRotationBridge &&
@@ -576,13 +658,27 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         lookupManifestIndex,
         expectedScope
       )
+      if (resolved?.item) {
+        addLog(
+          "DEBUG",
+          `Cache lookup resolved after bridge wait: tab=${Number.isFinite(tabId) ? tabId : "n/a"} via=${resolved.via || "unknown"} key=${String(resolved.key || "").slice(-48)}`
+        )
+      }
     }
     let collapsedFromInflight = false
     if (!resolved?.item) {
+      if (tabState?.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED || tabState?.playlistCaptureState === (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked")) {
+        sendResponse({ ok: true, hit: false, reason: "auth-expired" })
+        return
+      }
       const collapsed = await awaitInflightPrefetchCacheEntry(lookupUrl, tabId)
       if (collapsed?.item) {
         resolved = collapsed
         collapsedFromInflight = true
+        addLog(
+          "DEBUG",
+          `Cache lookup resolved from inflight prefetch: tab=${Number.isFinite(tabId) ? tabId : "n/a"} key=${String(collapsed.key || "").slice(-48)}`
+        )
         bumpActivity("requestCollapseHits", 1)
         if (typeof ns.recordStreamMetric === "function") {
           ns.recordStreamMetric("hls", "collapseHits", 1)
@@ -594,6 +690,10 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       if (storeCollapsed?.item) {
         resolved = storeCollapsed
         collapsedFromInflight = true
+        addLog(
+          "DEBUG",
+          `Cache lookup resolved from inflight store write: tab=${Number.isFinite(tabId) ? tabId : "n/a"} key=${String(storeCollapsed.key || "").slice(-48)}`
+        )
         bumpActivity("requestCollapseHits", 1)
         if (typeof ns.recordStreamMetric === "function") {
           ns.recordStreamMetric("hls", "collapseHits", 1)
@@ -602,12 +702,38 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     }
 
     if (!resolved?.item) {
+      if (Number.isFinite(tabId) && typeof ns.ensureTabPlaylistRecovery === "function") {
+        const recoveryHint =
+          tabState?.warmRecovery ||
+          tabState?.playlistRecaptureRequired ||
+          tabState?.pendingRotationBridge ||
+          tabState?.lastQualityVariantSwitchAt ||
+          tabState?.lastVisibilityChangeAt
+        const recoveryUnhealthy =
+          tabState?.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED ||
+          tabState?.refreshState === ns.REFRESH_STATE_REFRESHING && Number(tabState?.refreshRetryAttempt || 0) >= 3 ||
+          Date.now() < Number(tabState?.prefetchPausedUntil || 0) ||
+          Date.now() < Number(tabState?.authBlockedUntil || 0) ||
+          tabState?.playlistCaptureState === ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED
+        if (recoveryHint && !recoveryUnhealthy) {
+          void ns.ensureTabPlaylistRecovery(tabId, "cache-miss-recovery", {
+            force: true,
+            preferRecapture: true,
+            attemptKey: `cache-miss:${lookupUrl}`
+          })
+        }
+      }
       if (!rapidSeek) {
         recordCacheLookupMiss(lookupUrl)
       }
       addLog(
-        "DEBUG",
-        `Cache lookup miss: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} rapidSeek=${rapidSeek} inflightPrefetch=${Boolean(state.inflightPrefetches.get(inflightTrackingKey(lookupUrl) || lookupUrl))} pendingWrite=${hasInflightChunkWrite(lookupUrl)} bridgeWait=${Boolean(tabState?.pendingRotationBridge)}`
+        "WARN",
+        `Cache lookup unresolved: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} manifestIndex=${Number.isFinite(lookupManifestIndex) ? lookupManifestIndex : "n/a"} ` +
+          `rapidSeek=${rapidSeek} inflightPrefetch=${Boolean(state.inflightPrefetches.get(inflightTrackingKey(lookupUrl) || lookupUrl))} ` +
+          `pendingWrite=${hasInflightChunkWrite(lookupUrl)} bridgeWait=${Boolean(tabState?.pendingRotationBridge)} ` +
+          `pendingBridge=${Boolean(tabState?.pendingRotationBridge)} warmRecovery=${Boolean(tabState?.warmRecovery)} ` +
+          `visibilityChange=${Boolean(tabState?.lastVisibilityChangeAt)} recapture=${Boolean(tabState?.playlistRecaptureRequired)} variants=${fp?.variants?.length || 0} ` +
+          `stats=lookups:${state.stats.cacheLookups || 0},hits:${state.stats.cacheHits || 0},misses:${state.stats.cacheMisses || 0}`
       )
       sendResponse({ ok: true, hit: false })
       return
@@ -873,13 +999,16 @@ function registerMessageRouter() {
       const tabId = sender?.tab?.id
       if (tabId) {
         if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
-        
+
         if (message.reason === "startup" || message.reason === "dom-ready" || message.reason === "late-init") {
-          state.playlistByTab.delete(tabId)
-          state.tabAnchorJumps.delete(tabId)
           const pending = state.pendingPrefetchByTab.get(tabId)
           if (pending?.timerId) clearTimeout(pending.timerId)
           state.pendingPrefetchByTab.delete(tabId)
+          markTabRecoveryRequired(tabId, message.reason, {
+            clearBridge: true,
+            clearVisibility: false,
+            recoveryAttemptKey: `bridge:${message.reason}:${tabId}`
+          })
         }
 
         const now = Date.now()
@@ -894,13 +1023,19 @@ function registerMessageRouter() {
         const mediaContext =
           typeof ns.isTabMediaContext !== "function" || ns.isTabMediaContext(tabId, pageUrl)
         if (state.settings.enabled && mediaContext && tabState) {
+          const blocked = tabState.playlistCaptureState === (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked") && Date.now() < Number(tabState.authBlockedUntil || 0)
           const needsRecovery =
+            !blocked &&
             typeof ns.tabNeedsPlaylistRecovery === "function" &&
             ns.tabNeedsPlaylistRecovery(tabState, { forceAfterIdle: true })
           if (needsRecovery && typeof ns.ensureTabPlaylistRecovery === "function") {
-            void ns.ensureTabPlaylistRecovery(tabId, message.reason || "bridge-ready", {
-              force: tabState.warmRecovery === true
-            })
+            if (!shouldSkipRecoveryRetry(tabState, `bridge-ready:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`)) {
+              void ns.ensureTabPlaylistRecovery(tabId, message.reason || "bridge-ready", {
+                force: true,
+                preferRecapture: true,
+                attemptKey: `bridge-ready:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`
+              })
+            }
           } else if (tabState.segments?.length) {
             syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
             if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
@@ -909,12 +1044,26 @@ function registerMessageRouter() {
                 reason === "store-recovery" ||
                 reason === "extension-update" ||
                 reason.startsWith("reinject:") ||
-                reason === "visible"
+                reason === "visible" ||
+                reason === "tab-visible"
               const start = recovery
                 ? Math.max(0, tabState.anchorIndex)
                 : tabState.anchorIndex + 1
               maybeRequestPrefetchForTab(tabId, tabState.segments, start, recovery ? reason : "bridge-ready", {
                 force: recovery
+              })
+            }
+          }
+          if (
+            tabState.playlistRecaptureRequired &&
+            tabState.playlistCaptureState !== (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked") &&
+            typeof ns.ensureTabPlaylistRecovery === "function"
+          ) {
+            if (!shouldSkipRecoveryRetry(tabState, `bridge-recapture:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`)) {
+              void ns.ensureTabPlaylistRecovery(tabId, "bridge-ready-recapture", {
+                force: true,
+                preferRecapture: true,
+                attemptKey: `bridge-recapture:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`
               })
             }
           }
@@ -1101,6 +1250,7 @@ function registerMessageRouter() {
             if (normalized && typeof ns.releasePrefetchDownload === "function") {
               ns.releasePrefetchDownload(tabState, normalized)
             }
+            scheduleTabRecovery(tabId, "stale-prefetch-generation", { deferMs: 50, attemptKey: `stale-gen:${message.networkGeneration || "na"}` })
             updatePrefetchOutcome(message.url, true)
             sendResponse({ ok: true })
             return
@@ -1113,6 +1263,15 @@ function registerMessageRouter() {
             if (tabState && normalized && typeof ns.releasePrefetchDownload === "function") {
               ns.releasePrefetchDownload(tabState, normalized)
             }
+            if (tabState?.playlistRecaptureRequired && typeof ns.ensureTabPlaylistRecovery === "function") {
+              void ns.ensureTabPlaylistRecovery(tabId, "prefetch-success-recapture", {
+                force: false,
+                preferRecapture: true
+              })
+              tabState.recoveryAttemptKey = null
+              tabState.recoveryAttemptAt = 0
+            }
+            if (tabState && tabState.playlistCaptureState !== (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked")) clearRecoveryIntent(tabState)
           }
           updatePrefetchOutcome(message.url, true, "unknown", { tabId })
           bumpActivity("prefetched", 1)
@@ -1199,6 +1358,22 @@ function registerMessageRouter() {
     case "AegisStream:TabVisibility": {
       const tabId = sender?.tab?.id
       if (Number.isFinite(tabId)) {
+        const tabState = state.playlistByTab.get(tabId)
+        if (tabState) {
+          tabState.lastVisibilityChangeAt = Date.now()
+          tabState.lastVisibilityHidden = message.hidden === true
+          tabState.updatedAt = Date.now()
+          if (message.hidden !== true) {
+            tabState.warmRecovery = true
+            tabState.playlistRecaptureRequired = true
+            if (typeof ns.ensureTabPlaylistRecovery === "function") {
+              void ns.ensureTabPlaylistRecovery(tabId, "tab-visible", {
+                force: true,
+                preferRecapture: true
+              })
+            }
+          }
+        }
         if (message.hidden === true) {
           if (typeof ns.pauseTabPrefetchForVisibility === "function") {
             ns.pauseTabPrefetchForVisibility(tabId, "tab-hidden", {

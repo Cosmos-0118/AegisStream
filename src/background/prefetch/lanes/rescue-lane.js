@@ -1,6 +1,6 @@
 (() => {
   var ns = (self.AegisBackground ||= {})
-  const { constants, state, addLog } = ns
+  const { constants, addLog } = ns
 
   const EngineModes = {
     NORMAL: "NORMAL",
@@ -69,6 +69,10 @@
       return Boolean(Number.isFinite(runway) && runway >= churnExitRunway)
     }
 
+    // Strong runway is the best signal that the pipeline is flowing.
+    // Don't let a slow health EMA block exit when buffer is clearly healthy.
+    if (Number.isFinite(runway) && runway >= exitRunway * 3) return true
+
     const runwayOk = !Number.isFinite(runway) || runway >= exitRunway
     const healthOk = !Number.isFinite(health) || health >= exitHealth
     return runwayOk && healthOk
@@ -126,6 +130,9 @@
         ns.recordDecision("rescue-lane", "released", `mode=${mode}`)
       }
     }
+    if (typeof ns.noteRescueLaneMode === "function") {
+      ns.noteRescueLaneMode(tabState, mode)
+    }
     return mode
   }
 
@@ -155,8 +162,11 @@
    */
   function resolveRescueKeepWindow(tabState) {
     if (!Array.isArray(tabState?.segments) || !tabState.segments.length) return []
-    const behind = Math.max(0, Number(constants.RESCUE_KEEP_BEHIND_SEGMENTS) || 2)
-    const ahead = Math.max(1, Number(constants.RESCUE_KEEP_AHEAD_SEGMENTS) || 8)
+    const churn = isSeekChurnActive(tabState)
+    const behindBase = Math.max(0, Number(constants.RESCUE_KEEP_BEHIND_SEGMENTS) || 2)
+    const aheadBase = Math.max(1, Number(constants.RESCUE_KEEP_AHEAD_SEGMENTS) || 8)
+    const behind = churn ? Math.max(behindBase, 4) : behindBase
+    const ahead = churn ? Math.max(aheadBase, 16) : aheadBase
     const playhead = resolveRescuePlayheadIndex(tabState)
     return tabState.segments.slice(
       Math.max(0, playhead - behind),
@@ -164,9 +174,20 @@
     )
   }
 
+  function resolveAdaptiveRescueAhead(tabState) {
+    const baseAhead = Math.max(1, Number(constants.RESCUE_SEGMENTS_AHEAD) || 2)
+    const windowPrefetch = Math.max(1, Number(ns.resolveAdaptivePrefetchWindow?.(tabState) || 0))
+    const runway = Number(tabState?.bufferRunwaySec)
+    const runwayBoost = Number.isFinite(runway) && runway < 10 ? 4 : Number.isFinite(runway) && runway < 20 ? 2 : 0
+    const churnBoost = isSeekChurnActive(tabState) ? 8 : 0
+    const variantBoost = isVariantSwitchRecovery(tabState) ? 4 : 0
+    const hotWindow = Number(ns.getRecentHotIndexWindow?.(tabState)?.size || 0)
+    return Math.max(baseAhead, windowPrefetch, hotWindow, runwayBoost + churnBoost + variantBoost)
+  }
+
   function resolveRescuePlayheadTargets(tabState, segments) {
     if (!tabState?.segments?.length || !Array.isArray(segments)) return []
-    const ahead = Math.max(1, Number(constants.RESCUE_SEGMENTS_AHEAD) || 2)
+    const ahead = resolveAdaptiveRescueAhead(tabState)
     const start = Math.max(0, resolveRescuePlayheadIndex(tabState))
     const end = Math.min(segments.length, start + ahead)
     return segments.slice(start, end)
@@ -256,7 +277,10 @@
   async function executeRescuePrefetch(tabId, tabState, segments, options = {}) {
     if (!tabState?.segments?.length) return false
     const now = Date.now()
-    const minGap = Number(constants.RESCUE_SCHEDULE_MIN_MS) || 400
+    const churning = isSeekChurnActive(tabState)
+    const baseGap = Number(constants.RESCUE_SCHEDULE_MIN_MS) || 400
+    // During seek churn the player can outrun 400ms-gapped prefetch — halve the gap.
+    const minGap = churning ? Math.floor(baseGap / 3) : baseGap
     if (now - Number(tabState.lastRescuePrefetchAt || 0) < minGap) {
       return true
     }
@@ -313,6 +337,7 @@
 
   ns.EngineModes = EngineModes
   ns.resolveRescueKeepWindow = resolveRescueKeepWindow
+  ns.resolveAdaptiveRescueAhead = resolveAdaptiveRescueAhead
   ns.resolveRescuePlayheadIndex = resolveRescuePlayheadIndex
   ns.resolveRescuePlayheadTargets = resolveRescuePlayheadTargets
   ns.evaluateStreamingUrgency = evaluateStreamingUrgency

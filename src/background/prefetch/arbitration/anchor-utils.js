@@ -23,17 +23,15 @@ ns.isTabInTeleportMode = function isTabInTeleportMode(tabState) {
 }
 
 ns.isTabInScrubbingTrain = function isTabInScrubbingTrain(tabState) {
-  if (typeof ns.isScrubbingTrainActive === "function") {
-    return ns.isScrubbingTrainActive(tabState)
+  const activeScrubbing = ns.isScrubbingTrainActive
+  if (typeof activeScrubbing === "function") {
+    return activeScrubbing(tabState)
   }
   if (!tabState) return false
   return Date.now() < Number(tabState.scrubbingTrainUntil || 0)
 }
 
 ns.isPassiveHysteresisMuted = function isPassiveHysteresisMuted(tabState) {
-  if (typeof ns.isPassiveHysteresisMuted === "function") {
-    return ns.isPassiveHysteresisMuted(tabState)
-  }
   if (!tabState) return false
   return Date.now() < Number(tabState.mutePassiveHysteresisUntil || 0)
 }
@@ -85,5 +83,38 @@ ns.isActivelyScrubbingPayloadOrState = function isActivelyScrubbingPayloadOrStat
 ns.isRefreshActive = function isRefreshActive(tabState) {
   const stateName = tabState?.refreshState || ns.REFRESH_STATE_HEALTHY
   return stateName === ns.REFRESH_STATE_REFRESHING
+}
+
+ns.resolveAdaptivePrefetchWindow = function resolveAdaptivePrefetchWindow(tabState) {
+  if (!tabState) return null
+  const base = Number(state.settings?.prefetchWindow) || 8
+  const seekChurn = ns.isTabInSeekChurnAggressive(tabState)
+  const scrubbing = ns.isTabInScrubbingTrain(tabState)
+  const variantWarm = ns.isTabInVariantSwitchGrace(tabState)
+  const runway = Number(tabState.bufferRunwaySec)
+  const recentHot = ns.getRecentHotIndexWindow?.(tabState)
+  const hotSize = Number(recentHot?.size || 0)
+  const hotBoost = hotSize > 0 ? Math.min(12, Math.max(2, Math.ceil(hotSize / 2))) : 0
+  const runwayBoost = Number.isFinite(runway) && runway < 10 ? 8 : Number.isFinite(runway) && runway < 20 ? 4 : 0
+  const churnBoost = seekChurn ? 10 : 0
+  const scrubBoost = scrubbing ? 6 : 0
+  const variantBoost = variantWarm ? 4 : 0
+  return Math.max(base, base + runwayBoost + churnBoost + scrubBoost + variantBoost + hotBoost)
+}
+
+ns.getRecentHotIndexWindow = function getRecentHotIndexWindow(tabState) {
+  if (!tabState) return null
+  const center = Number.isFinite(tabState.predictedAnchorIndex)
+    ? Number(tabState.predictedAnchorIndex)
+    : Number.isFinite(tabState.anchorIndex)
+      ? Number(tabState.anchorIndex)
+      : 0
+  const history = Array.isArray(tabState.segments) ? tabState.segments.length : 0
+  if (!history) return { start: center, size: 0 }
+  const recent = Array.isArray(tabState.recentTimelineHeat) ? tabState.recentTimelineHeat : null
+  const hotRadius = recent?.length ? Math.min(8, Math.max(3, recent.length)) : 4
+  const start = Math.max(0, center - hotRadius)
+  const size = hotRadius * 2 + 1
+  return { start, size }
 }
 })()

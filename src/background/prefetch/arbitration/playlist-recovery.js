@@ -30,6 +30,7 @@ ns.tabPlaylistLastActiveAt = function tabPlaylistLastActiveAt(tabState) {
 
 ns.tabNeedsPlaylistRecovery = function tabNeedsPlaylistRecovery(tabState, options = {}) {
   if (!tabState) return false
+  if (tabState.authBlockedUntil && Date.now() < Number(tabState.authBlockedUntil || 0)) return false
   const playlistUrl = tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl
   if (!playlistUrl) return false
   const segmentsEmpty = !Array.isArray(tabState.segments) || tabState.segments.length === 0
@@ -56,13 +57,31 @@ ns.ensureTabPlaylistRecovery = async function ensureTabPlaylistRecovery(tabId, r
   if (!tabState.mediaPlaylistUrl) return false
 
   const now = Date.now()
+  const authBlockedUntil = Number(tabState.authBlockedUntil || 0)
+  if (authBlockedUntil && now < authBlockedUntil) return false
+
   const debounceMs = Number(constants.PLAYLIST_RECOVERY_DEBOUNCE_MS) || 5_000
   const lastAttempt = Number(tabState.lastPlaylistRecoveryAt || 0)
+  const attemptKey = options.attemptKey || `${reason}:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`
   if (!options.force && now - lastAttempt < debounceMs) return false
+  if (!options.force && tabState.lastPlaylistRecoveryReason === reason && tabState.lastPlaylistRecoveryAttemptKey === attemptKey && now - lastAttempt < debounceMs * 2) return false
   tabState.lastPlaylistRecoveryAt = now
+  tabState.lastPlaylistRecoveryReason = reason
+  tabState.lastPlaylistRecoveryAttemptKey = attemptKey
   tabState.playlistRecaptureRequired = true
+  tabState.warmRecovery = true
+  tabState.playlistCaptureState = tabState.playlistCaptureState === ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED ? tabState.playlistCaptureState : "needs-capture"
+  if (options.preferRecapture !== false) tabState.recoveryPreferredMode = "recapture"
 
   addLog("INFO", `Playlist recovery on tab ${tabId} (${reason}) — recapturing manifest before cache serve`)
   return ns.requestManifestRefreshForTab(tabId, reason)
+}
+
+ns.blockPlaylistAuthRecovery = function blockPlaylistAuthRecovery(tabState, cooldownMs) {
+  if (!tabState) return
+  tabState.authBlockedUntil = Date.now() + Math.max(30_000, Number(cooldownMs) || 120_000)
+  tabState.playlistRecaptureRequired = false
+  tabState.warmRecovery = false
+  tabState.recoveryPreferredMode = "blocked"
 }
 })()
