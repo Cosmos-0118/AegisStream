@@ -149,8 +149,11 @@ ns.parsePlaylistContentForTab = async function parsePlaylistContentForTab(tabId,
         })
       } else {
         const startSeconds = typeof ns.extractStartSecondsFromPageUrl === "function" ? ns.extractStartSecondsFromPageUrl(pageUrl) : null
-        if (startSeconds !== null) addLog("INFO", `Page has seek hint t=${startSeconds.toFixed(1)}s; waiting for explicit segment request anchor`)
-        else addLog("INFO", "Awaiting player segment request to anchor captured HLS prefetch (JIT mode)")
+        const warmWindow = Math.max(3, Number(constants.CAPTURED_PLAYLIST_PRIME_WINDOW) || 5)
+        const primeSource = startSeconds !== null ? "captured-playlist-seek-hint" : "captured-playlist-prime"
+        if (startSeconds !== null) addLog("INFO", `Page has seek hint t=${startSeconds.toFixed(1)}s; priming buffer window instead of waiting for anchor`)
+        else addLog("INFO", "Priming captured HLS buffer window immediately (no anchor yet)")
+        ns.maybeRequestPrefetchForTab(tabId, tabState.segments, 0, primeSource, { force: true, prefetchWindowOverride: warmWindow })
       }
       return
     }
@@ -186,7 +189,10 @@ ns.parsePlaylistContentForTab = async function parsePlaylistContentForTab(tabId,
         force: forcePrefetch || churnWarm,
         prefetchWindowOverride: variantWarm ? Math.max(Number(constants.VARIANT_SWITCH_PREFETCH_WINDOW) || 12, Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15, adaptiveWindow || 0, hotWindow?.size || 0) : churnWarm ? Math.max(Number(state.settings.prefetchWindow) || 8, Number(constants.SCRUB_SNAP_BACK_RADIUS) || 15, adaptiveWindow || 0, hotWindow?.size || 0, 24) : adaptiveWindow || hotWindow?.size || undefined
       })
-    } else { addLog("INFO", "Awaiting player segment request to anchor captured DASH prefetch (JIT mode)") }
+    } else {
+      addLog("INFO", "Priming captured DASH buffer window immediately (no anchor yet)")
+      ns.maybeRequestPrefetchForTab(tabId, tabState.segments, 0, "captured-playlist-prime", { force: true, prefetchWindowOverride: Math.max(3, Number(constants.CAPTURED_PLAYLIST_PRIME_WINDOW) || 5) })
+    }
   } catch (e) { addLog("ERROR", `Error parsing captured playlist: ${e.message}`) }
 }
 })()

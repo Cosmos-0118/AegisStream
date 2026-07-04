@@ -748,7 +748,9 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       }
     }
 
+    let outcome = "hit"
     if (!resolved?.item) {
+      outcome = collapsedFromInflight ? "recovered-hit" : "miss"
       if (Number.isFinite(tabId) && typeof ns.ensureTabPlaylistRecovery === "function") {
         const recoveryHint =
           tabState?.warmRecovery ||
@@ -772,7 +774,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         }
       }
       if (!rapidSeek) {
-        recordCacheLookupMiss(lookupUrl)
+        if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, outcome, { collapsedFromInflight })
+        else recordCacheLookupMiss(lookupUrl)
       }
       addLog(
         "WARN",
@@ -791,7 +794,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       "INFO",
       `Cache lookup hit: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} source=${collapsedFromInflight ? "inflight-collapse" : "idb"}`
     )
-    recordCacheServeHit(lookupUrl)
+    if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, collapsedFromInflight ? "collapsed-hit" : "hit", { collapsedFromInflight })
+    else recordCacheServeHit(lookupUrl)
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
       if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {

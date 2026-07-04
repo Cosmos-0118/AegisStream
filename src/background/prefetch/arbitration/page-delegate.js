@@ -54,7 +54,11 @@ ns.syncKnownSegmentsToPage = function syncKnownSegmentsToPage(tabId, segments, o
   const reasonText = String(options.reason || "")
   const shouldForce = reasonText.startsWith("reinject:") || reasonText === "tab-activated" || reasonText === "tab-updated"
   if (tabState && !shouldForce && tabState.lastKnownSyncSignature === signature && now - Number(tabState.lastKnownSyncAt || 0) < 8000) return
-  if (tabState) { tabState.lastKnownSyncSignature = signature; tabState.lastKnownSyncAt = now }
+  if (tabState) {
+    tabState.lastKnownSyncSignature = signature
+    tabState.lastKnownSyncAt = now
+    tabState.bufferFeedPromotedAt = now
+  }
 
   const transitionSource = /quality-switch-warm|playlist-url-rotation|warm-recovery|next-episode|bridge-ready/i.test(reasonText)
   if (transitionSource) {
@@ -80,7 +84,11 @@ ns.syncKnownSegmentsToPage = function syncKnownSegmentsToPage(tabId, segments, o
     playlistRotatedAt: Number.isFinite(Number(options.playlistRotatedAt)) && Number(options.playlistRotatedAt) > 0 ? Number(options.playlistRotatedAt) : undefined,
     resetSeeking: options.resetSeeking === true,
     anchorIndex: typeof options.anchorIndex === "number" ? options.anchorIndex : undefined,
-    reason: options.reason || undefined
+    reason: options.reason || undefined,
+    promoteBuffer: true,
+    promoteBufferAt: now,
+    sessionKey: tabState?.sessionKey || null,
+    pageUrl: tabState?.pageUrl || null
   }).then(() => {
     addLog("INFO", `Synced ${segments.length} known segments to page bridge (tab ${tabId})${String(options.reason || "") ? ` (${options.reason})` : ""}`)
   }).catch((e) => {

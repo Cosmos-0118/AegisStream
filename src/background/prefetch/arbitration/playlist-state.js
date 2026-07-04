@@ -8,7 +8,7 @@ ns.segmentsUrlsChanged = function segmentsUrlsChanged(previousSegments, nextSegm
   return nextSegments.some((url, i) => url !== previousSegments[i])
 }
 
-ns.mergeSegmentUrlHistory = function mergeSegmentUrlHistory(previousHistory, previousSegments, newSegments, anchorIndex, offset = 0) {
+ns.mergeSegmentUrlHistory = function mergeSegmentUrlHistory(previousHistory, previousSegments, newSegments, _anchorIndex, offset = 0) {
   const history = new Map()
   const prevHist = previousHistory instanceof Map ? previousHistory : new Map()
   if (!Array.isArray(previousSegments) || !Array.isArray(newSegments)) return prevHist
@@ -78,7 +78,8 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
   const tokensRefreshed = urlsChanged && !structureChanged && !contentChangedByFingerprint
   const playlistChanged = structureChanged || contentChangedByFingerprint
   const pageNavigationNewPlayback = fingerprintAssessment.pageChanged === true && urlsChanged
-  const episodeChangedByFingerprint = pageNavigationNewPlayback || (urlsChanged && !structureChanged && contentChangedByFingerprint)
+  const samePlaylistUrl = Boolean(previous?.mediaPlaylistUrl && mediaPlaylistPath && previous.mediaPlaylistUrl === mediaPlaylistPath)
+  const episodeChangedByFingerprint = pageNavigationNewPlayback || (urlsChanged && !structureChanged && contentChangedByFingerprint) || (samePlaylistUrl && (segmentCountChanged || (previous?.segments?.length && normalizedSegments.length && normalizedSegments[0] !== previous.segments[0])))
   const rapidPlaylistRecapture = Number(previous?.playlistRefreshedAt || 0) > 0 && Date.now() - Number(previous.playlistRefreshedAt) < 1_500 && !segmentCountChanged && urlsChanged && pageUnchanged
   const isRoutinePlaylistRefresh = rapidPlaylistRecapture || (urlsChanged && !segmentCountChanged && !episodeChangedByFingerprint && pageUnchanged && (timelineGeometryUnchanged || (!contentChangedByFingerprint && !structureChanged)))
 
@@ -89,7 +90,21 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
   let fsmRungLabel = incomingRungLabel || meta.activeRungLabel || previous?.activeRungLabel || null
   if (incomingRungLabel && previous?.activeRungLabel && incomingRungLabel !== previous.activeRungLabel && typeof ns.shouldSkipSpeculativeDowngradeRung === "function" && ns.shouldSkipSpeculativeDowngradeRung(previous, matrixForRung, previous.activeRungLabel, incomingRungLabel)) fsmRungLabel = previous.activeRungLabel
 
-  const playbackTransition = ns.determinePlaybackTransition(previous, { structuralHash: timelineGeometryUnchanged ? previous?.structuralHash || structuralHash : structuralHash, activeRungLabel: fsmRungLabel, mediaPlaylistPath, episodeChanged: episodeChangedByFingerprint, urlsChanged, timelineGeometryUnchanged })
+  const playbackTransition = ns.determinePlaybackTransition(previous, { structuralHash: timelineGeometryUnchanged ? previous?.structuralHash || structuralHash : structuralHash, activeRungLabel: fsmRungLabel, mediaPlaylistPath, episodeChanged: episodeChangedByFingerprint, urlsChanged, timelineGeometryUnchanged, sessionKey: playlistFingerprint, pageUrl: pageUrlForFingerprint, pageTitle: meta.pageTitle || null, episodeTitle: meta.episodeTitle || null, mediaSequence: meta.mediaSequence, segments: normalizedSegments })
+  const sessionAnchorIndex = typeof previous?.anchorIndex === "number" ? previous.anchorIndex : null
+  const session = typeof ns.updateTabSession === "function" ? ns.updateTabSession(tabId, {
+    id: playbackTransition.sessionKey || playlistFingerprint,
+    state: playbackTransition.state,
+    anchorIndex: sessionAnchorIndex,
+    bufferWindowStart: sessionAnchorIndex ?? 0,
+    bufferWindowSize: normalizedSegments.length,
+    lastCompositeKey: playlistFingerprint,
+    lastTimelineHash: structuralHash,
+    lastPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
+    lastPageUrl: pageUrlForFingerprint || previous?.pageUrl || null,
+    stableAt: playbackTransition.state === ns.PlaybackStates?.STABLE_PLAYBACK ? Date.now() : previous?.playbackSession?.stableAt || 0,
+    episodeChangedAt: playbackTransition.state === ns.PlaybackStates?.EPISODE_SWITCHED ? Date.now() : previous?.playbackSession?.episodeChangedAt || 0
+  }) : null
   const playbackState = playbackTransition.state
   let qualityVariantSwitch = playbackTransition.qualitySwitch === true
   let shouldClearPrefetch = playbackTransition.clearPrefetch === true
@@ -250,6 +265,7 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
 
   // Build tab state object
   const tabState = {
+    pageUrl: pageUrlForFingerprint || previous?.pageUrl || null,
     segments: normalizedSegments, segmentUrlHistory, manifestSignatures, signatureToIndex,
     indexQuality, indexQualityRecordedAt: indexQuality ? Date.now() : null,
     updatedAt: Date.now(), hasAnchor, anchorIndex,
@@ -262,6 +278,7 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
     anchorRotationGraceUntil: urlsChanged ? Date.now() + constants.PLAYLIST_ROTATION_GRACE_MS : Number(previous?.anchorRotationGraceUntil || 0),
     tokensRefreshedAt: tokensRefreshed ? Date.now() : Number(previous?.tokensRefreshedAt || 0),
     mediaPlaylistUrl: meta.mediaPlaylistUrl ? (typeof ns.stripHash === "function" ? ns.stripHash(meta.mediaPlaylistUrl) || meta.mediaPlaylistUrl : meta.mediaPlaylistUrl) : previous?.mediaPlaylistUrl || null,
+    pageUrl: pageUrlForFingerprint || previous?.pageUrl || null,
     episodeSwitchAt: episodeChangedByFingerprint ? Date.now() : Number(previous?.episodeSwitchAt || 0),
     lastManifestRefreshAt: Number(previous?.lastManifestRefreshAt || 0),
     anchorRetainedByRefresh: anchorRetainedByRefresh || previous?.anchorRetainedByRefresh === true,
@@ -279,7 +296,7 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
     velocityPredictedAt: episodeChangedByFingerprint ? 0 : Number(previous?.velocityPredictedAt || 0),
     anchorReconcileDivergenceSince: episodeChangedByFingerprint ? 0 : Number(previous?.anchorReconcileDivergenceSince || 0),
     anchorReconcileLastPromoteAt: episodeChangedByFingerprint ? 0 : Number(previous?.anchorReconcileLastPromoteAt || 0),
-    playbackState, mediaPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
+    playbackState, playbackSession: session || previous?.playbackSession || null, sessionKey: playbackTransition.sessionKey || playlistFingerprint, mediaPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
     fingerprintReason: fingerprintReason || null, fingerprintScore, fingerprintThreshold: fingerprintAssessment.threshold,
     playlistClassification: playbackState === ns.PlaybackStates?.NEW_PLAYBACK ? "new-playback" : playbackState === ns.PlaybackStates?.QUALITY_SWITCHING ? "quality-switch" : playbackState === ns.PlaybackStates?.TOKEN_REFRESHING ? "token-refresh" : playbackState === ns.PlaybackStates?.STABLE_PLAYBACK && urlsChanged ? "stable-refresh" : tokensRefreshed ? "token-refresh" : urlsChanged ? "urls-changed" : "unchanged",
     recentAnchorChanges: qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint ? [] : previous?.recentAnchorChanges || [],
@@ -346,6 +363,14 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
 
   if (typeof ns.scheduleWarmRecoveryPersist === "function") ns.scheduleWarmRecoveryPersist()
   if (previous && Number(tabState.playbackGeneration) > Number(previous.playbackGeneration || previous.networkGeneration || 0) && typeof ns.broadcastDelegatedPrefetchAbort === "function") ns.broadcastDelegatedPrefetchAbort(tabId, tabState, { generation: tabState.playbackGeneration, reason: "playback-generation", log: false })
+
+  if (session) {
+    if (playbackTransition.state === ns.PlaybackStates?.STABLE_PLAYBACK) {
+      if (typeof ns.markSessionStable === "function") ns.markSessionStable(tabId, session)
+    } else if (playbackTransition.state === ns.PlaybackStates?.EPISODE_SWITCHED) {
+      if (typeof ns.markSessionEpisodeSwitch === "function") ns.markSessionEpisodeSwitch(tabId, session)
+    }
+  }
 
   if (qualityVariantSwitch && tabState.segments?.length) {
     ns.syncKnownSegmentsToPage(tabId, tabState.segments, { resetSeeking: true, anchorIndex: typeof tabState.variantSwitchAnchorIndex === "number" ? tabState.variantSwitchAnchorIndex : typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : null, reason: "quality-switch" })

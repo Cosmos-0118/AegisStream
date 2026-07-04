@@ -93,10 +93,20 @@ window.addEventListener("message", (event) => {
     if (Number.isFinite(Number(data.playlistRotatedAt)) && Number(data.playlistRotatedAt) > 0) {
       ns.playlistRotatedAt = Number(data.playlistRotatedAt)
     }
+    if (data.promoteBuffer === true && typeof ns.requestBufferHealthTick === "function") {
+      ns.requestBufferHealthTick("known-segments-promote")
+    }
+    if (data.promoteBuffer === true && typeof ns.pushBufferLoad === "function") {
+      ns.pushBufferLoad({
+        tier: "normal",
+        runwaySec: Number.isFinite(Number(data.promoteBufferAt)) ? 0 : 0,
+        healthScore: 50,
+        source: "known-segments-promote"
+      })
+    }
     for (const u of data.urls) {
       knownSegments.add(u.split("?")[0])
     }
-    // Keep size reasonable to avoid memory leaks
     if (knownSegments.size > 2000) {
       const toDelete = Array.from(knownSegments).slice(0, 500)
       toDelete.forEach(k => knownSegments.delete(k))

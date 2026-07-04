@@ -67,29 +67,46 @@ function bumpLookupMetric(metric, url, amount = 1) {
 }
 
 /** Always count player-facing cache serves (no per-URL dedupe). */
-function recordCacheServeHit(url) {
+function recordCacheServeHit(url, meta = {}) {
+  const kind = String(meta.kind || "hit")
   if (typeof ns.recordStreamMetric === "function") {
     ns.recordStreamMetric("hls", "hits", 1)
   }
   bumpActivity("cacheHits", 1)
   bumpActivity("cacheLookups", 1)
+  bumpActivity(`cacheLookup_${kind}`, 1)
   if (url && typeof url === "string") {
     pruneLookupMetricDedupe()
     recentLookupMetricAt.set(`cacheHits:${url}`, Date.now())
   }
 }
 
-function recordCacheLookupMiss(url) {
+function recordCacheLookupMiss(url, meta = {}) {
+  const kind = String(meta.kind || "miss")
   if (typeof ns.recordStreamMetric === "function") {
     ns.recordStreamMetric("hls", "misses", 1)
   }
   bumpLookupMetric("cacheMisses", url, 1)
+  bumpActivity(`cacheLookup_${kind}`, 1)
   if (typeof ns.noteRecentlyEvictedMiss === "function") {
     ns.noteRecentlyEvictedMiss(url)
   }
   if (typeof ns.notePainCacheMiss === "function") {
     ns.notePainCacheMiss(1)
   }
+}
+
+function recordCacheLookupOutcome(url, outcome, meta = {}) {
+  const normalized = String(outcome || "unknown")
+  if (normalized === "hit" || normalized === "collapsed-hit" || normalized === "recovered-hit") {
+    recordCacheServeHit(url, { kind: normalized, ...meta })
+    return
+  }
+  if (normalized === "miss") {
+    recordCacheLookupMiss(url, { kind: normalized, ...meta })
+    return
+  }
+  bumpActivity(`cacheLookup_${normalized}`, 1)
 }
 
 function resetActivityMetrics() {
@@ -324,6 +341,7 @@ ns.bumpActivity = bumpActivity
 ns.bumpLookupMetric = bumpLookupMetric
 ns.recordCacheServeHit = recordCacheServeHit
 ns.recordCacheLookupMiss = recordCacheLookupMiss
+ns.recordCacheLookupOutcome = recordCacheLookupOutcome
 ns.resetActivityMetrics = resetActivityMetrics
 ns.buildDisplayStats = buildDisplayStats
 ns.refreshCacheEntryCount = refreshCacheEntryCount
