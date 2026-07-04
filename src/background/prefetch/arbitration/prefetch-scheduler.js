@@ -2,6 +2,14 @@
 var ns = (self.AegisBackground ||= {})
 const { constants, state, addLog } = ns
 
+const emitPrefetchDebugLog = typeof ns.emitPrefetchDebugLog === "function"
+  ? ns.emitPrefetchDebugLog.bind(ns)
+  : (code, location, message, details) => {
+      if (typeof addLog !== "function") return
+      const suffix = details && typeof details === "object" ? ` ${JSON.stringify(details)}` : details ? ` ${String(details)}` : ""
+      addLog("DEBUG", `[${code}] ${message} @ ${location}${suffix}`)
+    }
+
 // ─── Cap retry helpers ───
 
 ns.clearPrefetchCapRetry = function clearPrefetchCapRetry(tabState) {
@@ -14,6 +22,42 @@ ns.clearPrefetchInflightRetry = function clearPrefetchInflightRetry(tabState) {
   if (!tabState) return
   if (tabState.prefetchInflightRetryTimer) { clearTimeout(tabState.prefetchInflightRetryTimer); tabState.prefetchInflightRetryTimer = null }
   tabState.prefetchInflightRetryPending = null
+}
+
+ns.requestPrefetchBoost = function requestPrefetchBoost(boost = {}) {
+  const tabId = Number.isFinite(boost.tabId) ? boost.tabId : null
+  if (!Number.isFinite(tabId)) return false
+  const tabState = state.playlistByTab.get(tabId)
+  if (!tabState) return false
+
+  const now = Date.now()
+  const runwaySec = Number(boost.runwaySec ?? tabState.bufferRunwaySec ?? tabState.runwaySec ?? 0)
+  const emergency = runwaySec > 0 && runwaySec <= Number(constants.BUFFER_RUNWAY_EMERGENCY_SEC)
+  const lowRunway = runwaySec > 0 && runwaySec <= Number(constants.BUFFER_RUNWAY_AGGRESSIVE_SEC)
+  const widened = Math.max(
+    1,
+    Math.min(
+      Number(constants.PREFETCH_BURST_WINDOW_CAP) || 12,
+      Number(boost.effectiveWindow || 0) + (emergency ? 8 : lowRunway ? 5 : 3)
+    )
+  )
+
+  tabState.adaptivePrefetchBoost = Math.min(12, Number(tabState.adaptivePrefetchBoost || 0) + (emergency ? 4 : 2))
+  tabState.lastPrefetchBoostAt = now
+  tabState.lastPrefetchBoostReason = String(boost.reason || "boost")
+  tabState.prefetchWindowBoostUntil = now + (emergency ? 8_000 : 4_000)
+
+  const segments = Array.isArray(tabState.segments) ? tabState.segments : []
+  const startIndex = Math.max(0, Math.min(Number(tabState.anchorIndex || 0), Math.max(0, segments.length - widened)))
+  if (segments.length > 0 && typeof ns.schedulePrefetch === "function") {
+    void ns.schedulePrefetch(tabId, segments, startIndex, {
+      source: `boost:${tabState.lastPrefetchBoostReason}`,
+      force: true,
+      prefetchWindowOverride: widened
+    })
+  }
+  addLog("INFO", `Prefetch boost on tab ${tabId} (runway=${runwaySec || 0}s, window=${widened}, reason=${tabState.lastPrefetchBoostReason})`)
+  return true
 }
 
 ns.isPrefetchWorkStale = function isPrefetchWorkStale(tabState, pending) {
@@ -148,30 +192,62 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const now = Date.now()
   const clampedStartIndex = Math.max(0, Math.min(startIndex, normalized.length))
   const scheduleSignature = buildPrefetchScheduleSignature(tabId, normalized, clampedStartIndex, options.source || "schedule", Number(tabState?.networkGeneration) || 0)
+  const scheduleSource = options.source || "schedule"
   if (shouldSkipDuplicateSchedule(tabState, clampedStartIndex, now, force, scheduleSignature)) {
-    emitPrefetchDebugLog('H1', 'src/background/prefetch/arbitration/prefetch-scheduler.js:125', 'duplicate schedule skipped', { tabId, startIndex: clampedStartIndex, lastScheduledFromIndex: tabState.lastScheduledFromIndex, lastScheduledAt: tabState.lastScheduledAt, signature: scheduleSignature, source })
+    emitPrefetchDebugLog('H1', 'src/background/prefetch/arbitration/prefetch-scheduler.js:125', 'duplicate schedule skipped', { tabId, startIndex: clampedStartIndex, lastScheduledFromIndex: tabState.lastScheduledFromIndex, lastScheduledAt: tabState.lastScheduledAt, signature: scheduleSignature, source: scheduleSource })
     return
   }
   if (typeof ns.computeCongestionDirectivesForTab === "function") ns.computeCongestionDirectivesForTab(tabId)
   const runwaySec = Number(tabState?.bufferRunwaySec || tabState?.runwaySec || 0)
   const windowPressure = Number.isFinite(runwaySec) && runwaySec > 0 ? Math.max(0, (Number(constants.BUFFER_RUNWAY_NORMAL_SEC) || 30) - runwaySec) : 0
+  const boostActiveUntil = Number(tabState?.prefetchWindowBoostUntil || 0)
+  const boostActive = boostActiveUntil > now
   const hitRate = Number(tabState?.prefetchHitRate || tabState?.hitRate || 0)
   const lowHitRateBoost = Number.isFinite(hitRate) && hitRate > 0 && hitRate < 0.4 ? 2 : 0
   const adaptiveBoost = Number(tabState?.adaptivePrefetchBoost || 0)
+  const aggressiveBufferBoost =
+    Number.isFinite(runwaySec) && runwaySec > 0 && runwaySec <= Number(constants.BUFFER_RUNWAY_EMERGENCY_SEC)
+      ? 8
+      : Number.isFinite(runwaySec) && runwaySec > 0 && runwaySec <= Number(constants.BUFFER_RUNWAY_AGGRESSIVE_SEC)
+        ? 5
+        : 0
+  const seekPressureBoost = ns.isTabInSeekChurnAggressive(tabState) || ns.isTabInTeleportMode?.(tabState) ? 4 : 0
   
   let effectiveWindow = ns.resolveEffectivePrefetchWindow(tabId)
-  if (windowPressure > 0) {
+  if (windowPressure > 0 || boostActive) {
     effectiveWindow = Math.max(
       effectiveWindow,
       Math.min(
         normalized.length,
-        Math.round(effectiveWindow + Math.min(windowPressure / 6, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8) + lowHitRateBoost + adaptiveBoost)
+        Math.round(
+          effectiveWindow +
+            Math.min(windowPressure / 4, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8) +
+            lowHitRateBoost +
+            adaptiveBoost +
+            aggressiveBufferBoost +
+            seekPressureBoost +
+            (boostActive ? 4 : 0)
+        )
       )
     )
   }
   const windowOverride = Number(options.prefetchWindowOverride)
   if (Number.isFinite(windowOverride) && windowOverride > 0) effectiveWindow = Math.max(effectiveWindow, Math.min(windowOverride, normalized.length))
   if (effectiveWindow === 0) { tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.updatedAt = now; return }
+
+  if (windowPressure > 0 && typeof ns.requestPrefetchBoost === "function") {
+    try {
+      ns.requestPrefetchBoost({
+        tabId,
+        runwaySec,
+        source: options.source || "schedule",
+        effectiveWindow,
+        reason: runwaySec <= Number(constants.BUFFER_RUNWAY_EMERGENCY_SEC) ? "runway-emergency" : "runway-low"
+      })
+    } catch {
+      // ignore boost failures
+    }
+  }
 
   // Churn logging — only log state transitions, not every schedule call
   if (ns.isTabInSeekChurnAggressive(tabState)) {
@@ -189,7 +265,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   if (typeof ns.reorderTargetsByByteCost === "function") targets = ns.reorderTargetsByByteCost(targets, tabState)
   if (typeof ns.reorderTargetsForPriorityLane === "function") targets = ns.reorderTargetsForPriorityLane(targets, tabState)
 
-  const source = options.source || "schedule"
+  const source = scheduleSource
   const prefetchLane = typeof ns.classifyPrefetchLane === "function" ? ns.classifyPrefetchLane(source) : "maintenance"
   const globalCap = typeof ns.resolveCongestionGlobalCap === "function" ? ns.resolveCongestionGlobalCap(tabId) : (typeof ns.resolveBufferAdjustedGlobalCap === "function" ? ns.resolveBufferAdjustedGlobalCap(tabId) : Infinity)
   const globalInflight = typeof ns.countGlobalInflightPrefetches === "function" ? ns.countGlobalInflightPrefetches() : 0
@@ -215,7 +291,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const batch = uncached.slice(0, Math.min(availableSlots, batchInflightCap))
 
   if (!batch.length) {
-    emitPrefetchDebugLog('H2', 'src/background/prefetch/arbitration/prefetch-scheduler.js:167', 'prefetch batch empty after filtering', { tabId, startIndex: clampedStartIndex, source: scheduleSource, blockedInflight, blockedCooldown, blockedLane, targets: targets.length })
+    emitPrefetchDebugLog('H2', 'src/background/prefetch/arbitration/prefetch-scheduler.js:167', 'prefetch batch empty after filtering', { tabId, startIndex: clampedStartIndex, source, blockedInflight, blockedCooldown, blockedLane, targets: targets.length })
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
     if ((blockedInflight > 0 || blockedCooldown > 0 || blockedLane > 0) && shouldLogSkip) {
       addLog("INFO", `Prefetch paused on tab ${tabId}: inflight=${blockedInflight}, retryCooldown=${blockedCooldown}, laneBlocked=${blockedLane}`)
@@ -244,9 +320,8 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
     if (typeof inflightEntry.segmentIndex === "number") ns.noteInflightSegmentIndices(tabState, inflightEntry.segmentIndex, 1)
   }
 
-  const scheduleSource = options.source || "schedule"
-  emitPrefetchDebugLog('H2', 'src/background/prefetch/arbitration/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source: scheduleSource, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, availableSlots, globalCap, globalInflight })
-  addLog("INFO", `Scheduling prefetch of ${batch.length} chunks for tab ${tabId} (from index ${clampedStartIndex}, source=${scheduleSource}, mode=${engineMode || "NORMAL"})`)
+  emitPrefetchDebugLog('H2', 'src/background/prefetch/arbitration/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, availableSlots, globalCap, globalInflight })
+  addLog("INFO", `Scheduling prefetch of ${batch.length} chunks for tab ${tabId} (from index ${clampedStartIndex}, source=${source}, mode=${engineMode || "NORMAL"})`)
   tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.lastPrefetchScheduleSignature = scheduleSignature; tabState.updatedAt = now
 
   const delegated = await ns.delegatePrefetchToPage(tabId, batch, { source: scheduleSource, priority: options.priority || (/buffer-load-push|rescue|buffer-emergency|scrub-snap-back/.test(scheduleSource) ? "high" : "low") })

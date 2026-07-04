@@ -239,6 +239,7 @@ function renderStats(stats) {
   const safeStats = { ...EMPTY_STATS, ...(stats || {}) }
   const hits = safeStats.cacheHits || 0
   const misses = safeStats.cacheMisses || 0
+  const fallbacks = safeStats.cacheFallbacks || 0
   const warmups = safeStats.cacheWarmups || 0
   const hitRate =
     Number.isFinite(safeStats.hitRatePercent)

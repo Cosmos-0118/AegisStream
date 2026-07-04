@@ -87,7 +87,7 @@ ns.isRefreshActive = function isRefreshActive(tabState) {
 
 ns.resolveAdaptivePrefetchWindow = function resolveAdaptivePrefetchWindow(tabState) {
   if (!tabState) return null
-  const base = Number(state.settings?.prefetchWindow) || 8
+  const base = Number(tabState.settings?.prefetchWindow) || 8
   const seekChurn = ns.isTabInSeekChurnAggressive(tabState)
   const scrubbing = ns.isTabInScrubbingTrain(tabState)
   const variantWarm = ns.isTabInVariantSwitchGrace(tabState)
