@@ -60,7 +60,15 @@ function createState() {
     tabPageHostByTab: new Map(),
     tabPageUrlFingerprintByTab: new Map(),
     twitchSessionByTab: new Map(),
-    speculativeAdaptiveMode: "full"
+    speculativeAdaptiveMode: "full",
+    adaptivePrefetch: {
+      enabled: true,
+      hitRateEma: 0.5,
+      missRateEma: 0.5,
+      lastAdjustedAt: 0,
+      lastWindowBoost: 0,
+      lastRunwayBoost: 0
+    }
   }
 }
 

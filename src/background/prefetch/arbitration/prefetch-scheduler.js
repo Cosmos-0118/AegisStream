@@ -141,6 +141,9 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   if (typeof ns.computeCongestionDirectivesForTab === "function") ns.computeCongestionDirectivesForTab(tabId)
   const runwaySec = Number(tabState?.bufferRunwaySec || tabState?.runwaySec || 0)
   const windowPressure = Number.isFinite(runwaySec) && runwaySec > 0 ? Math.max(0, (Number(constants.BUFFER_RUNWAY_NORMAL_SEC) || 30) - runwaySec) : 0
+  const hitRate = Number(tabState?.prefetchHitRate || tabState?.hitRate || 0)
+  const lowHitRateBoost = Number.isFinite(hitRate) && hitRate > 0 && hitRate < 0.4 ? 2 : 0
+  const adaptiveBoost = Number(tabState?.adaptivePrefetchBoost || 0)
   if (shouldSkipDuplicateSchedule(tabState, clampedStartIndex, now, force)) return
 
   let effectiveWindow = ns.resolveEffectivePrefetchWindow(tabId)
@@ -149,7 +152,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
       effectiveWindow,
       Math.min(
         normalized.length,
-        Math.round(effectiveWindow + Math.min(windowPressure / 6, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8))
+        Math.round(effectiveWindow + Math.min(windowPressure / 6, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8) + lowHitRateBoost + adaptiveBoost)
       )
     )
   }

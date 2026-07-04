@@ -400,26 +400,40 @@ async function resolveCachedChunkWithCandidates(candidateUrls, expectedScope = n
   return null
 }
 
+function buildCacheLookupCandidates(lookupUrl, tabState, manifestIndex) {
+  const candidates = []
+  const push = (value) => {
+    const normalized = stripHash(value)
+    if (!normalized || candidates.includes(normalized)) return
+    candidates.push(normalized)
+  }
+
+  push(lookupUrl)
+  for (const key of buildCacheKeyVariants(lookupUrl)) push(key)
+
+  const history = tabState?.segmentUrlHistory?.get(manifestIndex)
+  if (Array.isArray(history)) {
+    for (const altUrl of history) push(altUrl)
+  }
+
+  const segments = tabState?.segments
+  if (Array.isArray(segments) && Number.isFinite(manifestIndex)) {
+    for (let offset = 1; offset <= 2; offset += 1) {
+      push(segments[manifestIndex - offset])
+      push(segments[manifestIndex + offset])
+    }
+  }
+  return candidates
+}
+
 async function resolveCachedChunkWithSegmentHistory(lookupUrl, tabId, manifestIndex, expectedScope = null) {
   const initial = await resolveCachedChunk(lookupUrl, expectedScope)
   if (initial?.item || !Number.isFinite(manifestIndex) || !Number.isFinite(tabId)) {
     return initial
   }
   const tabState = state.playlistByTab.get(tabId)
-  const history = tabState?.segmentUrlHistory?.get(manifestIndex)
-  if (!Array.isArray(history) || history.length === 0) return initial
-
-  const expectedKeys = buildCacheKeyVariants(lookupUrl)
-  const candidateSet = new Set()
-  const addCandidate = (value) => {
-    const normalized = stripHash(value)
-    if (!normalized || candidateSet.has(normalized)) return
-    candidateSet.add(normalized)
-  }
-
-  addCandidate(lookupUrl)
-  for (const key of expectedKeys) addCandidate(key)
-  for (const altUrl of history) addCandidate(altUrl)
+  const candidateSet = buildCacheLookupCandidates(lookupUrl, tabState, manifestIndex)
+  if (candidateSet.length === 0) return initial
 
   const resolved = await resolveCachedChunkWithCandidates(candidateSet, expectedScope)
   if (resolved?.item) {
@@ -563,6 +577,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     const lookupUrl = stripHash(message.url)
     const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
     const rapidSeek = isTabInRapidSeek(tabState)
+    const postSeekGrace = Boolean(tabState?.lastSeekedAt && Date.now() - Number(tabState.lastSeekedAt || 0) < 2500)
     if (
       method !== "GET" ||
       hasRange ||
@@ -638,7 +653,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       tabState?.lastVisibilityChangeAt ||
       /quality-switch-warm|bridge-ready|playlist-url-rotation|warm-recovery|next-episode|tab-visible|tab-hidden|focus|blur/i.test(transitionSource)
     )
-    const transitionDelayMs = isTransitionFirst ? 80 : 0
+    const transitionDelayMs = isTransitionFirst || postSeekGrace ? 50 : 0
     if (transitionDelayMs > 0) {
       try {
         await Promise.race([
@@ -696,6 +711,13 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         sendResponse({ ok: true, hit: false, reason: "auth-expired" })
         return
       }
+      if (postSeekGrace && Number.isFinite(tabId) && typeof ns.ensureTabPlaylistRecovery === "function") {
+        void ns.ensureTabPlaylistRecovery(tabId, "post-seek-cache-miss", {
+          force: true,
+          preferRecapture: true,
+          attemptKey: `post-seek:${lookupUrl}`
+        })
+      }
       const collapsed = await awaitInflightPrefetchCacheEntry(lookupUrl, tabId)
       if (collapsed?.item) {
         resolved = collapsed
@@ -740,7 +762,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
           Date.now() < Number(tabState?.prefetchPausedUntil || 0) ||
           Date.now() < Number(tabState?.authBlockedUntil || 0) ||
           tabState?.playlistCaptureState === ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED
-        const recentCollapseWindow = Date.now() < Number(tabState?.lastRotationBridgeAttemptAt || 0) + 1000
+        const recentCollapseWindow = Date.now() < Number(tabState?.lastRotationBridgeAttemptAt || 0) + 750
         if (recoveryHint && !recoveryUnhealthy && !recentCollapseWindow) {
           void ns.ensureTabPlaylistRecovery(tabId, "cache-miss-recovery", {
             force: true,

@@ -755,35 +755,48 @@ async function resolveCachedChunk(url, expectedScope = null) {
       )
     }
 
+    const probeKeys = []
+    const seen = new Set()
+    const pushProbe = (value) => {
+      if (!value || seen.has(value)) return
+      seen.add(value)
+      probeKeys.push(value)
+    }
+
+    for (const key of cacheKeys) pushProbe(key)
+    try {
+      const parsed = new URL(stripHash(url))
+      if (parsed.search) {
+        pushProbe(`${parsed.origin}${parsed.pathname}`)
+      }
+    } catch {
+      // non-URL keys already covered above
+    }
+
     // Fast path: memory index points straight at the primary chunk key.
-    for (const key of cacheKeys) {
+    for (const key of probeKeys) {
       const primary = memoryKeyIndex.get(key)
       if (!primary) continue
       const indexed = await dbGet(constants.STORE_CHUNKS, primary)
       if (indexed?.bytes) {
         if (expectedScope && indexed.scope && indexed.scope !== expectedScope) {
-          // Scope mismatch, skip memory index fast-path
-        } else {
-          if (typeof ns.addLog === "function") {
-            ns.addLog(
-              "DEBUG",
-              `resolveCachedChunk memory hit: key=${key.slice(-48)} primary=${String(primary).slice(-48)} via=${primary === key ? "direct" : "memory-index"}`
-            )
-          }
-          return { item: indexed, key, via: primary === key ? "direct" : "memory-index" }
+          continue
         }
+        if (typeof ns.addLog === "function") {
+          ns.addLog(
+            "DEBUG",
+            `resolveCachedChunk memory hit: key=${key.slice(-48)} primary=${String(primary).slice(-48)} via=${primary === key ? "direct" : "memory-index"}`
+          )
+        }
+        return { item: indexed, key, via: primary === key ? "direct" : "memory-index" }
       }
-      // Entry evicted underneath us — drop the stale mapping and walk slow path.
       dropIndexedPrimaryKeys([primary])
-      break
     }
 
-    for (const key of cacheKeys) {
+    for (const key of probeKeys) {
       const direct = await dbGet(constants.STORE_CHUNKS, key)
       if (direct?.bytes) {
-        if (expectedScope && direct.scope && direct.scope !== expectedScope) {
-          // Scope mismatch
-        } else {
+        if (!expectedScope || !direct.scope || direct.scope === expectedScope) {
           if (typeof ns.addLog === "function") {
             ns.addLog(
               "DEBUG",
@@ -798,19 +811,15 @@ async function resolveCachedChunk(url, expectedScope = null) {
       const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
       if (!aliasEntry?.targetUrl) continue
       const aliased = await dbGet(constants.STORE_CHUNKS, aliasEntry.targetUrl)
-      if (aliased?.bytes) {
-        if (expectedScope && aliased.scope && aliased.scope !== expectedScope) {
-          // Scope mismatch
-        } else {
-          if (typeof ns.addLog === "function") {
-            ns.addLog(
-              "DEBUG",
-              `resolveCachedChunk alias hit: key=${key.slice(-48)} target=${String(aliasEntry.targetUrl).slice(-48)}`
-            )
-          }
-          indexCacheKeys(aliasEntry.targetUrl, [key])
-          return { item: aliased, key, via: "alias" }
+      if (aliased?.bytes && (!expectedScope || !aliased.scope || aliased.scope === expectedScope)) {
+        if (typeof ns.addLog === "function") {
+          ns.addLog(
+            "DEBUG",
+            `resolveCachedChunk alias hit: key=${key.slice(-48)} target=${String(aliasEntry.targetUrl).slice(-48)}`
+          )
         }
+        indexCacheKeys(aliasEntry.targetUrl, [key])
+        return { item: aliased, key, via: "alias" }
       }
       await dbDelete(constants.STORE_ALIASES, key).catch(() => {})
     }
