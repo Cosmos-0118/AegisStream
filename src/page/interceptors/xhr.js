@@ -728,7 +728,7 @@ function AegisXHR() {
      * Always do one bounded IDB lookup before falling through to native fetch.
      * This is a small IPC vs. a multi-MB CDN GET — always worth it.
      */
-    const tryIdbBeltBeforeNative = async (beltLane, beltTimeoutMs = 250) => {
+    const tryIdbBeltBeforeNative = async (beltLane, beltTimeoutMs = 800) => {
       try {
         const beltLookup = await Promise.race([
           requestRuntime("CACHE_LOOKUP_REQUEST", {
@@ -850,7 +850,7 @@ function AegisXHR() {
         ? ns.resolveCollapseWaitTimeoutMs()
         : wireInFlight
           ? 8_000
-          : 1_500
+          : 2_000
 
     const lookupPromise = requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,

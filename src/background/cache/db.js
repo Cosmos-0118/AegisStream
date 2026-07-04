@@ -5,6 +5,7 @@ let evictionInProgress = false
 let lastEvictionRunAtByLane = { hard: 0, soft: 0, reconcile: 0 }
 let storageSystemOperational = true
 let storageBypassLogged = false
+let storageRecoveryTimerId = null
 
 /**
  * Two-level in-memory cache index (P6): any key variant or alias -> primary
@@ -61,11 +62,35 @@ function triggerEmergencyCacheEviction() {
   }
 }
 
+function restoreStoragePassthrough(reason = "recovery") {
+  if (storageSystemOperational) return
+  storageSystemOperational = true
+  state.settings.serveFromCache = true
+  storageBypassLogged = false
+  if (typeof ns.broadcastSettingsToTabs === "function") {
+    void ns.broadcastSettingsToTabs(state.settings)
+  }
+  if (typeof ns.recordDecision === "function") {
+    ns.recordDecision("storage", "restore", reason)
+  }
+  addLog("INFO", `Storage cache passthrough recovered (${reason})`)
+}
+
+function scheduleStorageRecovery() {
+  if (storageRecoveryTimerId) clearTimeout(storageRecoveryTimerId)
+  const recoveryMs = Number(constants.CACHE_PASSTHROUGH_RECOVERY_MS) || 60_000
+  storageRecoveryTimerId = setTimeout(() => {
+    storageRecoveryTimerId = null
+    restoreStoragePassthrough("cooldown")
+  }, recoveryMs)
+}
+
 function engageStoragePassthroughValve(reason, error) {
   if (!storageSystemOperational) return
   storageSystemOperational = false
   state.settings.serveFromCache = false
   triggerEmergencyCacheEviction()
+  scheduleStorageRecovery()
   if (!storageBypassLogged) {
     storageBypassLogged = true
     const detail = error?.message ? `: ${error.message}` : ""
@@ -304,8 +329,9 @@ async function evictOldestEntries(db, keysToDelete) {
 }
 
 async function cleanupAliasesForTargets(targets) {
-  if (!targets.length) return
+  if (!targets.length) return 0
   const db = await openDb()
+  let deleted = 0
   try {
     for (const targetUrl of targets) {
       await new Promise((resolve, reject) => {
@@ -320,6 +346,7 @@ async function cleanupAliasesForTargets(targets) {
         req.onsuccess = () => {
           const cursor = req.result
           if (!cursor) return
+          deleted += 1
           cursor.delete()
           cursor.continue()
         }
@@ -331,6 +358,7 @@ async function cleanupAliasesForTargets(targets) {
   } finally {
     db.close()
   }
+  return deleted
 }
 
 async function evaluateCachePressure() {
@@ -374,6 +402,7 @@ async function runEvictionPass(force = false, options = {}) {
     const db = await openDb()
     try {
       const summary = await summarizeChunkStore(db)
+      const ttlSweep = lane === "reconcile" ? await ageSweepCacheEntries(db, policy).catch(() => ({ deleted: 0 })) : { deleted: 0 }
       const avgChunkBytes =
         summary.totalEntries > 0
           ? Math.max(64 * 1024, Math.round(summary.totalBytes / summary.totalEntries))
@@ -447,6 +476,9 @@ async function runEvictionPass(force = false, options = {}) {
         overflowBytes -= item.byteLength
         reclaimedBytes += item.byteLength
       }
+      if (ttlSweep.deleted > 0 && typeof ns.scheduleEviction === "function") {
+        ns.scheduleEviction(false)
+      }
       if (keysToDelete.length > 0) {
         dropIndexedPrimaryKeys(keysToDelete)
         if (typeof ns.unregisterCacheKeys === "function") {
@@ -456,14 +488,16 @@ async function runEvictionPass(force = false, options = {}) {
           ns.recordEvictedChunks(evictedItems)
         }
         await evictOldestEntries(db, keysToDelete)
-        void cleanupAliasesForTargets(keysToDelete).catch(() => {})
+        const aliasDeleted = await cleanupAliasesForTargets(keysToDelete).catch(() => 0)
         const guardNote =
           skippedTierA > 0
             ? `, ${skippedTierA} tier-A protected${skippedConsumers > 0 ? ` (${skippedConsumers} consumer-locked)` : ""}`
             : ""
+        const aliasNote = aliasDeleted > 0 ? `, ${aliasDeleted} aliases` : ""
+        const ttlNote = ttlSweep?.deleted > 0 ? `, ${ttlSweep.deleted} TTL-expired` : ""
         addLog(
           "INFO",
-          `Adaptive cache eviction (${lane}) removed ${keysToDelete.length} chunks (~${(reclaimedBytes / (1024 * 1024)).toFixed(1)} MB${guardNote})`
+          `Adaptive cache eviction (${lane}) removed ${keysToDelete.length} chunks${aliasNote}${ttlNote} (~${(reclaimedBytes / (1024 * 1024)).toFixed(1)} MB${guardNote})`
         )
       }
       if (skippedConsumers > 0 && typeof ns.bumpActivity === "function") {
@@ -490,11 +524,42 @@ async function safeCacheChunk(url, contentType, bytes, scope = null) {
     return await cacheChunk(url, contentType, bytes, scope)
   } catch (error) {
     if (isStorageFailureError(error)) {
-      engageStoragePassthroughValve("write-failed", error)
+      addLog(
+        "WARN",
+        `Cache write failed (${error?.name || "storage"}): ${error?.message || "unknown"}. Skipping write, reads remain operational.`
+      )
       return { ok: false, error: "storage-bypass", bypass: true }
     }
     return { ok: false, error: error?.message || "cache-write-failed" }
   }
+}
+
+async function ageSweepCacheEntries(db, policy) {
+  const maxAgeMs = Number(constants.CACHE_TTL_SWEEP_MIN_AGE_MS) || 0
+  const maxDeletes = Math.max(1, Number(constants.CACHE_TTL_SWEEP_MAX_DELETE) || 250)
+  if (!maxAgeMs || !maxDeletes) return { deleted: 0 }
+  const cutoff = Date.now() - maxAgeMs
+  let deleted = 0
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(constants.STORE_CHUNKS, "readwrite")
+    const store = tx.objectStore(constants.STORE_CHUNKS)
+    const idx = store.index("createdAt")
+    const range = IDBKeyRange.upperBound(cutoff)
+    const req = idx.openCursor(range)
+    req.onsuccess = () => {
+      const cursor = req.result
+      if (!cursor || deleted >= maxDeletes) return
+      deleted += 1
+      cursor.delete()
+      cursor.continue()
+    }
+    tx.oncomplete = resolve
+    tx.onerror = () => reject(tx.error)
+  })
+  if (deleted > 0) {
+    addLog("INFO", `TTL sweep removed ${deleted} stale cache chunks (> ${Math.round(maxAgeMs / 60000)} min)`)
+  }
+  return { deleted }
 }
 
 async function cacheChunk(url, contentType, bytes, scope = null) {
@@ -746,6 +811,10 @@ async function clearCacheStores() {
   if (typeof ns.clearCacheRegistry === "function") {
     ns.clearCacheRegistry()
   }
+  if (storageRecoveryTimerId) {
+    clearTimeout(storageRecoveryTimerId)
+    storageRecoveryTimerId = null
+  }
   await computeAdaptiveCachePolicy(true)
 }
 
@@ -759,6 +828,7 @@ ns.evaluateCachePressure = evaluateCachePressure
 ns.runEvictionPass = runEvictionPass
 ns.isStorageSystemOperational = isStorageSystemOperational
 ns.engageStoragePassthroughValve = engageStoragePassthroughValve
+ns.restoreStoragePassthrough = restoreStoragePassthrough
 ns.resolveCachedChunk = resolveCachedChunk
 ns.bridgeCacheAliasesForUrlPair = bridgeCacheAliasesForUrlPair
 ns.bridgePlaylistSegmentUrlAliases = bridgePlaylistSegmentUrlAliases

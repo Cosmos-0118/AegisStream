@@ -22,11 +22,23 @@
     return switchedAt > 0 && now - switchedAt < deferMs
   }
 
+  function isSeekChurnActive(tabState) {
+    return Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)
+  }
+
   function shouldEnterRescue(tabState) {
     const runway = Number(tabState.bufferRunwaySec)
     const health = Number(tabState.bufferHealthScore)
     const enterRunway = Number(constants.RESCUE_ENTER_RUNWAY_SEC ?? constants.RESCUE_RUNWAY_SEC) || 3
     const enterHealth = Number(constants.RESCUE_ENTER_HEALTH_PCT ?? constants.RESCUE_HEALTH_PCT) || 5
+
+    // During seek churn, health scores are unreliable (fill-rate EMA swings
+    // negative from playhead jumps). Use runway as the sole entry signal.
+    if (isSeekChurnActive(tabState)) {
+      const churnEnterRunway = Math.min(enterRunway, 3)
+      return Number.isFinite(runway) && runway < churnEnterRunway
+    }
+
     if (isVariantSwitchRecovery(tabState)) {
       const hardRunway = Math.min(enterRunway, 1)
       const hardHealth = Math.min(enterHealth, 2)
@@ -50,6 +62,13 @@
     const exitRunway = Number(constants.RESCUE_EXIT_RUNWAY_SEC) || 8
     const exitHealth = Number(constants.RESCUE_EXIT_HEALTH_PCT) || 25
     if (tabState.bufferTier === "emergency") return false
+
+    // During seek churn, health scores are unreliable — exit on runway alone.
+    if (isSeekChurnActive(tabState)) {
+      const churnExitRunway = Math.max(exitRunway, 6)
+      return Boolean(Number.isFinite(runway) && runway >= churnExitRunway)
+    }
+
     const runwayOk = !Number.isFinite(runway) || runway >= exitRunway
     const healthOk = !Number.isFinite(health) || health >= exitHealth
     return runwayOk && healthOk

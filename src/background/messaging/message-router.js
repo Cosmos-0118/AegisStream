@@ -533,6 +533,24 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
 
     const fp = tabState?.playlistFingerprint
     const expectedScope = fp ? `${fp.pageUrlHash || ""}|${fp.mediaPlaylistPath || ""}` : null
+    const isTransitionFirst = Boolean(
+      tabState?.warmRecovery ||
+      tabState?.playlistRecaptureRequired ||
+      tabState?.pendingRotationBridge ||
+      tabState?.lastQualityVariantSwitchAt ||
+      /quality-switch-warm|bridge-ready|playlist-url-rotation|warm-recovery|next-episode/i.test(String(message.source || message.captureSource || ""))
+    )
+    const transitionDelayMs = isTransitionFirst ? 250 : 0
+    if (transitionDelayMs > 0) {
+      try {
+        await Promise.race([
+          new Promise((resolve) => setTimeout(resolve, transitionDelayMs)),
+          tabState?.pendingRotationBridge || Promise.resolve()
+        ])
+      } catch {
+        // ignore
+      }
+    }
     let resolved = await resolveCachedChunkWithSegmentHistory(
       lookupUrl,
       tabId,
@@ -587,10 +605,18 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       if (!rapidSeek) {
         recordCacheLookupMiss(lookupUrl)
       }
+      addLog(
+        "DEBUG",
+        `Cache lookup miss: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} rapidSeek=${rapidSeek} inflightPrefetch=${Boolean(state.inflightPrefetches.get(inflightTrackingKey(lookupUrl) || lookupUrl))} pendingWrite=${hasInflightChunkWrite(lookupUrl)} bridgeWait=${Boolean(tabState?.pendingRotationBridge)}`
+      )
       sendResponse({ ok: true, hit: false })
       return
     }
 
+    addLog(
+      "INFO",
+      `Cache lookup hit: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} source=${collapsedFromInflight ? "inflight-collapse" : "idb"}`
+    )
     recordCacheServeHit(lookupUrl)
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
@@ -713,6 +739,10 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
       sendResponse({ ok: false, skipped: true, error: "invalid-payload" })
       return
     }
+    addLog(
+      "DEBUG",
+      `StoreChunk received: source=${captureSource} wire=${wireType} bytes=${byteLength} url=${storeUrl.slice(-72)} method=${method} range=${hasRange} status=${status} tab=${Number.isFinite(tabId) ? tabId : "n/a"}`
+    )
     registerInflightChunkWrite(storeUrl)
     const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
     const fp = tabState?.playlistFingerprint
@@ -729,6 +759,10 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
       releaseInflightChunkWrite(storeUrl)
     }
     if (!storeResult?.ok) {
+      addLog(
+        "WARN",
+        `StoreChunk write failed: source=${captureSource} wire=${wireType} url=${storeUrl.slice(-72)} error=${storeResult?.error || "cache-write-failed"} bypass=${storeResult?.bypass === true}`
+      )
       rejectPendingInflightLookups(storeUrl)
       sendResponse({
         ok: false,
@@ -740,11 +774,24 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
     }
     if (!storeResult.stored) {
       if (storeResult.duplicate) {
+        addLog(
+          "DEBUG",
+          `StoreChunk duplicate suppressed: source=${captureSource} wire=${wireType} url=${storeUrl.slice(-72)}`
+        )
         await flushPendingInflightLookupsAfterStore(storeUrl)
+      } else {
+        addLog(
+          "DEBUG",
+          `StoreChunk acknowledged without store: source=${captureSource} wire=${wireType} url=${storeUrl.slice(-72)}`
+        )
       }
       sendResponse({ ok: true, duplicate: true })
       return
     }
+    addLog(
+      "INFO",
+      `StoreChunk persisted: source=${captureSource} wire=${wireType} url=${storeUrl.slice(-72)} bytes=${byteLength}`
+    )
     await flushPendingInflightLookupsAfterStore(storeUrl)
     if (Number.isFinite(tabId)) {
       void bridgeStoredChunkRotationAliases(tabId, storeUrl).catch(() => {})

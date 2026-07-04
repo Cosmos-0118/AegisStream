@@ -84,7 +84,7 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod) {
   const isCandidate =
     typeof isLikelyCacheHitCandidate !== "function" ||
     isLikelyCacheHitCandidate(cacheLookupUrl)
-  const timeoutMs = isCandidate ? 1_500 : 600
+  const timeoutMs = isCandidate ? 2_000 : 1_200
 
   let lookup = await Promise.race([
     requestRuntime("CACHE_LOOKUP_REQUEST", {

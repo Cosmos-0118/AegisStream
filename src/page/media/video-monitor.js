@@ -8,6 +8,8 @@ const TELEPORT_DEBOUNCE_MS = 40
 const WORKER_LIVELINESS_PING_MS = 10_000
 
 const lastTeleportAtByVideo = new WeakMap()
+const lastObservedTimeByVideo = new WeakMap()
+const videoFirstSeenAtByVideo = new WeakMap()
 
 function resolveManifestMapper() {
   const hint = ns.playbackManifestHint
@@ -30,12 +32,28 @@ function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
   if (!(video instanceof HTMLMediaElement)) return
 
   const now = Date.now()
+  const currentTime = Number(video.currentTime)
+  if (!Number.isFinite(currentTime)) return
+  const lastObservedTime = lastObservedTimeByVideo.get(video)
+  lastObservedTimeByVideo.set(video, currentTime)
+  const firstSeenAt = videoFirstSeenAtByVideo.get(video) || now
+  videoFirstSeenAtByVideo.set(video, firstSeenAt)
+
+  if (eventType === "seeked" && now - firstSeenAt < 4000) {
+    const delta = Number.isFinite(lastObservedTime) ? Math.abs(currentTime - lastObservedTime) : 0
+    if (delta < 0.75) {
+      logBridge?.(
+        `Ignored startup seeked event at ${currentTime.toFixed(2)}s (delta=${delta.toFixed(2)}s, eventType=${eventType})`,
+        "DEBUG"
+      )
+      return
+    }
+  }
+
   const lastAt = lastTeleportAtByVideo.get(video) || 0
   if (now - lastAt < TELEPORT_DEBOUNCE_MS) return
   lastTeleportAtByVideo.set(video, now)
 
-  const currentTime = Number(video.currentTime)
-  if (!Number.isFinite(currentTime)) return
 
   const graceUntil = Number(ns.variantSwitchGraceUntil || 0)
   const retainedAnchor = ns.variantSwitchAnchorIndex
@@ -73,8 +91,9 @@ function broadcastForceTeleport(video, manifestMapper, eventType = "seeked") {
   })
 
   if (typeof targetedIndex === "number" && targetedIndex >= 0) {
+    const delta = Number.isFinite(lastObservedTime) ? Math.abs(currentTime - lastObservedTime) : 0
     logBridge?.(
-      `Native seeked at ${currentTime.toFixed(2)}s -> force teleport index ${targetedIndex}`,
+      `Native seeked at ${currentTime.toFixed(2)}s -> force teleport index ${targetedIndex} (delta=${delta.toFixed(2)}s, eventType=${eventType})`,
       "DEBUG"
     )
   }

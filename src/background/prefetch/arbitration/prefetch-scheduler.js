@@ -106,6 +106,11 @@ function schedulePrefetchCapRetry(tabId, tabState, segments, startIndex, source)
 ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startIndex = 0, options = {}) {
   if (!state.settings.enabled || !state.settings.prefetchEnabled) return
   if (typeof ns.isTabEligibleForPrefetch === "function" && !ns.isTabEligibleForPrefetch(tabId)) return
+  if (
+    typeof ns.isTabInTransitionWarmup === "function" &&
+    ns.isTabInTransitionWarmup(tabId) &&
+    !/quality-switch-warm|playlist-url-rotation|warm-recovery|next-episode|bridge-ready/i.test(String(options.source || ""))
+  ) return
   if (typeof ns.isTabInWarmRecoveryDeferPrefetch === "function" && ns.isTabInWarmRecoveryDeferPrefetch()) return
 
   const normalized = typeof ns.normalizeSegments === "function" ? ns.normalizeSegments(segments) : segments
@@ -132,11 +137,15 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   if (Number.isFinite(windowOverride) && windowOverride > 0) effectiveWindow = Math.max(effectiveWindow, Math.min(windowOverride, normalized.length))
   if (effectiveWindow === 0) { tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.updatedAt = now; return }
 
-  // Churn logging
-  if (tabState.highChurnMode === true && !ns.isTabInSeekChurnAggressive(tabState)) {
-    tabState.highChurnMode = false; addLog("INFO", `Seek churn normalized on tab ${tabId}; restoring prefetch window to ${state.settings.prefetchWindow}`)
-  } else if (ns.isTabInSeekChurnAggressive(tabState) && effectiveWindow >= state.settings.prefetchWindow) {
-    addLog("INFO", `Seek churn aggressive on tab ${tabId}; prefetch window ${effectiveWindow} (guard ring expanded)`)
+  // Churn logging — only log state transitions, not every schedule call
+  if (ns.isTabInSeekChurnAggressive(tabState)) {
+    if (tabState.highChurnMode !== true) {
+      tabState.highChurnMode = true
+      addLog("INFO", `Seek churn aggressive on tab ${tabId}; prefetch window ${effectiveWindow} (guard ring expanded)`)
+    }
+  } else if (tabState.highChurnMode === true) {
+    tabState.highChurnMode = false
+    addLog("INFO", `Seek churn normalized on tab ${tabId}; restoring prefetch window to ${state.settings.prefetchWindow}`)
   }
 
   let targets = normalized.slice(clampedStartIndex, clampedStartIndex + effectiveWindow)
@@ -166,7 +175,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
 
   ns.clearPrefetchCapRetry(tabState)
   const availableSlots = globalCap - globalInflight
-  const batchInflightCap = Math.max(1, Number(constants.BATCH_BACKFILL_MAX_INFLIGHT) || 6)
+  const batchInflightCap = Math.max(1, Number(constants.PREFETCH_BATCH_INFLIGHT_CAP) || 8)
   const batch = uncached.slice(0, Math.min(availableSlots, batchInflightCap))
 
   if (!batch.length) {
@@ -214,7 +223,12 @@ ns.maybeRequestPrefetchForTab = function maybeRequestPrefetchForTab(tabId, segme
   if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) { addLog("DEBUG", `Reactive media mode: forward prefetch disabled (${source}, tab ${tabId})`); return }
   const tabState = state.playlistByTab.get(tabId)
   if (ns.isPrefetchBlocked(tabState)) return
-  if (typeof ns.isTabInWarmRecoveryDeferPrefetch === "function" && ns.isTabInWarmRecoveryDeferPrefetch()) return
+  const transitionSource = /quality-switch-warm|bridge-ready|playlist-url-rotation|warm-recovery|next-episode/i.test(String(source || ""))
+  if (
+    !transitionSource &&
+    typeof ns.isTabInWarmRecoveryDeferPrefetch === "function" &&
+    ns.isTabInWarmRecoveryDeferPrefetch()
+  ) return
   if (source === "chunk-observed" && ns.segmentIndexHasActivePrefetch(tabId, tabState, startIndex)) return
   if (!options.force) {
     if (ns.isTabInRapidSeek(tabState) && !ns.isTabInSeekChurnAggressive(tabState)) return

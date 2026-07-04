@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { state, addLog } = ns
+const { constants, state, addLog } = ns
 
 ns.notifyPageBufferLoadPush = function notifyPageBufferLoadPush(tabId, payload = {}) {
   if (!Number.isFinite(tabId)) return
@@ -31,6 +31,18 @@ ns.buildPlaylistRotationSyncOptions = function buildPlaylistRotationSyncOptions(
   return rotatedAt > 0 ? { playlistRotatedAt: rotatedAt } : {}
 }
 
+function markTransitionWarmup(tabId, tabState, stateName, ttlMs, logReason) {
+  if (!Number.isFinite(tabId) || !tabState) return
+  if (typeof ns.setTransitionWarmup === "function") {
+    ns.setTransitionWarmup(tabId, stateName, ttlMs)
+  } else {
+    tabState.transitionWarmup = { stateName, expiresAt: Date.now() + Math.max(0, Number(ttlMs) || 0) }
+  }
+  if (logReason && typeof addLog === "function") {
+    addLog("DEBUG", `Transition warmup armed (${logReason}) on tab ${tabId} for ${stateName}`)
+  }
+}
+
 ns.syncKnownSegmentsToPage = function syncKnownSegmentsToPage(tabId, segments, options = {}) {
   if (!segments || !segments.length) return
   if (options.resetSeeking === true) {
@@ -43,6 +55,17 @@ ns.syncKnownSegmentsToPage = function syncKnownSegmentsToPage(tabId, segments, o
   const shouldForce = reasonText.startsWith("reinject:") || reasonText === "tab-activated" || reasonText === "tab-updated"
   if (tabState && !shouldForce && tabState.lastKnownSyncSignature === signature && now - Number(tabState.lastKnownSyncAt || 0) < 8000) return
   if (tabState) { tabState.lastKnownSyncSignature = signature; tabState.lastKnownSyncAt = now }
+
+  const transitionSource = /quality-switch-warm|playlist-url-rotation|warm-recovery|next-episode|bridge-ready/i.test(reasonText)
+  if (transitionSource) {
+    const ttlMs = Number(constants.TRANSITION_WARMUP_MS) || 12_000
+    markTransitionWarmup(tabId, tabState, reasonText, ttlMs, reasonText)
+    if (tabState) {
+      tabState.warmRecovery = true
+      tabState.warmRecoveryAppliedAt = now
+      tabState.playlistRecaptureRequired = false
+    }
+  }
 
   const playbackHint = tabState ? {
     segmentDurations: Array.isArray(tabState.segmentDurations) ? tabState.segmentDurations : null,

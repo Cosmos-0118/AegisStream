@@ -24,6 +24,7 @@ function createState() {
     failedPrefetches: new Map(),
     bridgeHeartbeatByTab: new Map(),
     umpLookupSeenAt: new Map(),
+    transitionWarmupByTab: new Map(),
     cachePolicy: createInitialCachePolicy(settings),
     telemetry: {
       firstByteAll: [],
@@ -61,6 +62,39 @@ function createState() {
     twitchSessionByTab: new Map(),
     speculativeAdaptiveMode: "full"
   }
+}
+
+function setTransitionWarmup(tabId, stateName, ttlMs) {
+  if (!Number.isFinite(tabId)) return
+  const expiresAt = Date.now() + Math.max(0, Number(ttlMs) || 0)
+  if (expiresAt <= Date.now()) {
+    state.transitionWarmupByTab.delete(tabId)
+    return
+  }
+  state.transitionWarmupByTab.set(tabId, { stateName, expiresAt })
+}
+
+function getTransitionWarmup(tabId) {
+  const entry = state.transitionWarmupByTab.get(tabId)
+  if (!entry) return null
+  if (Date.now() > Number(entry.expiresAt || 0)) {
+    state.transitionWarmupByTab.delete(tabId)
+    return null
+  }
+  return entry
+}
+
+function clearTransitionWarmup(tabId) {
+  if (!Number.isFinite(tabId)) return
+  state.transitionWarmupByTab.delete(tabId)
+}
+
+function isTabInTransitionWarmup(tabId) {
+  return Boolean(getTransitionWarmup(tabId))
+}
+
+function getTransitionWarmupState(tabId) {
+  return getTransitionWarmup(tabId)?.stateName || null
 }
 
 const state = createState()
@@ -301,4 +335,9 @@ ns.loadWarmRecoverySnapshot = loadWarmRecoverySnapshot
 ns.applyWarmRecoverySnapshot = applyWarmRecoverySnapshot
 ns.isTabInWarmRecoveryRungConfirm = isTabInWarmRecoveryRungConfirm
 ns.isTabInWarmRecoveryDeferPrefetch = isTabInWarmRecoveryDeferPrefetch
+ns.setTransitionWarmup = setTransitionWarmup
+ns.getTransitionWarmup = getTransitionWarmup
+ns.clearTransitionWarmup = clearTransitionWarmup
+ns.isTabInTransitionWarmup = isTabInTransitionWarmup
+ns.getTransitionWarmupState = getTransitionWarmupState
 })()

@@ -80,7 +80,12 @@ ns.constants = {
   CACHE_EVICTION_LANE3_MIN_RATIO: 0.7,
   CACHE_EVICTION_SCRUB_DEFER_MS: 5_000,
   CACHE_EVICTION_LANE3_INTERVAL_MS: 45_000,
+  CACHE_DUPLICATION_TTL_MS: 60 * 60 * 1000,
   CACHE_DUPLICATE_WRITE_WINDOW_MS: 20_000,
+  CACHE_PASSTHROUGH_RECOVERY_MS: 60_000,
+  CACHE_ALIAS_RECONCILE_MAX_DELETE: 200,
+  CACHE_TTL_SWEEP_MIN_AGE_MS: 60 * 60 * 1000,
+  CACHE_TTL_SWEEP_MAX_DELETE: 250,
   /** How long evicted chunk keys stay in the evict-then-miss journal. */
   CACHE_EVICTION_JOURNAL_TTL_MS: 10 * 60 * 1000,
   CACHE_EVICTION_JOURNAL_MAX_ENTRIES: 800,
@@ -127,10 +132,13 @@ ns.constants = {
   DOM_TELEPORT_MIN_JUMP: 2,
   /** Trailing path fingerprint length for obfuscated CDN segment blobs (page vs prefetch URL alignment). */
   MEDIA_CACHE_INVARIANT_TAIL_LEN: 56,
-  CACHE_REGISTRY_MAX_KEYS: 800,
+  CACHE_REGISTRY_MAX_KEYS: 1_600,
   CACHE_REGISTRY_SYNC_DEBOUNCE_MS: 150,
+  CACHE_REGISTRY_FRESH_MS: 30_000,
   /** Debounce rapid teleport anchor shifts before tearing down prefetch windows. */
   TELEPORT_DEBOUNCE_MS: 150,
+  /** Duration to suppress non-transition prefetch after episode switch / playlist rotation. */
+  TRANSITION_WARMUP_MS: 12_000,
   /** Background cache lookup waits for in-flight prefetch to land in IDB. */
   CACHE_LOOKUP_COLLAPSE_WAIT_MS: 8_000,
   /** Lookup may await an in-flight page→background chunk store for the same key. */
