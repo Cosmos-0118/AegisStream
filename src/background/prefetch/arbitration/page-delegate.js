@@ -4,12 +4,14 @@ const { constants, state, addLog } = ns
 
 ns.notifyPageBufferLoadPush = function notifyPageBufferLoadPush(tabId, payload = {}) {
   if (!Number.isFinite(tabId)) return
-  chrome.tabs.sendMessage(tabId, {
-    type: "AegisStream:BufferLoadPush",
-    tier: payload.tier || null,
-    runwaySec: Number(payload.runwaySec),
-    healthScore: Number(payload.healthScore)
-  }).catch(() => {})
+  if (typeof payload.runwaySec === "number" && payload.runwaySec > 0) {
+    chrome.tabs.sendMessage(tabId, {
+      type: "AegisStream:BufferLoadPush",
+      tier: payload.tier || null,
+      runwaySec: Number(payload.runwaySec),
+      healthScore: Number(payload.healthScore)
+    }).catch(() => {})
+  }
 }
 
 ns.notifyPageSeekingStateReset = function notifyPageSeekingStateReset(tabId, options = {}) {

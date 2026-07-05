@@ -234,7 +234,9 @@ function shouldAggressivelyPrefetchForRequest(url, requestHeaders) {
   if (!url) return false
   const rangeHeader = String(requestHeaders?.get?.("range") || "")
   const sourceHint = String(requestHeaders?.get?.("x-aegis-source") || "").toLowerCase()
-  return Boolean(rangeHeader || sourceHint.includes("player") || sourceHint.includes("buffer"))
+  // Only escalate when the request is already playback-critical. Broad player
+  // hints can over-trigger and compete with the media element on weaker devices.
+  return Boolean(rangeHeader || sourceHint.includes("buffer"))
 }
 
 function maybeResetCacheForNewVideo(url) {
@@ -488,7 +490,8 @@ async function aegisFetchInner(input, init) {
       ns.requestPrefetchBoost({
         url: cacheLookupUrl,
         method: cacheLookupMethod,
-        reason: requestHasRange ? "player-range" : "player-buffer"
+        reason: requestHasRange ? "player-range" : "player-buffer",
+        urgent: requestHasRange === true
       })
     } catch {
       // ignore boost failures

@@ -42,8 +42,15 @@ ns.requestPrefetchBoost = function requestPrefetchBoost(boost = {}) {
     )
   )
 
+  const lastBoostAt = Number(tabState.lastPrefetchBoostAt || 0)
+  const lastBoostWindow = Number(tabState.lastPrefetchBoostWindow || 0)
+  if (lastBoostAt > 0 && now - lastBoostAt < 900 && widened <= lastBoostWindow) {
+    return false
+  }
+
   tabState.adaptivePrefetchBoost = Math.min(12, Number(tabState.adaptivePrefetchBoost || 0) + (emergency ? 4 : 2))
   tabState.lastPrefetchBoostAt = now
+  tabState.lastPrefetchBoostWindow = widened
   tabState.lastPrefetchBoostReason = String(boost.reason || "boost")
   tabState.prefetchWindowBoostUntil = now + (emergency ? 8_000 : 4_000)
 
@@ -56,7 +63,9 @@ ns.requestPrefetchBoost = function requestPrefetchBoost(boost = {}) {
       prefetchWindowOverride: widened
     })
   }
-  addLog("INFO", `Prefetch boost on tab ${tabId} (runway=${runwaySec || 0}s, window=${widened}, reason=${tabState.lastPrefetchBoostReason})`)
+  setTimeout(() => {
+    addLog("INFO", `Prefetch boost on tab ${tabId} (runway=${runwaySec || 0}s, window=${widened}, reason=${tabState.lastPrefetchBoostReason})`)
+  }, 0)
   return true
 }
 
