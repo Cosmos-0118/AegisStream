@@ -80,6 +80,7 @@
         "src/page/main.js"
       ],
       "run_at": "document_start",
+      "all_frames": true,
       "world": "MAIN"
     },
     {
@@ -92,6 +93,7 @@
         "src/content/asset-tracker.js"
       ],
       "run_at": "document_start",
+      "all_frames": true,
       "world": "ISOLATED"
     }
   ],

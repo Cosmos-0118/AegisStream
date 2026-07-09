@@ -66,16 +66,46 @@
   function isMediaHost(hostname) {
     const host = normalizeHost(hostname)
     if (!host) return false
-    return isTwitchPageHost(host)
+    // Twitch is handled via isReactivePrefetchSite (never intercept).
+    // Generic anime/HLS hosts arm from playback-context heuristics instead.
+    return false
+  }
+
+  /**
+   * Watch pages and player embeds need fetch/XHR hooks before the first m3u8
+   * lands — otherwise PLAYLIST_CONTENT never reaches the service worker.
+   * Cross-origin iframe players are the common case for anime sites.
+   */
+  function isLikelyPlaybackContext() {
+    try {
+      if (typeof window !== "undefined" && window.top !== window) return true
+    } catch {
+      // Cross-origin parent access throws — still an embedded frame.
+      return true
+    }
+    try {
+      const path = String(location.pathname || "")
+      if (
+        /\/(watch|embed|player|episode|video|stream|play|anime|manga)\b/i.test(path) ||
+        /\/ep[-_/]?\d+/i.test(path) ||
+        /\/(hls|m3u8|manifest)\b/i.test(path)
+      ) {
+        return true
+      }
+    } catch {
+      // ignore
+    }
+    return false
   }
 
   /**
    * Generic browse pages (new tab, search home, etc.) defer the media bridge
    * until a video element appears or the background sends segment/cache work.
+   * Watch/embed contexts arm immediately so playlist capture can run.
    */
   function shouldRunMediaBridge() {
     if (isReactivePrefetchSite()) return false
-    return isMediaHost(location.hostname)
+    return isMediaHost(location.hostname) || isLikelyPlaybackContext()
   }
 
   globalThis.AegisSitePolicy = {
@@ -86,6 +116,7 @@
     shouldPassthroughTwitchApi,
     isSmootherSkippedHost,
     isMediaHost,
+    isLikelyPlaybackContext,
     shouldRunMediaBridge
   }
 })()

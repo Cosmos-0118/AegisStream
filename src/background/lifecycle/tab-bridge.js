@@ -46,13 +46,14 @@ async function pingTabBridge(tabId) {
 }
 
 async function injectTabBridgeScripts(tabId, tabUrl) {
+  // Match manifest content_scripts: player iframes own the HLS fetch/XHR path.
   await chrome.scripting.executeScript({
-    target: { tabId, allFrames: false },
+    target: { tabId, allFrames: true },
     files: ns.ISOLATED_CONTENT_FILES,
     world: "ISOLATED"
   })
   await chrome.scripting.executeScript({
-    target: { tabId, allFrames: false },
+    target: { tabId, allFrames: true },
     files: ns.MAIN_PAGE_SCRIPT_FILES,
     world: "MAIN"
   })
