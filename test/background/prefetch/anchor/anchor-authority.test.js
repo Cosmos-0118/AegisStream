@@ -122,6 +122,22 @@ assert(decision.allow === false, "DOM index 0 blocked during seek churn when anc
 assert(decision.reason === "dom-stale-zero", "dom stale zero during churn")
 assert(decision.purgeQueues === false, "stale DOM zero must not purge queues")
 
+const staleDomEarlyWindow = {
+  hasAnchor: true,
+  anchorIndex: 8,
+  predictedAnchorIndex: 9,
+  predictedAnchorAt: Date.now(),
+  lastPlayerObservedIndex: 9,
+  lastPlayerObservedAt: Date.now(),
+  lastDomTeleportAt: 0
+}
+decision = evaluateAuthorityCommit(staleDomEarlyWindow, 0, AnchorAuthority.DOM_SEEKED)
+assert(
+  decision.allow === false,
+  "DOM index 0 blocked when consensus is far ahead even in early scrub window"
+)
+assert(decision.reason === "dom-stale-zero", "early-window stale DOM zero reason")
+
 const backwardDomAllow = {
   hasAnchor: true,
   anchorIndex: 39,

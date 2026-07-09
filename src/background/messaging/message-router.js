@@ -411,17 +411,13 @@ function buildCacheLookupCandidates(lookupUrl, tabState, manifestIndex) {
   push(lookupUrl)
   for (const key of buildCacheKeyVariants(lookupUrl)) push(key)
 
+  // Only alternate URLs for the SAME manifest index are valid candidates
+  // (prior signed URLs from segmentUrlHistory). Neighboring segments must never
+  // be candidates: serving segment N±1's bytes for segment N corrupts playback,
+  // and the follow-up alias bridge would persist that wrong mapping.
   const history = tabState?.segmentUrlHistory?.get(manifestIndex)
   if (Array.isArray(history)) {
     for (const altUrl of history) push(altUrl)
-  }
-
-  const segments = tabState?.segments
-  if (Array.isArray(segments) && Number.isFinite(manifestIndex)) {
-    for (let offset = 1; offset <= 2; offset += 1) {
-      push(segments[manifestIndex - offset])
-      push(segments[manifestIndex + offset])
-    }
   }
   return candidates
 }
@@ -1084,14 +1080,25 @@ function registerMessageRouter() {
             !blocked &&
             typeof ns.tabNeedsPlaylistRecovery === "function" &&
             ns.tabNeedsPlaylistRecovery(tabState, { forceAfterIdle: true })
-          if (needsRecovery && typeof ns.ensureTabPlaylistRecovery === "function") {
-            if (!shouldSkipRecoveryRetry(tabState, `bridge-ready:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`)) {
-              void ns.ensureTabPlaylistRecovery(tabId, message.reason || "bridge-ready", {
-                force: true,
-                preferRecapture: true,
-                attemptKey: `bridge-ready:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`
-              })
-            }
+          const recaptureNeeded =
+            tabState.playlistRecaptureRequired &&
+            tabState.playlistCaptureState !== (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked")
+          if (needsRecovery || recaptureNeeded) {
+            const recoveryTarget = tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"
+            const bridgeRecoveryKey = `bridge-recovery:${recoveryTarget}`
+            const recoveryReason = needsRecovery
+              ? message.reason || "bridge-ready"
+              : "bridge-ready-recapture"
+            scheduleTabRecovery(tabId, recoveryReason, {
+              attemptKey: bridgeRecoveryKey,
+              // Keep force=false so ensureTabPlaylistRecovery respects its own
+              // debounce and doesn't thrash recapture on repeated BridgeReady
+              // bursts (startup/pageshow/reinject fanout).
+              force: false,
+              preferRecapture: true,
+              clearBridge: false,
+              clearVisibility: false
+            })
           } else if (tabState.segments?.length) {
             syncKnownSegmentsToPage(tabId, tabState.segments, { reason: message.reason || "bridge-ready" })
             if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
@@ -1107,19 +1114,6 @@ function registerMessageRouter() {
                 : tabState.anchorIndex + 1
               maybeRequestPrefetchForTab(tabId, tabState.segments, start, recovery ? reason : "bridge-ready", {
                 force: recovery
-              })
-            }
-          }
-          if (
-            tabState.playlistRecaptureRequired &&
-            tabState.playlistCaptureState !== (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked") &&
-            typeof ns.ensureTabPlaylistRecovery === "function"
-          ) {
-            if (!shouldSkipRecoveryRetry(tabState, `bridge-recapture:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`)) {
-              void ns.ensureTabPlaylistRecovery(tabId, "bridge-ready-recapture", {
-                force: true,
-                preferRecapture: true,
-                attemptKey: `bridge-recapture:${tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || "unknown"}`
               })
             }
           }
@@ -1422,12 +1416,14 @@ function registerMessageRouter() {
           if (message.hidden !== true) {
             tabState.warmRecovery = true
             tabState.playlistRecaptureRequired = true
-            if (typeof ns.ensureTabPlaylistRecovery === "function") {
-              void ns.ensureTabPlaylistRecovery(tabId, "tab-visible", {
-                force: true,
-                preferRecapture: true
-              })
-            }
+            const recoveryTarget = tabState.mediaPlaylistUrl || tabState.lastMediaPlaylistUrl || `tab:${tabId}`
+            scheduleTabRecovery(tabId, "tab-visible", {
+              attemptKey: `tab-visible:${recoveryTarget}`,
+              force: false,
+              preferRecapture: true,
+              clearBridge: false,
+              clearVisibility: false
+            })
           }
         }
         if (message.hidden === true) {

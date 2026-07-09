@@ -22,6 +22,16 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+const establishing = determinePlaybackTransition(null, {
+  structuralHash: "seed",
+  urlsChanged: true,
+  episodeChanged: false
+})
+assert(
+  establishing.state === PlaybackStates.SESSION_ESTABLISHING,
+  "missing previous state establishes a new session"
+)
+
 const previous = {
   segments: ["a"],
   structuralHash: "abc",
@@ -83,5 +93,42 @@ assert(
 )
 assert(geometryStable.clearPrefetch === false, "geometry-stable refresh keeps prefetch")
 assert(geometryStable.qualitySwitch === false, "geometry-stable refresh is not quality switch")
+
+const volatileSessionKeyRefresh = determinePlaybackTransition(
+  { ...previous, sessionKey: "stable-session-key" },
+  {
+    structuralHash: "abc",
+    activeRungLabel: "720p",
+    mediaPlaylistPath: "/v1/stream.m3u8",
+    timelineGeometryUnchanged: true,
+    urlsChanged: true,
+    episodeChanged: false,
+    sessionKey: "volatile-rotation-key"
+  }
+)
+assert(
+  volatileSessionKeyRefresh.state === PlaybackStates.TOKEN_REFRESHING,
+  "session key drift during URL rotation should not force episode switch"
+)
+assert(
+  volatileSessionKeyRefresh.clearPrefetch === false,
+  "session key drift during token refresh keeps prefetch"
+)
+
+const explicitSessionBoundary = determinePlaybackTransition(
+  { ...previous, sessionKey: "episode-a" },
+  {
+    structuralHash: "abc",
+    activeRungLabel: "720p",
+    mediaPlaylistPath: "/v1/stream.m3u8",
+    urlsChanged: false,
+    episodeChanged: false,
+    sessionKey: "episode-b"
+  }
+)
+assert(
+  explicitSessionBoundary.state === PlaybackStates.EPISODE_SWITCHED,
+  "explicit session boundary without URL mutation is treated as episode switch"
+)
 
 console.log("playback-state-machine.test.js: all passed")

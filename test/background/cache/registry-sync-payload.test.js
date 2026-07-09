@@ -118,19 +118,16 @@ sandbox.chrome.tabs.sendMessage = async (_tabId, msg) => {
     "unregister sync stays additive — destructive removals travel via removedKeys delta or authoritative rebuild"
   )
 
-  // 4. clearCacheRegistry triggers a routine-sync as well (page-side ignores
-  //    the empty keys list because additive merge can't remove anything — the
-  //    page learns about destruction only on an authoritative rebuild).
+  // 4. clearCacheRegistry is an authoritative purge — the page must drop its
+  //    local view immediately rather than waiting for a later db-rebuild.
   sentPayloads.length = 0
   ns.state.cacheRegistryKeys.add("aegis|seg-9")
-  ns.clearCacheRegistry()
-  await sandbox.__drainTimers()
+  await ns.clearCacheRegistry()
   const clearSync = sentPayloads.shift()
   assert(clearSync, "clear triggers a sync")
-  assert(
-    clearSync.replace === false,
-    "clear -> routine-sync (additive); destructive intent must travel via authoritative-rebuild (db-rebuild)"
-  )
+  assert(clearSync.replace === true, "clear uses authoritative replace")
+  assert(clearSync.reason === "manual-purge", "clear reason is manual-purge")
+  assert(Array.isArray(clearSync.keys) && clearSync.keys.length === 0, "clear payload is empty")
 
   console.log("registry-sync-payload.test.js: all assertions passed")
 })().catch((err) => {

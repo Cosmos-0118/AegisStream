@@ -54,9 +54,15 @@
       try {
         parsed = new URL(normalized)
       } catch {
-        const base =
-          typeof location !== "undefined" && location.href ? location.href : "https://localhost/"
-        parsed = new URL(normalized, base)
+        // Bare host/path keys must not inherit the page origin as hostname.
+        const hostPathMatch = normalized.match(/^([a-z0-9.-]+\.[a-z]{2,})(\/[^?#]*)/i)
+        if (hostPathMatch) {
+          parsed = new URL(`https://${hostPathMatch[1]}${hostPathMatch[2]}`)
+        } else {
+          const base =
+            typeof location !== "undefined" && location.href ? location.href : "https://localhost/"
+          parsed = new URL(normalized, base)
+        }
       }
       const host = parsed.hostname.toLowerCase()
       const segments = parsed.pathname.split("/").filter(Boolean)

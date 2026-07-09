@@ -134,13 +134,20 @@
     const normalizeIncomingKey = (key) => {
       if (typeof key !== "string" || !key) return null
       if (isCanonicalCoalesceKey(key)) return key
-      if (typeof ns.buildMediaInvariantKey === "function") {
-        const invariant = ns.buildMediaInvariantKey(key)
-        if (invariant) return invariant
-      }
+      // Prefer structural host/path coalesce keys first. Applying
+      // buildMediaInvariantKey to bare "host/path/seg.ts" keys resolves them
+      // against the page origin and rewrites the host — breaking lookups.
       if (structuralCoalesceKeyResolver) {
         const structural = structuralCoalesceKeyResolver(key)
         if (structural) return structural
+      }
+      if (typeof ns.resolveNetworkCoalesceKey === "function") {
+        const coalesce = ns.resolveNetworkCoalesceKey(key, null)
+        if (coalesce) return coalesce
+      }
+      if (typeof ns.buildMediaInvariantKey === "function" && /^https?:\/\//i.test(key)) {
+        const invariant = ns.buildMediaInvariantKey(key)
+        if (invariant) return invariant
       }
       return resolveRegistryKey(key)
     }
@@ -331,27 +338,10 @@
    *   0.2  fresh registry positively says absent
    */
   function resolveCacheConfidence(url) {
-    if (isCachedKey(url)) return 0.95
-    if (isInflightKey(url)) return 0.9
+    if (isCachedKey(url)) return 0.9
+    if (isInflightKey(url)) return 0.8
 
     const now = Date.now()
-    const urlLike = typeof url === "string" && /^https?:\/\//i.test(url)
-    const mediaLike =
-      urlLike && /\/(?:[^/?#]+\.(?:ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4|cmfv|cmfa|cmft))($|[/?#])/i.test(url)
-    const structuralCoalesceKey = mediaLike ? resolveCanonicalCoalesceKey(url) : null
-    const structuralMediaKey =
-      mediaLike && typeof ns.buildMediaInvariantKey === "function"
-        ? ns.buildMediaInvariantKey(url)
-        : null
-    const hasStructuralIdentity = Boolean(structuralCoalesceKey || structuralMediaKey)
-
-    if (hasStructuralIdentity) {
-      const recentlySynced = lastRegistrySyncAt > 0 && now - lastRegistrySyncAt <= REGISTRY_FRESH_MS
-      if (recentlySynced) return 0.72
-      if (now < registryFalseNegativeUntil) return 0.62
-      return 0.68
-    }
-
     if (typeof url === "string") {
       const swiftTransport = /\/EV9fQAQQ/i.test(url)
       const swiftSegmentTail = /ChkAT0wHWFUL/i.test(url)
@@ -364,7 +354,8 @@
     }
 
     if (now < registryFalseNegativeUntil) return 0.5
-    if (!lastRegistrySyncAt) return 0.2
+    if (!lastRegistrySyncAt) return 0.5
+    if (now - lastRegistrySyncAt > REGISTRY_FRESH_MS) return 0.5
     return 0.2
   }
 

@@ -11,6 +11,7 @@ const constantsPath = path.join(__dirname, "../../../src/background/config/const
 const dbPath = path.join(__dirname, "../../../src/background/cache/db.js")
 
 const logs = []
+const pendingTimers = []
 const sandbox = {
   self: {
     AegisBackground: {
@@ -35,6 +36,8 @@ const sandbox = {
         error: { name: "UnknownError", message: "corrupt database" },
         result: null
       }
+      // Queue the open failure as a timer so the test can control ordering
+      // relative to the recovery cooldown timer.
       setTimeout(() => {
         if (typeof req.onerror === "function") req.onerror()
       }, 0)
@@ -42,11 +45,15 @@ const sandbox = {
     }
   }
 }
-sandbox.setTimeout = (fn) => {
-  fn()
-  return 0
+sandbox.setTimeout = (fn, delay = 0) => {
+  const id = pendingTimers.length + 1
+  pendingTimers.push({ id, fn, delay: Number(delay) || 0, cancelled: false })
+  return id
 }
-sandbox.clearTimeout = () => {}
+sandbox.clearTimeout = (id) => {
+  const timer = pendingTimers.find((entry) => entry.id === id)
+  if (timer) timer.cancelled = true
+}
 sandbox.globalThis = sandbox
 const ctx = vm.createContext(sandbox)
 vm.runInContext(fs.readFileSync(constantsPath, "utf8"), ctx)
@@ -59,9 +66,29 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+async function drainTimersWithDelay(maxDelayMs) {
+  // Fire only timers whose delay is within the window (open-failed = 0),
+  // leaving the long recovery cooldown queued and unfired.
+  const due = pendingTimers.filter(
+    (entry) => !entry.cancelled && entry.delay <= maxDelayMs && typeof entry.fn === "function"
+  )
+  for (const entry of due) {
+    entry.cancelled = true
+    await entry.fn()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+}
+
 ;(async () => {
   assert(isStorageSystemOperational() === true, "storage starts operational")
-  const blocked = await safeCacheChunk("https://cdn.example.com/a.ts", "video/mp2t", new ArrayBuffer(8))
+  const blockedPromise = safeCacheChunk(
+    "https://cdn.example.com/a.ts",
+    "video/mp2t",
+    new ArrayBuffer(8)
+  )
+  await drainTimersWithDelay(0)
+  const blocked = await blockedPromise
   assert(blocked.ok === false, "open failure returns not ok")
   assert(blocked.bypass === true, "open failure engages bypass")
   assert(isStorageSystemOperational() === false, "storage bypass latched")

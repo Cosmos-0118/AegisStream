@@ -56,6 +56,22 @@
       try {
         parsed = new URL(rawUrl)
       } catch {
+        // Bare host/path coalesce keys (no scheme) must keep their own host.
+        // Resolving against the page origin rewrites e.g.
+        // "cdn.example.com/live/seg.ts" → "page.host/cdn.example.com/live/seg.ts".
+        const hostPathMatch = rawUrl.match(
+          /^([a-z0-9.-]+\.[a-z]{2,})(\/[^?#]*)(?:\?([^#]*))?(?:#.*)?$/i
+        )
+        if (hostPathMatch) {
+          const hostname = hostPathMatch[1].toLowerCase()
+          const pathname = hostPathMatch[2]
+          if (!pathname || pathname === "/" || !MEDIA_SEGMENT_PATH_RE.test(pathname)) {
+            return null
+          }
+          const hostnamePath = `${hostname}${pathname}`.toLowerCase()
+          const params = new URLSearchParams(hostPathMatch[3] || "")
+          return appendWhitelistedStreamSelector(hostnamePath, params).toLowerCase()
+        }
         const base =
           typeof location !== "undefined" && location.href ? location.href : "https://localhost/"
         parsed = new URL(rawUrl, base)

@@ -49,15 +49,16 @@ assert(
 )
 
 const structuralOnly = "https://media.example.com/catalog/seg-88.ts?token=rotate"
-const structuralBeforeSync = ns.isLikelyCacheHitCandidate(structuralOnly)
-ns.applyCacheRegistrySync({ keys: [structuralOnly], replace: true, reason: "routine-sync" })
+// Registry was already freshly synced above without this key — trust decay
+// treats that as a positive absence (no speculative lookup).
 assert(
-  structuralBeforeSync === true,
-  "structural media keys should be strong candidates even before explicit sync"
+  ns.isLikelyCacheHitCandidate(structuralOnly) === false,
+  "fresh registry absence short-circuits unknown structural keys"
 )
+ns.applyCacheRegistrySync({ keys: [structuralOnly], replace: false, reason: "routine-sync" })
 assert(
   ns.isLikelyCacheHitCandidate(structuralOnly) === true,
-  "structural media keys should remain strong candidates after sync"
+  "structural media keys become candidates after they are synced in"
 )
 
 const intentUrl = "https://cdn.example.com/live/seg-intent.txt"
@@ -85,10 +86,10 @@ assert(
 const signedTokenA = "https://media.example.com/hls/720p/segment-77.ts?token=alpha&expires=1"
 const signedTokenB = "https://media.example.com/hls/720p/segment-77.ts?token=beta&expires=2"
 assert(
-  ns.isLikelyCacheHitCandidate(signedTokenA) === true,
-  "fresh signed URL should now be a hit candidate before sync"
+  ns.isLikelyCacheHitCandidate(signedTokenA) === false,
+  "unsigned-to-registry signed URL stays absent until synced or intent-noted"
 )
-ns.applyCacheRegistrySync({ keys: [signedTokenA], replace: true, reason: "routine-sync" })
+ns.applyCacheRegistrySync({ keys: [signedTokenA], replace: false, reason: "routine-sync" })
 assert(
   ns.isLikelyCacheHitCandidate(signedTokenB) === true,
   "signed URL variants should be lookup candidates after a matching sync"

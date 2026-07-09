@@ -60,14 +60,15 @@ function unregisterCacheKeys(cacheKeys) {
 }
 
 function clearCacheRegistry() {
-  if (state.cacheRegistryKeys.size === 0) return
+  if (state.cacheRegistryKeys.size === 0) return Promise.resolve()
   state.cacheRegistryKeys.clear()
   state.cacheRegistryGeneration += 1
   if (registrySyncTimer) {
     clearTimeout(registrySyncTimer)
     registrySyncTimer = null
   }
-  void flushCacheRegistrySync("manual-purge")
+  // Authoritative: page must drop its local view when background clears.
+  return flushCacheRegistrySync("manual-purge")
 }
 
 /**

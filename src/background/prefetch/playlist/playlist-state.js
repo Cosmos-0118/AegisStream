@@ -82,6 +82,9 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
   const episodeChangedByFingerprint = pageNavigationNewPlayback || (urlsChanged && !structureChanged && contentChangedByFingerprint) || (samePlaylistUrl && (segmentCountChanged || (previous?.segments?.length && normalizedSegments.length && normalizedSegments[0] !== previous.segments[0])))
   const rapidPlaylistRecapture = Number(previous?.playlistRefreshedAt || 0) > 0 && Date.now() - Number(previous.playlistRefreshedAt) < 1_500 && !segmentCountChanged && urlsChanged && pageUnchanged
   const isRoutinePlaylistRefresh = rapidPlaylistRecapture || (urlsChanged && !segmentCountChanged && !episodeChangedByFingerprint && pageUnchanged && (timelineGeometryUnchanged || (!contentChangedByFingerprint && !structureChanged)))
+  const transitionSessionKey = episodeChangedByFingerprint
+    ? playlistFingerprint
+    : previous?.sessionKey || playlistFingerprint
 
   const structuralHash = ns.buildStructuralPlaylistHash({ segmentDurations: meta.segmentDurations ?? previous?.segmentDurations, segments: normalizedSegments, discontinuityMarkers: meta.discontinuityMarkers ?? previous?.discontinuityMarkers ?? null, isLive: meta.isLive === true || previous?.isLive === true, segmentCount: normalizedSegments.length })
 
@@ -90,10 +93,10 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
   let fsmRungLabel = incomingRungLabel || meta.activeRungLabel || previous?.activeRungLabel || null
   if (incomingRungLabel && previous?.activeRungLabel && incomingRungLabel !== previous.activeRungLabel && typeof ns.shouldSkipSpeculativeDowngradeRung === "function" && ns.shouldSkipSpeculativeDowngradeRung(previous, matrixForRung, previous.activeRungLabel, incomingRungLabel)) fsmRungLabel = previous.activeRungLabel
 
-  const playbackTransition = ns.determinePlaybackTransition(previous, { structuralHash: timelineGeometryUnchanged ? previous?.structuralHash || structuralHash : structuralHash, activeRungLabel: fsmRungLabel, mediaPlaylistPath, episodeChanged: episodeChangedByFingerprint, urlsChanged, timelineGeometryUnchanged, sessionKey: playlistFingerprint, pageUrl: pageUrlForFingerprint, pageTitle: meta.pageTitle || null, episodeTitle: meta.episodeTitle || null, mediaSequence: meta.mediaSequence, segments: normalizedSegments })
+  const playbackTransition = ns.determinePlaybackTransition(previous, { structuralHash: timelineGeometryUnchanged ? previous?.structuralHash || structuralHash : structuralHash, activeRungLabel: fsmRungLabel, mediaPlaylistPath, episodeChanged: episodeChangedByFingerprint, urlsChanged, timelineGeometryUnchanged, sessionKey: transitionSessionKey, pageUrl: pageUrlForFingerprint, pageTitle: meta.pageTitle || null, episodeTitle: meta.episodeTitle || null, mediaSequence: meta.mediaSequence, segments: normalizedSegments })
   const sessionAnchorIndex = typeof previous?.anchorIndex === "number" ? previous.anchorIndex : null
   const session = typeof ns.updateTabSession === "function" ? ns.updateTabSession(tabId, {
-    id: playbackTransition.sessionKey || playlistFingerprint,
+    id: playbackTransition.sessionKey || transitionSessionKey,
     state: playbackTransition.state,
     anchorIndex: sessionAnchorIndex,
     bufferWindowStart: sessionAnchorIndex ?? 0,
@@ -145,6 +148,13 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
       ns.releaseInflightForTab(tabId, { notifyPage: false, reason: "episode-changed" })
     } else { nextNetworkGeneration = 1; nextPrefetchRegistry = new Set() }
     logEpisodeSwitchPlaylistDiagnostic(tabId, previous, meta, mediaPlaylistPath)
+    // Heal any stale/poisoned aliases: the new episode's segment URLs must not
+    // resolve to bytes bridged from previous content.
+    if (typeof ns.purgeSegmentAliasMappings === "function") {
+      void ns.purgeSegmentAliasMappings(normalizedSegments)
+        .then((purged) => { if (purged > 0) addLog("INFO", `Purged ${purged} stale cache aliases for new episode segments (tab ${tabId})`) })
+        .catch(() => {})
+    }
     if (typeof ns.recordEpisodeTransitionSwitch === "function") ns.recordEpisodeTransitionSwitch(tabId)
     addLog("INFO", `New playback detected via ${pageNavigationNewPlayback ? "page navigation" : fingerprintReason || "unknown"} (score=${fingerprintScore}/${fingerprintAssessment.threshold}, tab ${tabId}) — not treating as signed-URL refresh`)
     if (typeof ns.bumpActivity === "function") ns.bumpActivity("playlistFingerprintNewPlayback", 1)
@@ -296,7 +306,7 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
     velocityPredictedAt: episodeChangedByFingerprint ? 0 : Number(previous?.velocityPredictedAt || 0),
     anchorReconcileDivergenceSince: episodeChangedByFingerprint ? 0 : Number(previous?.anchorReconcileDivergenceSince || 0),
     anchorReconcileLastPromoteAt: episodeChangedByFingerprint ? 0 : Number(previous?.anchorReconcileLastPromoteAt || 0),
-    playbackState, playbackSession: session || previous?.playbackSession || null, sessionKey: playbackTransition.sessionKey || playlistFingerprint, mediaPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
+    playbackState, playbackSession: session || previous?.playbackSession || null, sessionKey: playbackTransition.sessionKey || transitionSessionKey, mediaPlaylistPath: mediaPlaylistPath || previous?.mediaPlaylistPath || null,
     fingerprintReason: fingerprintReason || null, fingerprintScore, fingerprintThreshold: fingerprintAssessment.threshold,
     playlistClassification: playbackState === ns.PlaybackStates?.NEW_PLAYBACK ? "new-playback" : playbackState === ns.PlaybackStates?.QUALITY_SWITCHING ? "quality-switch" : playbackState === ns.PlaybackStates?.TOKEN_REFRESHING ? "token-refresh" : playbackState === ns.PlaybackStates?.STABLE_PLAYBACK && urlsChanged ? "stable-refresh" : tokensRefreshed ? "token-refresh" : urlsChanged ? "urls-changed" : "unchanged",
     recentAnchorChanges: qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint ? [] : previous?.recentAnchorChanges || [],
@@ -350,8 +360,19 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
 
   state.playlistByTab.set(tabId, tabState)
 
-  // Bridge rotation aliases
-  if (urlsChanged && Array.isArray(previous?.segments) && previous.segments.length > 0 && typeof ns.bridgePlaylistSegmentUrlAliases === "function") {
+  // Bridge rotation aliases — ONLY for same-content URL rotations (token refresh,
+  // routine refresh, or an alignment-verified live roll). Bridging across episode,
+  // page-navigation, or quality-variant boundaries would alias the new playlist's
+  // segment URLs onto the previous content's cached bytes and corrupt playback.
+  const sameContentRotation =
+    urlsChanged &&
+    !episodeChangedByFingerprint &&
+    !pageNavigationNewPlayback &&
+    playbackTransition.qualitySwitch !== true &&
+    playbackTransition.state !== ns.PlaybackStates?.EPISODE_SWITCHED &&
+    playbackTransition.state !== ns.PlaybackStates?.NEW_PLAYBACK &&
+    (tokensRefreshed || isRoutinePlaylistRefresh || timelineGeometryUnchanged || sequenceOffset !== 0)
+  if (sameContentRotation && Array.isArray(previous?.segments) && previous.segments.length > 0 && typeof ns.bridgePlaylistSegmentUrlAliases === "function") {
     const bridgeAnchor = typeof tabState.anchorIndex === "number" ? tabState.anchorIndex : typeof previous?.anchorIndex === "number" ? previous.anchorIndex : 0
     let oldSegmentsToBridge = previous.segments, newSegmentsToBridge = normalizedSegments
     if (sequenceOffset > 0) oldSegmentsToBridge = previous.segments.slice(sequenceOffset)

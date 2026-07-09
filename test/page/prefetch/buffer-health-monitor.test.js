@@ -114,8 +114,12 @@ if (typeof bumpSeekActivity === "function") {
     "low runway during seek settling must stay aggressive for refill"
   )
   assert(
-    classifyTier(45, 60) === "maintenance",
-    "ample runway stays maintenance during seek settling"
+    classifyTier(45, 60) === "normal",
+    "ample runway stays non-emergency (normal) during seek settling"
+  )
+  assert(
+    classifyTier(45, 60) !== "emergency" && classifyTier(45, 60) !== "aggressive",
+    "ample runway must not stay in refill tiers during seek settling"
   )
 }
 

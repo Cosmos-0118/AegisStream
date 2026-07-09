@@ -98,6 +98,27 @@ function shouldBlockStaleSeekPredictionTeleport(tabState, targetIndex, currentTi
 
 /** Spurious t≈0 / timeline-start index while the playhead is far ahead (scrub / variant grace). */
 function shouldBlockStaleTimelineSeekTarget(tabState, targetIndex) {
+  if (typeof targetIndex !== "number" || targetIndex > 2) return false
+  const current = getEffectiveAnchorIndex(tabState)
+  const retained = tabState.variantSwitchAnchorIndex
+  const consensus =
+    typeof ns.resolveReconcileTargetIndex === "function"
+      ? ns.resolveReconcileTargetIndex(tabState)
+      : null
+
+  // Consensus drift should block stale timeline-start teleports even before the
+  // anchor is "very high". This protects early scrub windows where anchor is
+  // still in single digits (e.g. 8 -> 0) but predictor/observed signals already
+  // agree the playhead is far ahead.
+  if (typeof consensus === "number" && consensus - targetIndex > 5) return true
+
+  const highAnchor =
+    (typeof current === "number" && current > 10) ||
+    (typeof retained === "number" && retained > 10)
+  if (!highAnchor) return false
+  if (isVariantSwitchGraceActive(tabState)) return true
+  if (isScrubbingTrainActive(tabState)) return true
+  if (Date.now() < Number(tabState.seekChurnAggressiveUntil || 0)) return true
   return false
 }
 

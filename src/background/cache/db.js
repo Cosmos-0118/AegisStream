@@ -744,6 +744,34 @@ async function bridgePlaylistSegmentUrlAliases(previousSegments, newSegments, op
   return bridged
 }
 
+/**
+ * Removes alias mappings for the given segment URLs (alias store + memory index).
+ * Used on episode switch: a new episode's segment URLs must never resolve to
+ * previously-bridged bytes from other content, so any stale/poisoned alias that
+ * targets a different primary key is dropped before lookups can serve it.
+ */
+async function purgeSegmentAliasMappings(segmentUrls) {
+  if (!Array.isArray(segmentUrls) || segmentUrls.length === 0) return 0
+  let purged = 0
+  for (const url of segmentUrls) {
+    for (const key of buildCacheKeyVariants(url)) {
+      if (!key) continue
+      const mappedPrimary = memoryKeyIndex.get(key)
+      if (mappedPrimary && mappedPrimary !== key) memoryKeyIndex.delete(key)
+      try {
+        const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
+        if (aliasEntry) {
+          await dbDelete(constants.STORE_ALIASES, key)
+          purged += 1
+        }
+      } catch {
+        // storage failures here must not block playlist processing
+      }
+    }
+  }
+  return purged
+}
+
 async function resolveCachedChunk(url, expectedScope = null) {
   if (!storageSystemOperational) return null
   try {
@@ -865,6 +893,7 @@ ns.restoreStoragePassthrough = restoreStoragePassthrough
 ns.resolveCachedChunk = resolveCachedChunk
 ns.bridgeCacheAliasesForUrlPair = bridgeCacheAliasesForUrlPair
 ns.bridgePlaylistSegmentUrlAliases = bridgePlaylistSegmentUrlAliases
+ns.purgeSegmentAliasMappings = purgeSegmentAliasMappings
 ns.clearCacheStores = clearCacheStores
 ns.computeAdaptiveCachePolicy = computeAdaptiveCachePolicy
 ns.getCacheEntryCount = getCacheEntryCount

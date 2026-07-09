@@ -32,9 +32,17 @@ function getCompositeSessionKey(snapshot) {
 function determinePlaybackTransition(previous, next) {
   const episodeChanged = next.episodeChanged === true
   const sessionKey = next.sessionKey || getCompositeSessionKey(next)
-  const previousSessionKey = previous?.sessionKey || getCompositeSessionKey(previous)
-  const sessionChanged = Boolean(previousSessionKey && sessionKey && previousSessionKey !== sessionKey)
-  const hasPrevious = Boolean(previous?.segments?.length) || Boolean(previous?.structuralHash) || Boolean(previousSessionKey)
+  // Only explicit session keys drive episode switches. Composite fallback keys are
+  // too sensitive to omitted snapshot fields (e.g. segments) and would mis-classify
+  // token refreshes as episode changes when callers pass partial next snapshots.
+  const sessionChanged =
+    Boolean(previous?.sessionKey) &&
+    Boolean(next?.sessionKey) &&
+    previous.sessionKey !== next.sessionKey
+  const hasPrevious =
+    Boolean(previous?.segments?.length) ||
+    Boolean(previous?.structuralHash) ||
+    Boolean(previous?.sessionKey)
 
   if (!hasPrevious) {
     return {
@@ -47,7 +55,7 @@ function determinePlaybackTransition(previous, next) {
     }
   }
 
-  if (episodeChanged || sessionChanged) {
+  if (episodeChanged) {
     return {
       state: PlaybackStates.EPISODE_SWITCHED,
       clearPrefetch: true,
@@ -76,6 +84,20 @@ function determinePlaybackTransition(previous, next) {
 
   if (isUrlMutationOnly) {
     return { state: PlaybackStates.TOKEN_REFRESHING, clearPrefetch: false, retainAnchor: true, qualitySwitch: false, sessionKey, sessionChanged: false }
+  }
+
+  // Session key drift should not dominate URL-rotation heuristics. We only
+  // treat explicit session-key flips as new episodes when there is no URL
+  // mutation evidence (e.g. explicit boundary marker from caller metadata).
+  if (sessionChanged && next.urlsChanged !== true) {
+    return {
+      state: PlaybackStates.EPISODE_SWITCHED,
+      clearPrefetch: true,
+      retainAnchor: false,
+      qualitySwitch: false,
+      sessionKey,
+      sessionChanged: true
+    }
   }
 
   if (rungLabelChanged || mediaPathChanged) {
