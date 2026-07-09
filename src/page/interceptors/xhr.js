@@ -288,16 +288,22 @@ function applyXhrCachedPayload(
   lookup,
   cacheHeader = "HIT",
   responseSource = null,
-  cacheLookupUrl = null
+  cacheLookupUrl = null,
+  rangeHeader = null
 ) {
   markInternalXhrFulfillment(xhr, resolveXhrResponseSource(responseSource, cacheHeader))
   if (cacheHeader === "HIT" && typeof ns.noteLocalCacheKey === "function") {
     const key = cacheLookupUrl || xhr.__aegisUrl
     if (key) ns.noteLocalCacheKey(key)
   }
-  Object.defineProperty(xhr, "status", { get: () => 200, configurable: true })
+  const servePartial = typeof rangeHeader === "string" && rangeHeader.length > 0
+  const rangeSpec = servePartial ? String(rangeHeader).replace(/^bytes=/, "") : null
+  Object.defineProperty(xhr, "status", {
+    get: () => (servePartial ? 206 : 200),
+    configurable: true
+  })
   Object.defineProperty(xhr, "statusText", {
-    get: () => "OK",
+    get: () => (servePartial ? "Partial Content" : "OK"),
     configurable: true
   })
   Object.defineProperty(xhr, "readyState", { get: () => 4, configurable: true })
@@ -320,6 +326,9 @@ function applyXhrCachedPayload(
     value: (name) => {
       const lower = name.toLowerCase()
       if (lower === "content-type") return lookup?.contentType || "application/octet-stream"
+      if (lower === "content-range" && rangeSpec) return `bytes ${rangeSpec}/*`
+      if (lower === "accept-ranges" && servePartial) return "bytes"
+      if (lower === "content-length") return String(lookupBytes?.byteLength || 0)
       if (instantHdr[lower] != null) return instantHdr[lower]
       if (lower === "x-aegisstream-cache") return cacheHeader
       return null
@@ -329,7 +338,16 @@ function applyXhrCachedPayload(
   })
   Object.defineProperty(xhr, "getAllResponseHeaders", {
     value: () => {
-      return `content-type: ${lookup?.contentType || "application/octet-stream"}\r\nx-aegisstream-cache: ${cacheHeader}\r\n`
+      const lines = [
+        `content-type: ${lookup?.contentType || "application/octet-stream"}`,
+        `content-length: ${lookupBytes?.byteLength || 0}`,
+        `x-aegisstream-cache: ${cacheHeader}`
+      ]
+      if (rangeSpec) {
+        lines.push(`content-range: bytes ${rangeSpec}/*`)
+        lines.push("accept-ranges: bytes")
+      }
+      return `${lines.join("\r\n")}\r\n`
     },
     configurable: true,
     writable: true
@@ -545,7 +563,11 @@ function AegisXHR() {
             if (looksLikePlaylistBody(text)) isPlaylist = true
           }
           if (isPlaylist) {
-            if (text && (isPlaylistUrl(_url) || looksLikePlaylistBody(text))) {
+            // A matching URL/content-type alone isn't proof the body is real playlist text —
+            // some sites serve an encrypted/obfuscated blob under a .m3u8 URL as an
+            // anti-scraping measure. Always verify the body shape before relaying it, or the
+            // ciphertext gets turned into one bogus segment URL downstream.
+            if (text && looksLikePlaylistBody(text)) {
               if (canRelayPlaylist(_url)) {
                 markPlaylistRelayed(_url)
                 if (ns.extensionEnabled !== false) {
@@ -665,7 +687,11 @@ function AegisXHR() {
       return originalSend(body)
     }
 
-    const cacheLookupUrl = _url
+    const rangeCacheKey =
+      _hasRange && typeof ns.resolveByteRangeCacheKey === "function"
+        ? ns.resolveByteRangeCacheKey(_url, _rangeHeaderValue || xhr.__aegisRangeHeader)
+        : null
+    const cacheLookupUrl = rangeCacheKey || _url
 
     // L1 hot path: serve from page heap before any IPC / collapse ladder.
     if (
@@ -690,7 +716,8 @@ function AegisXHR() {
           { contentType: hot.contentType },
           "HIT",
           "hot-l1",
-          cacheLookupUrl
+          cacheLookupUrl,
+          rangeCacheKey ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
         )
         return undefined
       }
@@ -806,7 +833,15 @@ function AegisXHR() {
             lane: beltLane,
             bytes: beltBytes.byteLength
           })
-          applyXhrCachedPayload(xhr, beltBytes, beltLookup, "HIT", "idb-hit", cacheLookupUrl)
+          applyXhrCachedPayload(
+            xhr,
+            beltBytes,
+            beltLookup,
+            "HIT",
+            "idb-hit",
+            cacheLookupUrl,
+            rangeCacheKey ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
+          )
           return true
         }
         ns.reportRuntimeMetric("xhr_idb_belt_miss", {
@@ -954,7 +989,15 @@ function AegisXHR() {
           byteLength: lookupBytes.byteLength,
           viaBase64: !lookup.bytes && typeof lookup.bytesBase64 === "string"
         })
-        applyXhrCachedPayload(xhr, lookupBytes, lookup, "HIT", "idb-hit", cacheLookupUrl)
+        applyXhrCachedPayload(
+          xhr,
+          lookupBytes,
+          lookup,
+          "HIT",
+          "idb-hit",
+          cacheLookupUrl,
+          rangeCacheKey ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
+        )
         return
       }
 

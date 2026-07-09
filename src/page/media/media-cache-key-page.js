@@ -7,10 +7,29 @@
   const HLS_EXT =
     /\.(ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4|cmfv|cmfa|cmft)($|[?#])/i
   const OBFUSCATED_BLOB_RE = /^[A-Za-z0-9+/_=-]+$/
+  const AEGIS_BYTES_HASH_RE = /#aegis-bytes=(\d+)-(\d+)\s*$/i
 
   function stripHash(url) {
     if (typeof url !== "string") return null
     return url.split("#")[0]
+  }
+
+  function parseAegisByteRangeRef(rawUrl) {
+    if (typeof rawUrl !== "string" || !rawUrl) return null
+    const match = rawUrl.match(AEGIS_BYTES_HASH_RE)
+    if (!match) return null
+    const start = Number(match[1])
+    const end = Number(match[2])
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null
+    const base = stripHash(rawUrl)
+    if (!base) return null
+    return { url: base, start, end }
+  }
+
+  function formatAegisByteRangeRef(url, start, end) {
+    const base = stripHash(url)
+    if (!base || !Number.isFinite(start) || !Number.isFinite(end) || end < start) return null
+    return `${base}#aegis-bytes=${Math.trunc(start)}-${Math.trunc(end)}`
   }
 
   function isObfuscatedBlobSegment(segment) {
@@ -69,6 +88,51 @@
     return null
   }
 
+  function buildByteRangeCacheKey(rawUrl, start, end) {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null
+    const base = stripHash(rawUrl)
+    if (!base) return null
+    const invariant = buildMediaInvariantKey(base)
+    let streamId = invariant
+    if (!streamId) {
+      try {
+        const parsed = new URL(base, typeof location !== "undefined" ? location.href : undefined)
+        streamId = `${parsed.hostname}${parsed.pathname}`
+      } catch {
+        streamId = base
+      }
+    }
+    return `range|${streamId}|${Math.trunc(start)}-${Math.trunc(end)}`
+  }
+
+  function resolveByteRangeCacheKey(rawUrl, rangeHeader = null) {
+    const fromRef = parseAegisByteRangeRef(rawUrl)
+    if (fromRef) return buildByteRangeCacheKey(fromRef.url, fromRef.start, fromRef.end)
+    if (typeof rawUrl === "string" && rawUrl.startsWith("range|")) return rawUrl
+    if (typeof rangeHeader === "string" && rangeHeader) {
+      const match = rangeHeader.match(/bytes\s*=\s*(\d+)\s*-\s*(\d+)/i)
+      if (match) {
+        return buildByteRangeCacheKey(rawUrl, Number(match[1]), Number(match[2]))
+      }
+    }
+    return null
+  }
+
+  function resolvePrefetchCoalesceKey(rawUrl) {
+    const rangeKey = resolveByteRangeCacheKey(rawUrl)
+    if (rangeKey) return rangeKey
+    const normalized = stripHash(rawUrl)
+    if (!normalized) return null
+    if (typeof normalized === "string" && /^(?:range|aegis)\|/.test(normalized)) return normalized
+    const invariant = buildMediaInvariantKey(normalized)
+    return invariant || normalized
+  }
+
   ns.stripHash = ns.stripHash || stripHash
   ns.buildMediaInvariantKey = buildMediaInvariantKey
+  ns.parseAegisByteRangeRef = parseAegisByteRangeRef
+  ns.formatAegisByteRangeRef = formatAegisByteRangeRef
+  ns.buildByteRangeCacheKey = buildByteRangeCacheKey
+  ns.resolveByteRangeCacheKey = resolveByteRangeCacheKey
+  ns.resolvePrefetchCoalesceKey = resolvePrefetchCoalesceKey
 })()

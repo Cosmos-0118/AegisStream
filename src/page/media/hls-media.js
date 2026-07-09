@@ -10,12 +10,17 @@ const {
   formatStoreChunkError,
   notifyRuntime,
   logBridge,
-  knownSegments,
   canRelayPlaylist,
   markPlaylistRelayed,
   clearPlaylistRelayDedup,
   originalFetch
 } = ns
+
+function getKnownSegments() {
+  if (ns.knownSegments instanceof Set) return ns.knownSegments
+  ns.knownSegments = new Set()
+  return ns.knownSegments
+}
 
 async function bodyToArrayBuffer(body) {
   if (body == null) return null
@@ -146,16 +151,25 @@ function isLikelyChunk(url) {
   if (!url) return false
 
   if (globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest?.()) return false
+  // Playlists must never enter the segment intercept/extension-fetch path.
+  // Obfuscated JWT playlist URLs look like blob segments otherwise and break playback.
+  if (isPlaylistUrl(url) || isSwiftStreamPlaylistProxy(url)) return false
   if (globalThis.AegisSitePolicy?.isTwitchMediaUrl?.(url)) return true
-  if (isSwiftStreamPlaylistProxy(url)) return false
   if (isSwiftStreamTransportSegment(url)) return true
 
-  const base = url.split("?")[0]
-  if (knownSegments.has(base)) return true
+  const known = getKnownSegments()
+  const noQuery = url.split("?")[0]
+  const base =
+    typeof ns.stripHash === "function" ? ns.stripHash(noQuery) : noQuery.split("#")[0]
+  if (known.has(url) || known.has(noQuery) || (base && known.has(base))) {
+    return true
+  }
 
   if (typeof ns.buildMediaInvariantKey === "function") {
     const invariant = ns.buildMediaInvariantKey(url)
-    if (invariant && invariant.startsWith("aegis|")) return true
+    // Path-extension HLS keys are safe. Blind aegis|blob| matching is not —
+    // flixcloud-style playlists share the same obfuscated shape as segments.
+    if (invariant && invariant.startsWith("aegis|hls|")) return true
   }
 
   if (/\.(ts|m4s|mp4|cmf|webm|aac|m4a|m4v|fmp4)($|\?)/i.test(url)) return true
@@ -209,7 +223,12 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 
   responseClone.text().then((text) => {
     if (!text || text.length < 10) return
-    if (!isUrlMatch && !looksLikePlaylistBody(text)) return
+    // A matching URL/content-type is not sufficient on its own: some sites serve an
+    // encrypted/obfuscated body under a .m3u8 URL as an anti-scraping measure, decrypting
+    // it in their own player JS before handing real text to hls.js. Relaying that ciphertext
+    // as "playlist content" turns it into one bogus segment URL downstream. Always require
+    // the body to actually look like HLS/DASH text before relaying it.
+    if (!looksLikePlaylistBody(text)) return
 
     notifyRuntime("PLAYLIST_CONTENT", { url, text })
   }).catch(() => {})

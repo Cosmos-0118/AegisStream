@@ -54,6 +54,10 @@
 
   function resolveRegistryKeyLegacy(url) {
     if (!url || typeof url !== "string") return null
+    if (typeof ns.resolveByteRangeCacheKey === "function") {
+      const rangeKey = ns.resolveByteRangeCacheKey(url)
+      if (rangeKey) return rangeKey
+    }
     if (url.startsWith("range|")) return url
     if (typeof ns.buildMediaInvariantKey === "function") {
       const invariant = ns.buildMediaInvariantKey(url)

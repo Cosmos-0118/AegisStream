@@ -22,6 +22,10 @@ async function parseAndPrefetchFromPlaylistWork(tabId, normalizedPlaylistUrl, de
 
     if (isHls) {
       const parsed = ns.parseHlsPlaylist(text, normalizedPlaylistUrl)
+      if (parsed.kind === "invalid") {
+        addLog("DEBUG", `Playlist fetch returned unparseable body (encrypted/obfuscated?) — ${normalizedPlaylistUrl.slice(-60)}`)
+        return
+      }
       addLog("INFO", `HLS playlist parsed: ${parsed.kind}, ${parsed.variants.length} variants, ${parsed.segments.length} segments`)
       if (parsed.kind === "master") {
         if (typeof ns.bumpActivity === "function") ns.bumpActivity("playlistsDetected", 1)
@@ -93,6 +97,10 @@ ns.parsePlaylistContentForTab = async function parsePlaylistContentForTab(tabId,
 
     if (isHls) {
       const parsed = ns.parseHlsPlaylist(text, normalizedUrl)
+      if (parsed.kind === "invalid") {
+        addLog("DEBUG", `Captured playlist body is unparseable (encrypted/obfuscated?) — ${normalizedUrl.slice(-60)}`)
+        return
+      }
       addLog("INFO", `HLS parsed from page capture: ${parsed.kind}, ${parsed.variants.length} variants, ${parsed.segments.length} segments`)
       if (parsed.kind === "master") {
         if (typeof ns.bumpActivity === "function") ns.bumpActivity("playlistsDetected", 1)

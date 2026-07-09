@@ -236,11 +236,11 @@ function getHeaderValue(headers, targetName) {
   return null
 }
 
-async function fetchPrefetchBytesWithExtension(url) {
+async function fetchPrefetchBytesWithExtension(url, headers = {}) {
   const extensionRes = await requestExtensionFetchBuffered({
     url,
     method: "GET",
-    headers: {},
+    headers: headers && typeof headers === "object" ? headers : {},
     source: "prefetch-video"
   })
   if (!extensionRes?.ok) {
@@ -254,6 +254,7 @@ async function fetchPrefetchBytesWithExtension(url) {
   }
 
   const statusCode = Number(extensionRes.statusCode || 0)
+  // 206 Partial Content is success for HLS BYTERANGE segment fetches.
   if (!Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
     return {
       ok: false,
@@ -475,6 +476,18 @@ async function processPrefetchUrlWork(url) {
     return { ok: false, skipped: "generation-stale" }
   }
 
+  const byteRange =
+    typeof ns.parseAegisByteRangeRef === "function" ? ns.parseAegisByteRangeRef(url) : null
+  const fetchUrl = byteRange?.url || url
+  const rangeHeader =
+    byteRange && Number.isFinite(byteRange.start) && Number.isFinite(byteRange.end)
+      ? `bytes=${byteRange.start}-${byteRange.end}`
+      : null
+  const storeUrl =
+    (typeof ns.resolveByteRangeCacheKey === "function"
+      ? ns.resolveByteRangeCacheKey(url)
+      : null) || url
+
   const controller = new AbortController()
   prefetchAbortControllers.set(url, controller)
 
@@ -486,30 +499,37 @@ async function processPrefetchUrlWork(url) {
   // Fetch without credentials first (most CDNs use wildcard CORS which breaks with credentials)
   // The browser will use the cache/cookies appropriate for the origin automatically
   const fetchPriority = pagePrefetchPriority === "high" ? "high" : "low"
+  const requestHeaders = rangeHeader ? { Range: rangeHeader } : undefined
   const fetchInit = {
     cache: "no-store",
     signal: controller.signal,
-    priority: fetchPriority
+    priority: fetchPriority,
+    ...(requestHeaders ? { headers: requestHeaders } : {})
   }
-  let res = await originalFetch(url, fetchInit)
-  
+  let res = await originalFetch(fetchUrl, fetchInit)
+
   // If 403/401, retry once with credentials. Keep the retry bounded so we don't
   // turn authentication edge cases into long stalls on the playback path.
   if (res.status === 403 || res.status === 401) {
-    res = await originalFetch(url, {
+    res = await originalFetch(fetchUrl, {
       credentials: "include",
       cache: "no-store",
       signal: controller.signal,
-      priority: fetchPriority
+      priority: fetchPriority,
+      ...(requestHeaders ? { headers: requestHeaders } : {})
     })
   }
   requestStatus = Number(res.status || 0)
-  if (res.ok && res.status !== 206) {
+  // Full (200) or partial (206) responses are both valid for BYTERANGE segments.
+  if (res.ok || res.status === 206) {
     contentType = res.headers.get("content-type") || "application/octet-stream"
     bytes = await res.arrayBuffer()
   } else {
     if (controller.signal.aborted) return { ok: false, aborted: true }
-    const extensionFallback = await fetchPrefetchBytesWithExtension(url)
+    const extensionFallback = await fetchPrefetchBytesWithExtension(
+      fetchUrl,
+      requestHeaders || {}
+    )
     if (!extensionFallback.ok) {
       const authFailure = requestStatus === 403 || requestStatus === 401
       const rateLimit = requestStatus === 429
@@ -581,22 +601,22 @@ async function processPrefetchUrlWork(url) {
   }
 
   if (typeof ns.putHotBytes === "function") {
-    ns.putHotBytes(url, bytes, {
+    ns.putHotBytes(storeUrl, bytes, {
       contentType,
-      status: requestStatus || 200
+      status: 200
     })
   }
 
   if (typeof ns.noteStoreIntent === "function") {
-    ns.noteStoreIntent(url)
+    ns.noteStoreIntent(storeUrl)
   }
 
-  // Send bytes to background for caching (decoupled async disk branch)
+  // Store under the stable range| key (or plain URL). Never mark hasRange —
+  // background StoreChunk rejects ranged writes; the key itself encodes the slice.
   const storeRes = await storeChunkForPrefetch({
-    url,
+    url: storeUrl,
     contentType,
     bytes: bytesForStore,
-    // Treat prefetch payload as full representation for this exact key.
     status: 200,
     method: "GET",
     hasRange: false,

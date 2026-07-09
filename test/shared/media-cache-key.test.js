@@ -47,4 +47,28 @@ assert(
   "canonical range keys pass through"
 )
 
+const {
+  parseAegisByteRangeRef,
+  buildByteRangeCacheKey,
+  resolveByteRangeCacheKey
+} = sandbox.self.AegisBackground
+
+const rangedRef = "https://cdn.example.com/media/video.mp4#aegis-bytes=0-654491"
+const parsedRange = parseAegisByteRangeRef(rangedRef)
+assert(parsedRange?.start === 0 && parsedRange?.end === 654491, "parse aegis byterange ref")
+const rangeKey = buildByteRangeCacheKey(parsedRange.url, parsedRange.start, parsedRange.end)
+assert(rangeKey && rangeKey.startsWith("range|"), "build byterange cache key")
+assert(
+  resolveByteRangeCacheKey(rangedRef) === rangeKey,
+  "ref resolves to byterange cache key"
+)
+assert(
+  resolveByteRangeCacheKey(parsedRange.url, "bytes=0-654491") === rangeKey,
+  "Range header resolves to same byterange cache key"
+)
+assert(
+  resolvePrefetchCoalesceKey(rangedRef) === rangeKey,
+  "prefetch coalesce uses byterange cache key"
+)
+
 console.log("media-cache-key.test.js: all assertions passed")

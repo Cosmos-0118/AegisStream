@@ -87,6 +87,14 @@
     if (isCanonicalCoalesceKey(cacheKey)) return cacheKey
     if (isCanonicalCoalesceKey(pageUrl)) return pageUrl
 
+    // HLS BYTERANGE slices share one media URL — never coalesce across offsets.
+    if (typeof ns.resolveByteRangeCacheKey === "function") {
+      const rangedCache = ns.resolveByteRangeCacheKey(cacheKey)
+      if (rangedCache) return rangedCache
+      const rangedPage = ns.resolveByteRangeCacheKey(pageUrl)
+      if (rangedPage) return rangedPage
+    }
+
     const primaryUrl = pageUrl || cacheKey
 
     if (primaryUrl && typeof ns.buildMediaInvariantKey === "function") {

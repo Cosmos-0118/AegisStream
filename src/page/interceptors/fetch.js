@@ -306,6 +306,7 @@ async function shouldAttemptRequestCollapse(url, cacheLookupUrl) {
 
 function shouldPreferCacheForPlayerRequest(url, method, requestHeaders) {
   if (method !== "GET" || !url) return false
+  if (typeof isPlaylistUrl === "function" && isPlaylistUrl(url)) return false
   if (typeof globalThis.AegisSitePolicy?.shouldPassthroughPlayerRequest === "function") {
     try {
       if (globalThis.AegisSitePolicy.shouldPassthroughPlayerRequest(url)) return false
@@ -314,13 +315,21 @@ function shouldPreferCacheForPlayerRequest(url, method, requestHeaders) {
     }
   }
   const sourceHint = String(requestHeaders?.get?.("x-aegis-source") || "").toLowerCase()
-  const rangeHeader = requestHeaders?.get?.("range")
-  if (sourceHint.includes("player") || sourceHint.includes("buffer") || rangeHeader) return true
+  if (sourceHint.includes("player") || sourceHint.includes("buffer")) {
+    return typeof isLikelyChunk !== "function" || isLikelyChunk(url)
+  }
+  // Range alone is not enough — fonts/static assets also send Range and must
+  // not enter the media extension-fetch path.
+  if (requestHeaders?.get?.("range")) {
+    return typeof isLikelyChunk === "function" && isLikelyChunk(url)
+  }
   return typeof isLikelyChunk === "function" && isLikelyChunk(url)
 }
 
 function shouldAggressivelyPrefetchForRequest(url, requestHeaders) {
   if (!url) return false
+  if (typeof isPlaylistUrl === "function" && isPlaylistUrl(url)) return false
+  if (typeof isLikelyChunk === "function" && !isLikelyChunk(url)) return false
   const rangeHeader = String(requestHeaders?.get?.("range") || "")
   const sourceHint = String(requestHeaders?.get?.("x-aegis-source") || "").toLowerCase()
   // Only escalate when the request is already playback-critical. Broad player
@@ -438,18 +447,51 @@ async function tryCollapseOntoInflightPrefetch({
   return buildChunkResponseFromBytes(collapsed.bytes, collapsed)
 }
 
+function rebuildFetchArgs(input, init) {
+  // A failed/aborted Request cannot be safely reused — rebuild from URL + headers.
+  if (typeof input === "string" || input instanceof URL) {
+    return { input, init }
+  }
+  if (!(input instanceof Request)) {
+    return { input, init }
+  }
+  try {
+    const headers = new Headers(init?.headers || input.headers)
+    const rebuiltInit = {
+      method: init?.method || input.method || "GET",
+      headers,
+      credentials: init?.credentials || input.credentials,
+      cache: init?.cache || input.cache,
+      redirect: init?.redirect || input.redirect,
+      mode: init?.mode || input.mode,
+      referrer: init?.referrer || input.referrer,
+      integrity: init?.integrity || input.integrity,
+      keepalive: init?.keepalive ?? input.keepalive,
+      signal: init?.signal || input.signal
+    }
+    if (init && Object.prototype.hasOwnProperty.call(init, "body")) {
+      rebuiltInit.body = init.body
+    }
+    return { input: input.url, init: rebuiltInit }
+  } catch {
+    return { input: input.url || input, init }
+  }
+}
+
 async function aegisFetch(input, init) {
   try {
     return await aegisFetchInner(input, init)
   } catch (e) {
-    logBridge(`aegisFetch critical error (${e?.message || "unknown"}), bypassing to native fetch`, "ERROR")
+    // Never double-hit a spent Request — that produces a second "Failed to fetch"
+    // flood and can strand the player. Rebuild once from URL, then surface the error.
+    const rebuilt = rebuildFetchArgs(input, init)
+    logBridge(
+      `aegisFetch critical error (${e?.message || "unknown"}), one native retry: ${String(rebuilt.input || "").slice(-80)}`,
+      "ERROR"
+    )
     try {
-      return await originalFetch(input, init)
+      return await originalFetch(rebuilt.input, rebuilt.init)
     } catch (fallbackError) {
-      logBridge(
-        `native fetch fallback failed (${fallbackError?.message || "unknown"})`,
-        "ERROR"
-      )
       throw fallbackError
     }
   }
@@ -510,11 +552,19 @@ async function aegisFetchInner(input, init) {
     return networkResponse
   }
 
-  const cacheLookupUrl = url
+  const requestRangeHeader = requestHeaders?.get?.("range") || null
+  const requestHasRange = Boolean(requestRangeHeader)
+  const rangeCacheKey =
+    requestHasRange && typeof ns.resolveByteRangeCacheKey === "function"
+      ? ns.resolveByteRangeCacheKey(url, requestRangeHeader)
+      : null
+  // Prefetched BYTERANGE slices are stored under range| keys with hasRange=false.
+  // Look those up as ordinary GETs so StoreChunk/CACHE_LOOKUP accept them.
+  const cacheLookupUrl = rangeCacheKey || url
   const cacheLookupMethod = method
-  const requestHasRange = Boolean(requestHeaders?.get?.("range"))
+  const lookupAsRange = requestHasRange && !rangeCacheKey
 
-  if (!requestHasRange) {
+  if (!lookupAsRange) {
     const hotResponse = tryServeHotBytes(cacheLookupUrl, {
       startedAt: requestStartedAt,
       transport: "fetch"
@@ -524,6 +574,24 @@ async function aegisFetchInner(input, init) {
         url: String(cacheLookupUrl || "").slice(-96),
         bytes: hotResponse?.headers?.get?.("content-length") || 1
       })
+      if (rangeCacheKey && requestHasRange) {
+        const rangeSpec = String(requestRangeHeader || "").replace(/^bytes=/, "")
+        const headers = new Headers({
+          "content-type":
+            hotResponse.headers.get("content-type") || "application/octet-stream",
+          "x-aegisstream-cache": hotResponse.headers.get("x-aegisstream-cache") || "HIT",
+          "content-range": `bytes ${rangeSpec}/*`,
+          "accept-ranges": "bytes"
+        })
+        globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
+        const hotBytes = await hotResponse.arrayBuffer()
+        headers.set("content-length", String(hotBytes.byteLength || 0))
+        return new Response(hotBytes, {
+          status: 206,
+          statusText: "Partial Content",
+          headers
+        })
+      }
       return hotResponse
     }
   }
@@ -532,11 +600,11 @@ async function aegisFetchInner(input, init) {
     const { lookup, lookupBytes } = await lookupCachedChunk(
       cacheLookupUrl,
       cacheLookupMethod,
-      requestHasRange,
+      lookupAsRange,
       {
         aggressive: shouldAggressivePrefetch,
         // L1 already checked above via tryServeHotBytes — avoid double telemetry.
-        skipHotLookup: !requestHasRange
+        skipHotLookup: !lookupAsRange
       }
     )
     if (lookup?.ok && lookup.hit && lookupBytes) {
@@ -563,6 +631,13 @@ async function aegisFetchInner(input, init) {
         "x-aegisstream-cache": "HIT"
       })
       globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
+      if (rangeCacheKey && requestHasRange) {
+        const rangeSpec = String(requestRangeHeader || "").replace(/^bytes=/, "")
+        headers.set("content-range", `bytes ${rangeSpec}/*`)
+        headers.set("accept-ranges", "bytes")
+        headers.set("content-length", String(lookupBytes.byteLength || 0))
+        return new Response(lookupBytes, { status: 206, statusText: "Partial Content", headers })
+      }
       return new Response(lookupBytes, { status: 200, headers })
     }
     logCacheDiagnostics("cache-miss-serve", {
@@ -620,9 +695,13 @@ async function aegisFetchInner(input, init) {
     }
   }
 
+  // Prefer native player fetch first. Extension-fetch is a CORS/auth fallback only —
+  // routing every media GET through the SW was breaking flixcloud playback.
   let networkResponse
   let chunkCacheCaptureHandled = false
   try {
+    networkResponse = await originalFetch(input, init)
+  } catch (nativeErr) {
     const headersObj = {}
     if (requestHeaders) {
       for (const [k, v] of requestHeaders.entries()) {
@@ -641,44 +720,45 @@ async function aegisFetchInner(input, init) {
       }
     }
 
-    logBridge(`Extension fetch stream: ${url.slice(0, 80)}`, "DEBUG")
-    const { stream, meta } = requestExtensionFetchStream({
-      url,
-      method,
-      headers: headersObj,
-      bytes: bodyBytes,
-      source: "player-fetch"
-    })
-
+    logBridge(
+      `Native media fetch failed (${nativeErr?.message || "unknown"}); trying extension fetch: ${String(url || "").slice(-80)}`,
+      "DEBUG"
+    )
     try {
-      const extensionMeta = await Promise.race([
-        meta,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("extension-stream-meta-timeout")), EXTENSION_STREAM_META_TIMEOUT_MS)
-        )
-      ])
-      networkResponse = new Response(stream, {
-        status: extensionMeta.statusCode,
-        statusText: extensionMeta.statusCode === 206 ? "Partial Content" : "OK",
-        headers: new Headers(extensionMeta.headers)
+      const { stream, meta } = requestExtensionFetchStream({
+        url,
+        method,
+        headers: headersObj,
+        bytes: bodyBytes,
+        source: "player-fetch"
       })
-    } catch (streamErr) {
-      logBridge(
-        `Extension fetch failed (${streamErr?.message || "unknown"}), falling back to native fetch`,
-        "WARN"
-      )
+
       try {
-        stream.cancel().catch((err) => {
-          if (err?.name !== "AbortError") {
-            logBridge(`Stream cancel failed: ${err?.message || err}`, "WARN")
-          }
+        const extensionMeta = await Promise.race([
+          meta,
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("extension-stream-meta-timeout")),
+              EXTENSION_STREAM_META_TIMEOUT_MS
+            )
+          )
+        ])
+        networkResponse = new Response(stream, {
+          status: extensionMeta.statusCode,
+          statusText: extensionMeta.statusCode === 206 ? "Partial Content" : "OK",
+          headers: new Headers(extensionMeta.headers)
         })
-      } catch {}
-      networkResponse = await originalFetch(input, init)
+      } catch (streamErr) {
+        try {
+          stream.cancel().catch(() => {})
+        } catch {
+          // ignore
+        }
+        throw streamErr
+      }
+    } catch {
+      throw nativeErr
     }
-  } catch (e) {
-    logBridge(`Extension fetch error (${e.message}), falling back`, "WARN")
-    networkResponse = await networkFetch(input, init)
   }
 
   reportRuntimeMetric("request_first_byte", {

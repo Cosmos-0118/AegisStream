@@ -8,18 +8,26 @@ const { state } = ns
  */
 function getManifestUrlSignature(url) {
   if (typeof url !== "string" || !url) return null
-  
+
+  const byteRange =
+    typeof ns.parseAegisByteRangeRef === "function" ? ns.parseAegisByteRangeRef(url) : null
+  const baseUrl = byteRange?.url || url
+  const rangeSuffix =
+    byteRange && Number.isFinite(byteRange.start) && Number.isFinite(byteRange.end)
+      ? `#bytes=${byteRange.start}-${byteRange.end}`
+      : ""
+
   if (typeof ns.buildMediaInvariantKey === "function") {
-    const invariant = ns.buildMediaInvariantKey(url)
+    const invariant = ns.buildMediaInvariantKey(baseUrl)
     if (invariant && (invariant.startsWith("aegis|blob|") || invariant.startsWith("aegis|fallback|"))) {
-      return invariant
+      return `${invariant}${rangeSuffix}`
     }
   }
 
   try {
-    const parsed = new URL(url)
+    const parsed = new URL(baseUrl)
     let search = ""
-    
+
     if (parsed.search && typeof ns.constants?.IDENTITY_QUERY_PARAMS?.has === "function") {
       const identityParams = []
       for (const [key, value] of parsed.searchParams.entries()) {
@@ -31,11 +39,11 @@ function getManifestUrlSignature(url) {
         search = `?${identityParams.sort().join("&")}`
       }
     }
-    
-    return `${parsed.origin}${parsed.pathname}${search}`
+
+    return `${parsed.origin}${parsed.pathname}${search}${rangeSuffix}`
   } catch {
-    const stripped = url.split("#")[0].split("?")[0]
-    return stripped || null
+    const stripped = baseUrl.split("#")[0].split("?")[0]
+    return stripped ? `${stripped}${rangeSuffix}` : null
   }
 }
 

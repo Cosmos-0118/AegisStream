@@ -105,7 +105,14 @@ window.addEventListener("message", (event) => {
       })
     }
     for (const u of data.urls) {
-      knownSegments.add(u.split("?")[0])
+      if (typeof u !== "string" || !u) continue
+      // Strip query + our BYTERANGE fragment so player GETs of the base media URL match.
+      const base =
+        typeof ns.stripHash === "function"
+          ? ns.stripHash(u.split("?")[0])
+          : u.split("#")[0].split("?")[0]
+      if (base) knownSegments.add(base)
+      knownSegments.add(u)
     }
     if (knownSegments.size > 2000) {
       const toDelete = Array.from(knownSegments).slice(0, 500)
