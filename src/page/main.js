@@ -18,6 +18,13 @@ if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
   )
   return
 }
+if (globalThis.AegisSitePolicy?.isNonAcceleratableEmbedHost?.(location.hostname)) {
+  logBridge(
+    "Third-party embed passthrough (YouTube/googlevideo/Blogger) — native player untouched, no fetch/XHR hooks or prefetch",
+    "INFO"
+  )
+  return
+}
 
 function activateMediaBridge(reason = "startup") {
   if (ns.mediaBridgeActive === true) return true

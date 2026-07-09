@@ -142,7 +142,7 @@ function isAnyVideoPlaying() {
 }
 
 function startWorkerLivelinessBridge() {
-  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
+  if (globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return
   setInterval(() => {
     if (ns.extensionEnabled === false) return
     if (!isAnyVideoPlaying()) return
@@ -181,7 +181,7 @@ function setupVisibilityLifecycleGuards() {
 }
 
 function startVideoAnchorMonitor() {
-  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
+  if (globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return
   setupVisibilityLifecycleGuards()
   observeVideosForAnchorBridge()
   startWorkerLivelinessBridge()

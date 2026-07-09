@@ -210,7 +210,7 @@ function looksLikePlaylistBody(text) {
 
 function maybeCapturePlaylist(url, contentType, responseClone) {
   if (!url) return
-  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
+  if (globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return
   if (!canRelayPlaylist(url)) return
 
   const isUrlMatch = isPlaylistUrl(url)
@@ -235,7 +235,7 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 }
 
 async function refreshPlaylistFromPage(url, generation) {
-  if (!url || globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return false
+  if (!url || globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return false
   clearPlaylistRelayDedup(url)
   try {
     let res = await originalFetch(url, { credentials: "include", cache: "no-store" })

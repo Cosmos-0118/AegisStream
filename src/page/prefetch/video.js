@@ -365,7 +365,7 @@ function installVideoHealthMonitor() {
   observer.observe(root, { childList: true, subtree: true })
 }
 
-if (!globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+if (!globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) {
   installVideoHealthMonitor()
 }
 
@@ -887,7 +887,7 @@ function noteScrubFeedSurge(options = {}) {
 }
 
 async function prefetchSegmentsFromPage(urls, options = {}) {
-  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) {
+  if (globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) {
     return
   }
   const msgGen = Number(options.playbackGeneration ?? options.networkGeneration)

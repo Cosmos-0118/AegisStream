@@ -297,7 +297,7 @@ function observeVideosForSeeking() {
 }
 
 function startSeekingController() {
-  if (globalThis.AegisSitePolicy?.isReactivePrefetchSite?.()) return
+  if (globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return
   observeVideosForSeeking()
   const root = document.documentElement || document.body
   if (root) {

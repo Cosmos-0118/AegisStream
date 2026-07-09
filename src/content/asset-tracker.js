@@ -16,6 +16,8 @@ let scheduledDelays = new Set()
 function isSkippedHost() {
   const host = (location.hostname || "").toLowerCase()
   if (host === "youtube.com" || host.endsWith(".youtube.com")) return true
+  if (host === "blogger.com" || host.endsWith(".blogger.com")) return true
+  if (host === "blogspot.com" || host.endsWith(".blogspot.com")) return true
   return host === "twitch.tv" || host.endsWith(".twitch.tv")
 }
 

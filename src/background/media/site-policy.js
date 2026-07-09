@@ -9,6 +9,24 @@ const TWITCH_REFERER = "https://www.twitch.tv/"
 const TWITCH_PAGE_HOST_SUFFIXES = [".twitch.tv"]
 const TWITCH_MEDIA_HOST_SUFFIXES = [".ttvnw.net", ".jtvnw.net"]
 
+/** Third-party players with proprietary signed/DASH delivery — never accelerable, mirrors page/core/site-policy.js. */
+const NON_ACCELERATABLE_EMBED_HOSTS = new Set([
+  "youtube.com",
+  "youtube-nocookie.com",
+  "googlevideo.com",
+  "ytimg.com",
+  "blogger.com",
+  "blogspot.com"
+])
+const NON_ACCELERATABLE_EMBED_HOST_SUFFIXES = [
+  ".youtube.com",
+  ".youtube-nocookie.com",
+  ".googlevideo.com",
+  ".ytimg.com",
+  ".blogger.com",
+  ".blogspot.com"
+]
+
 function normalizeHost(hostname) {
   return String(hostname || "").toLowerCase()
 }
@@ -27,9 +45,16 @@ function isTwitchPageHost(host) {
   return TWITCH_PAGE_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(normalized, suffix))
 }
 
-/** Pages where document/header boost breaks SPA + GraphQL (Twitch). */
+function isNonAcceleratableEmbedHost(host) {
+  const normalized = normalizeHost(host)
+  if (!normalized) return false
+  if (NON_ACCELERATABLE_EMBED_HOSTS.has(normalized)) return true
+  return NON_ACCELERATABLE_EMBED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(normalized, suffix))
+}
+
+/** Pages where document/header boost breaks SPA + GraphQL (Twitch), or third-party embeds we never accelerate. */
 function isSkippableSmootherHost(host) {
-  return isTwitchPageHost(host)
+  return isTwitchPageHost(host) || isNonAcceleratableEmbedHost(host)
 }
 
 function isSkippableSmootherUrl(url) {
@@ -173,6 +198,7 @@ ns.TWITCH_CLIENT_ID = TWITCH_CLIENT_ID
 ns.TWITCH_ORIGIN = TWITCH_ORIGIN
 ns.TWITCH_REFERER = TWITCH_REFERER
 ns.isTwitchPageHost = isTwitchPageHost
+ns.isNonAcceleratableEmbedHost = isNonAcceleratableEmbedHost
 ns.isSkippableSmootherHost = isSkippableSmootherHost
 ns.isSkippableSmootherUrl = isSkippableSmootherUrl
 ns.isTwitchPageUrl = isTwitchPageUrl

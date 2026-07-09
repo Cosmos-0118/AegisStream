@@ -3,6 +3,30 @@
 
   const TWITCH_PAGE_HOST_SUFFIXES = [".twitch.tv"]
 
+  /**
+   * Third-party players we can never accelerate: proprietary signed/DASH
+   * delivery (YouTube/googlevideo) or redirector shells that just embed one
+   * (Blogger's legacy video.g). No HLS/segment playlist ever reaches us here,
+   * so intercepting fetch/XHR only adds overhead and risks breaking their
+   * own signed requests — treat like Twitch, full passthrough.
+   */
+  const NON_ACCELERATABLE_EMBED_HOSTS = new Set([
+    "youtube.com",
+    "youtube-nocookie.com",
+    "googlevideo.com",
+    "ytimg.com",
+    "blogger.com",
+    "blogspot.com"
+  ])
+  const NON_ACCELERATABLE_EMBED_HOST_SUFFIXES = [
+    ".youtube.com",
+    ".youtube-nocookie.com",
+    ".googlevideo.com",
+    ".ytimg.com",
+    ".blogger.com",
+    ".blogspot.com"
+  ]
+
   function normalizeHost(hostname) {
     return String(hostname || "").toLowerCase()
   }
@@ -42,6 +66,18 @@
     return isTwitchPageHost(location.hostname)
   }
 
+  function isNonAcceleratableEmbedHost(hostname) {
+    const host = normalizeHost(hostname)
+    if (!host) return false
+    if (NON_ACCELERATABLE_EMBED_HOSTS.has(host)) return true
+    return NON_ACCELERATABLE_EMBED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(host, suffix))
+  }
+
+  /** Frames where AegisStream should never touch fetch/XHR/prefetch/buffer monitoring. */
+  function shouldFullyPassthroughFrame() {
+    return isReactivePrefetchSite() || isNonAcceleratableEmbedHost(location.hostname)
+  }
+
   /**
    * On Twitch tabs the player must own every fetch/XHR (signed HLS + GQL).
    * Intercepting .m3u8 via extension-fetch caused AUTHZ_DISALLOWED_BITRATE.
@@ -59,7 +95,7 @@
   function isSmootherSkippedHost(hostname) {
     const host = normalizeHost(hostname)
     if (!host) return true
-    return isTwitchPageHost(host)
+    return isTwitchPageHost(host) || isNonAcceleratableEmbedHost(host)
   }
 
   /** Known media hosts where the fetch/XHR bridge should arm at document start. */
@@ -104,7 +140,7 @@
    * Watch/embed contexts arm immediately so playlist capture can run.
    */
   function shouldRunMediaBridge() {
-    if (isReactivePrefetchSite()) return false
+    if (shouldFullyPassthroughFrame()) return false
     return isMediaHost(location.hostname) || isLikelyPlaybackContext()
   }
 
@@ -112,6 +148,8 @@
     isTwitchPageHost,
     isTwitchMediaUrl,
     isReactivePrefetchSite,
+    isNonAcceleratableEmbedHost,
+    shouldFullyPassthroughFrame,
     shouldPassthroughPlayerRequest,
     shouldPassthroughTwitchApi,
     isSmootherSkippedHost,
