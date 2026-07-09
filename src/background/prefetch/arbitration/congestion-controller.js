@@ -149,12 +149,20 @@ function resolveCongestionGlobalCap(tabId) {
     (Number.isFinite(runway) && runway < 20) ||
     (Number.isFinite(health) && health < 35)
   const scrubGuard = isScrubGuardActive(tabState)
+  const scrubSurgeActive =
+    scrubGuard ||
+    Date.now() < Number(tabState?.scrubFeedSurgeUntil || 0) ||
+    (typeof ns.isTabInScrubbingTrain === "function" && ns.isTabInScrubbingTrain(tabState))
 
   if (scrubGuard || lowBuffer) {
     tierCap = Math.max(tierCap, scrubGuard ? 8 : 6)
   }
   if (bufferTier === "emergency") {
     tierCap = Math.max(tierCap, 10)
+  }
+  if (scrubSurgeActive) {
+    const scrubFloor = Math.max(1, Number(constants.PREFETCH_SCRUB_GLOBAL_INFLIGHT_FLOOR) || 16)
+    tierCap = Math.max(tierCap, scrubFloor)
   }
 
   return Math.min(Math.max(1, bufferCap), tierCap)

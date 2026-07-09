@@ -667,6 +667,35 @@ function AegisXHR() {
 
     const cacheLookupUrl = _url
 
+    // L1 hot path: serve from page heap before any IPC / collapse ladder.
+    if (
+      ns.extensionEnabled !== false &&
+      ns.serveFromCache !== false &&
+      typeof ns.getHotBytes === "function"
+    ) {
+      let hot = null
+      try {
+        hot = ns.getHotBytes(cacheLookupUrl)
+      } catch {
+        hot = null
+      }
+      if (hot?.ok && hot.bytes && hot.bytes.byteLength > 0) {
+        ns.reportRuntimeMetric("page_cache_telemetry", { metric: "hotHits", amount: 1 })
+        ns.reportRuntimeMetric("page_cache_telemetry", { metric: "cacheHits", amount: 1 })
+        ns.reportRuntimeMetric("page_cache_telemetry", { metric: "cacheLookups", amount: 1 })
+        ns.reportRuntimeMetric("page_cache_telemetry", { metric: "cacheServes", amount: 1 })
+        applyXhrCachedPayload(
+          xhr,
+          hot.bytes,
+          { contentType: hot.contentType },
+          "HIT",
+          "hot-l1",
+          cacheLookupUrl
+        )
+        return undefined
+      }
+    }
+
     const wireInFlight =
       typeof ns.isKeyInFlight === "function" && ns.isKeyInFlight(cacheLookupUrl)
     const cacheCandidate =
@@ -679,13 +708,24 @@ function AegisXHR() {
         collapsed.bytes && typeof collapsed.bytes.byteLength === "number"
           ? collapsed.bytes.byteLength
           : 0
-      const responseSource = collapsed.fromCache === true ? "idb-hit" : "collapse"
+      const responseSource =
+        collapsed.via === "hot-l1"
+          ? "hot-l1"
+          : collapsed.fromCache === true
+            ? "idb-hit"
+            : "collapse"
       ns.reportRuntimeMetric("request_collapse_hit", {
         transport: "xhr",
         fromCache: collapsed.fromCache === true,
         savedBytes,
         viaIntent: viaIntent === true
       })
+      if (collapsed.bytes && typeof ns.putHotBytes === "function") {
+        ns.putHotBytes(cacheLookupUrl, collapsed.bytes, {
+          contentType: collapsed.contentType || "application/octet-stream",
+          status: 200
+        })
+      }
       applyXhrCachedPayload(
         xhr,
         collapsed.bytes,
@@ -755,6 +795,12 @@ function AegisXHR() {
           ) {
             // Registry said absent but IDB had the bytes — decay registry trust.
             ns.noteRegistryFalseNegative()
+          }
+          if (typeof ns.putHotBytes === "function") {
+            ns.putHotBytes(cacheLookupUrl, beltBytes, {
+              contentType: beltLookup.contentType || "application/octet-stream",
+              status: 200
+            })
           }
           ns.reportRuntimeMetric("xhr_idb_belt_hit", {
             lane: beltLane,
@@ -897,6 +943,12 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
+        if (typeof ns.putHotBytes === "function") {
+          ns.putHotBytes(cacheLookupUrl, lookupBytes, {
+            contentType: lookup.contentType || "application/octet-stream",
+            status: 200
+          })
+        }
         ns.reportRuntimeMetric("cache_lookup_page_delivered", {
           transport: "xhr",
           byteLength: lookupBytes.byteLength,

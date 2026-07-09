@@ -191,6 +191,7 @@
     "lookupMappingUnresolved",
     "cacheLookups",
     "cacheHits",
+    "hotHits",
     "cacheMisses",
     "cachedChunks",
     "cacheFillWrites",

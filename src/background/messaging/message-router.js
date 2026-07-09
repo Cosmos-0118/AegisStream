@@ -834,13 +834,17 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       rawBytes instanceof ArrayBuffer
         ? rawBytes
         : rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
-    // Base64-encode alongside raw bytes so the relay can fall back when
-    // chrome.runtime.sendMessage neuters the ArrayBuffer during IPC.
+    // Prefer raw ArrayBuffer on the hot path. Only attach base64 for smaller
+    // payloads as an IPC neuter fallback — encoding multi-MB segments on every
+    // hit burns CPU during scrub storms.
+    const BASE64_FALLBACK_MAX_BYTES = 512 * 1024
     let bytesBase64 = null
-    try {
-      bytesBase64 = arrayBufferToBase64(bytes)
-    } catch {
-      // Best-effort — raw bytes may still survive IPC.
+    if (byteLength > 0 && byteLength <= BASE64_FALLBACK_MAX_BYTES) {
+      try {
+        bytesBase64 = arrayBufferToBase64(bytes)
+      } catch {
+        // Best-effort — raw bytes may still survive IPC.
+      }
     }
     const lookupResponse = {
       ok: true,
@@ -932,7 +936,7 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
         : () => cacheChunk(storeUrl, message.contentType, bytes, expectedScope)
     let storeResult
     try {
-      storeResult = await enqueueStoreWrite(writeTask)
+      storeResult = await enqueueStoreWrite(writeTask, { key: storeUrl })
     } finally {
       releaseInflightChunkWrite(storeUrl)
     }

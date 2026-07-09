@@ -1,5 +1,5 @@
 /**
- * Run: node test/page/media/kalman-segment-filter.test.js
+ * Run: node test/page/playback/kalman-segment-filter.test.js
  */
 "use strict"
 
@@ -9,7 +9,7 @@ const vm = require("vm")
 
 const filterPath = path.join(
   __dirname,
-  "../../../src/page/media/kalman-segment-filter.js"
+  "../../../src/page/playback/kalman-segment-filter.js"
 )
 const sandbox = { self: { AegisPageBridge: {} } }
 sandbox.globalThis = sandbox

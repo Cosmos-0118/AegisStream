@@ -9,6 +9,12 @@ ns.constants = {
   PREFETCH_CONCURRENCY: 3,
   GLOBAL_MAX_INFLIGHT_PREFETCHES: 12,
   PREFETCH_BATCH_INFLIGHT_CAP: 8,
+  /** Scrub/snap-back may temporarily raise batch size so the forward ring fills faster. */
+  PREFETCH_SCRUB_BATCH_INFLIGHT_CAP: 12,
+  PREFETCH_SCRUB_GLOBAL_INFLIGHT_FLOOR: 16,
+  STORE_WRITE_CONCURRENCY: 4,
+  /** Drop new store tasks when queued+active exceeds this (backpressure). */
+  STORE_WRITE_MAX_QUEUE_DEPTH: 256,
   PREFETCH_CAP_RETRY_BASE_MS: 200,
   PREFETCH_CAP_RETRY_MAX_MS: 3_200,
   PREFETCH_CAP_RETRY_MAX_ATTEMPTS: 10,
@@ -342,6 +348,7 @@ ns.constants = {
     return {
       cacheLookups: 0,
       cacheHits: 0,
+      hotHits: 0,
       cacheMisses: 0,
       cacheWarmups: 0,
       cachedChunks: 0,

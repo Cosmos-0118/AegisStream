@@ -275,6 +275,22 @@ function handleRuntimeMetric(message, sender) {
     return
   }
 
+  if (metricType === "page_cache_telemetry") {
+    const metric = String(message.metric || "")
+    const amount = Number(message.amount)
+    if (metric && typeof ns.bumpActivity === "function") {
+      ns.bumpActivity(metric, Number.isFinite(amount) && amount > 0 ? amount : 1)
+    }
+    return
+  }
+
+  if (metricType === "hot_cache_cleared") {
+    if (typeof ns.bumpActivity === "function") {
+      ns.bumpActivity("hotCacheClears", 1)
+    }
+    return
+  }
+
   if (metricType === "xhr_writeback_suppressed") {
     state.stats.xhrWritebackSuppressed = (state.stats.xhrWritebackSuppressed || 0) + 1
     return

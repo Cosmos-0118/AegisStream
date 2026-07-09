@@ -25,7 +25,13 @@ ns.triggerScrubSnapBackBurst = function triggerScrubSnapBackBurst(tabId, tabStat
   tabState.lastScheduledFromIndex = -1
 
   addLog("INFO", `Slider released at index ${clampedTarget}. Triggering immediate Snap-Back buffer shield (radius=${radius}, tab ${tabId}).`)
-  void ns.schedulePrefetch(tabId, tabState.segments, start, { force: true, source: "scrub-snap-back", prefetchWindowOverride: radius })
+  tabState.scrubFeedSurgeUntil = now + (Number(constants.SCRUB_SNAP_BACK_MS) || 5_000)
+  void ns.schedulePrefetch(tabId, tabState.segments, start, {
+    force: true,
+    source: "scrub-snap-back",
+    prefetchWindowOverride: radius,
+    priority: "high"
+  })
 }
 
 ns.handleScrubbingTrainState = function handleScrubbingTrainState(tabId, payload = {}) {
@@ -97,7 +103,13 @@ ns.handleScrubVelocityPrefetch = function handleScrubVelocityPrefetch(tabId, pay
   }
   if (needed === 0) { if (typeof ns.recordScrubPrewarmSkippedDedup === "function") ns.recordScrubPrewarmSkippedDedup(); return }
   if (typeof ns.recordScrubPrewarmScheduled === "function") ns.recordScrubPrewarmScheduled()
-  void ns.schedulePrefetch(tabId, tabState.segments, start, { force: true, source: "scrub-velocity-prewarm", prefetchWindowOverride: windowSize })
+  tabState.scrubFeedSurgeUntil = now + 4_000
+  void ns.schedulePrefetch(tabId, tabState.segments, start, {
+    force: true,
+    source: "scrub-velocity-prewarm",
+    prefetchWindowOverride: windowSize,
+    priority: "high"
+  })
 }
 
 ns.maybeBreakPassengerLockForStallRecovery = function maybeBreakPassengerLockForStallRecovery(tabId, tabState, options = {}) {

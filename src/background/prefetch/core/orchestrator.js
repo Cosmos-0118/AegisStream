@@ -1,17 +1,12 @@
 (() => {
 // orchestrator.js — thin entry point
-// All orchestration logic has been split into focused modules:
-//   constants.js, anchor-utils.js, scrub-utils.js, state-utils.js,
-//   anchor-manager.js, scrub-handler.js, unified-seek.js,
-//   seek-prediction.js, manifest-refresh.js, page-delegate.js,
-//   playlist-state.js, prefetch-tracking.js, prefetch-scheduler.js,
-//   playlist-fetcher.js, chunk-observer.js, playlist-recovery.js,
-//   format-utils.js
+// All orchestration logic has been split into focused modules under prefetch/:
+//   core/, playlist/, scrub/, seek/, scheduler/, anchor/
 //
 // Each module assigns functions to self.AegisBackground via IIFE.
 // This file exists only as a load-order anchor in service-worker.js importScripts.
 // Module dependencies:
-//   constants → anchor-utils → scrub-utils/state-utils → anchor-manager/manifest-refresh → ...rest
+//   core/constants → anchor-utils → scrub-utils/state-utils → anchor-manager/manifest-refresh → ...rest
 //   (order enforced by service-worker.js import list)
 //
 // Cross-module references (callable after all loads):

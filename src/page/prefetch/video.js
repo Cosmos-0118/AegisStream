@@ -98,7 +98,17 @@ function getRequiredConcurrency(healthScore) {
   return 4
 }
 
+function isScrubFeedSurgeActive() {
+  if (ns.scrubbingTrainActive === true) return true
+  if (ns.seekChurnAggressive === true) return true
+  const until = Number(ns.scrubFeedSurgeUntil || 0)
+  return until > 0 && Date.now() < until
+}
+
 function getBufferAdjustedConcurrency() {
+  if (isScrubFeedSurgeActive()) {
+    return MAX_PREFETCH_WORKERS
+  }
   const healthScore = Number(ns.bufferHealthScore)
   if (Number.isFinite(healthScore)) {
     const required = getRequiredConcurrency(healthScore)
@@ -111,7 +121,8 @@ function getBufferAdjustedConcurrency() {
   if (!tier) {
     return ns.networkPanicActive === true ? 4 : PREFETCH_CONCURRENCY
   }
-  if (tier === ns.TIER_EMERGENCY || tier === ns.TIER_AGGRESSIVE) return 4
+  if (tier === ns.TIER_EMERGENCY) return Math.max(6, Math.min(MAX_PREFETCH_WORKERS, 8))
+  if (tier === ns.TIER_AGGRESSIVE) return Math.max(5, Math.min(MAX_PREFETCH_WORKERS, 6))
   if (tier === ns.TIER_MAINTENANCE || tier === ns.TIER_IDLE) return 1
   return PREFETCH_CONCURRENCY
 }
@@ -569,6 +580,13 @@ async function processPrefetchUrlWork(url) {
     ns.notifyInflightWireResolve(url, bytesForStore, contentType)
   }
 
+  if (typeof ns.putHotBytes === "function") {
+    ns.putHotBytes(url, bytes, {
+      contentType,
+      status: requestStatus || 200
+    })
+  }
+
   if (typeof ns.noteStoreIntent === "function") {
     ns.noteStoreIntent(url)
   }
@@ -789,32 +807,63 @@ function pushBufferLoad(options = {}) {
   const pushRunway = 20
   const lowRunway = Number.isFinite(runway) && runway < pushRunway
   const lowHealth = Number.isFinite(health) && health < 35
+  const scrubSurge = isScrubFeedSurgeActive() || options.scrubSurge === true
   const urgent =
     tier === ns.TIER_EMERGENCY ||
     tier === ns.TIER_AGGRESSIVE ||
     lowRunway ||
-    lowHealth
+    lowHealth ||
+    scrubSurge
   if (!urgent) return
 
-  const minGap = 900
   const now = Date.now()
-  if (now - lastBufferLoadPushAt < minGap) return
+  const emergency =
+    tier === ns.TIER_EMERGENCY || scrubSurge || (Number.isFinite(runway) && runway < 5)
+  // Emergency / scrub may bypass the normal 900ms gap so workers scale immediately.
+  const minGap = emergency ? 0 : 900
+  if (minGap > 0 && now - lastBufferLoadPushAt < minGap) return
   lastBufferLoadPushAt = now
+
+  if (scrubSurge) {
+    ns.scrubFeedSurgeUntil = now + 5_000
+  }
 
   bufferLoadPushUntil =
     now +
-    (tier === ns.TIER_EMERGENCY ? 8_000 : tier === ns.TIER_AGGRESSIVE ? 5_000 : 4_000)
+    (tier === ns.TIER_EMERGENCY || scrubSurge
+      ? 8_000
+      : tier === ns.TIER_AGGRESSIVE
+        ? 5_000
+        : 4_000)
   pagePrefetchPriority = "high"
 
   const workers = getBufferAdjustedConcurrency()
   const targetWorkers =
-    tier === ns.TIER_EMERGENCY
-      ? Math.max(workers, 6)
+    scrubSurge || tier === ns.TIER_EMERGENCY
+      ? Math.max(workers, MAX_PREFETCH_WORKERS)
       : tier === ns.TIER_AGGRESSIVE
-        ? Math.max(workers, 5)
+        ? Math.max(workers, 6)
         : Math.max(workers, 4)
   scalePrefetchWorkers(targetWorkers)
   notifyPrefetchWorkers()
+}
+
+function noteScrubFeedSurge(options = {}) {
+  const now = Date.now()
+  const durationMs = Math.max(1_000, Number(options.durationMs) || 5_000)
+  ns.scrubFeedSurgeUntil = now + durationMs
+  if (options.active === true) ns.scrubbingTrainActive = true
+  if (options.active === false) ns.scrubbingTrainActive = false
+  if (options.seekChurn === true) ns.seekChurnAggressive = true
+  // Throttle worker scale-up during continuous scrub trains (seeking fires often).
+  const lastSurgeScaleAt = Number(ns._lastScrubSurgeScaleAt || 0)
+  if (now - lastSurgeScaleAt < 400 && options.active === true) return
+  ns._lastScrubSurgeScaleAt = now
+  pushBufferLoad({
+    tier: ns.TIER_EMERGENCY || "emergency",
+    scrubSurge: true,
+    source: options.source || "scrub-surge"
+  })
 }
 
 async function prefetchSegmentsFromPage(urls, options = {}) {
@@ -906,6 +955,8 @@ ns.prefetchSegmentsFromPage = prefetchSegmentsFromPage
 ns.cancelPrefetchRunway = cancelPrefetchRunway
 ns.demandStartQueuedPrefetch = demandStartQueuedPrefetch
 ns.pushBufferLoad = pushBufferLoad
+ns.noteScrubFeedSurge = noteScrubFeedSurge
+ns.isScrubFeedSurgeActive = isScrubFeedSurgeActive
 ns.isBufferLoadPushActive = isBufferLoadPushActive
 
 })()

@@ -61,6 +61,7 @@ let statusTimer = null
 const EMPTY_STATS = {
   cacheLookups: 0,
   cacheHits: 0,
+  hotHits: 0,
   cacheMisses: 0,
   cacheWarmups: 0,
   cachedChunks: 0,

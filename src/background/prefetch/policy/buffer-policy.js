@@ -280,7 +280,10 @@ function resolveBufferAdjustedGlobalCap(tabId) {
     tabState &&
     (isTabInSeekChurnAggressive(tabState) || isTabInTeleportMode(tabState))
   ) {
-    adjusted = Math.max(adjusted, Math.min(12, base + 4))
+    adjusted = Math.max(adjusted, Math.min(16, base + 8))
+  }
+  if (tabState && Date.now() < Number(tabState.scrubFeedSurgeUntil || 0)) {
+    adjusted = Math.max(adjusted, Math.min(20, Number(constants.PREFETCH_SCRUB_GLOBAL_INFLIGHT_FLOOR) || 16))
   }
   if (typeof ns.resolvePanicAdjustedGlobalCap === "function") {
     return ns.resolvePanicAdjustedGlobalCap(adjusted)

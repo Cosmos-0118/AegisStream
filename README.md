@@ -31,23 +31,32 @@ Build a resilient, site-agnostic buffering shield for non-DRM HLS/DASH playback 
 - `src/background/` - service worker by responsibility:
   - `config/` - constants and DNR rule JSON
   - `state/` - runtime settings and in-memory state
-  - `media/` - URL normalization, cache keys, serializers
-  - `parsing/` - HLS/DASH playlist parsing
+  - `media/` - URL normalization, cache keys, serializers, playlist parsing
   - `cache/` - IndexedDB storage and write queue
   - `network/` - extension fetch, injection URL policy, HTML stream injection, head scanner
-  - `prefetch/` - scheduling domain (`policy/`, `anchor/`, `lanes/`, `arbitration/`, `state/`, `wire/`)
+  - `prefetch/` - scheduling domain grouped by concern:
+    - `core/` - shared constants, tab session helpers, orchestrator load-order anchor
+    - `policy/` - buffer, lane, tab, and panic policies
+    - `anchor/` - playback-position authority and reconciliation
+    - `playlist/` - playlist state, fetch, refresh, recovery
+    - `scheduler/` - prefetch scheduling, tracking, page delegation, chunk observation
+    - `seek/` / `scrub/` - seek prediction and scrub handling
+    - `lanes/` - rescue and speculative prefetch lanes
+    - `arbitration/` - congestion / stream / speculation arbitrators
+    - `state/` / `wire/` - playback/network state machines and message wire helpers
   - `telemetry/` - metrics (`collectors/`), event streams (`domains/`), debug hooks (`observability/`)
   - `smoother/` - layout assets, header hints, CPU defuse, BFCache healer
   - `lifecycle/` - page script manifest, engine wake vs install bootstrap, tab bridge, Chrome events
   - `messaging/` - `runtime.onMessage` handlers
-  - `src/page/` - MAIN-world page scripts:
+- `src/page/` - MAIN-world page scripts:
   - `core/` - execution guard and site policy
-  - `cache/` - chunk registry, response headers, range buffer
+  - `cache/` - chunk registry, response headers, hot byte cache
   - `network/` - in-page fetch coalescing
   - `bridge/` - intercept plumbing, message bridge, extension fetch client
   - `prefetch/` - buffer health and delegated video prefetch
+  - `playback/` - seeking controller, Kalman filter, video monitor
   - `interceptors/` - `fetch` and `XHR` hooks
-  - `media/` - manifest mapping, HLS/DASH chunk classification, cache keys, playback helpers
+  - `media/` - manifest mapping, HLS/DASH classification, cache keys
   - `smoother/` - navigation hints, circuit breaker, CPU mock scripts (`mock/`), `install.js`
   - `main.js` - installs interceptors and smoother after dependencies load
 - `src/content/` - ISOLATED-world relay and asset tracker.

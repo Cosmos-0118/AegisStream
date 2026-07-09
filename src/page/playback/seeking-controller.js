@@ -147,9 +147,24 @@ class SeekingController {
     if (this.lastSeekAt > 0 && wallNow - this.lastSeekAt < TRAIN_COOLDOWN_MS) {
       if (!this.scrubTrainActive) {
         this.scrubTrainActive = true
+        if (typeof ns.noteScrubFeedSurge === "function") {
+          ns.noteScrubFeedSurge({
+            active: true,
+            seekChurn: true,
+            source: "scrub-train-start",
+            durationMs: 5_000
+          })
+        }
         if (this.kalman && typeof measuredIndex === "number") {
           this.kalman.reset(measuredIndex)
         }
+      } else if (typeof ns.noteScrubFeedSurge === "function") {
+        ns.noteScrubFeedSurge({
+          active: true,
+          seekChurn: true,
+          source: "scrub-train",
+          durationMs: 4_000
+        })
       }
     }
 
@@ -177,6 +192,14 @@ class SeekingController {
     this.scrubTrainActive = false
     this.lastVelocityPrewarmAt = 0
     this.lastPrearmedPredictedIndex = null
+    if (typeof ns.noteScrubFeedSurge === "function") {
+      ns.noteScrubFeedSurge({
+        active: false,
+        seekChurn: true,
+        source: "scrub-train-end",
+        durationMs: 5_000
+      })
+    }
     if (this.kalman) {
       const mapper = resolveManifestMapper()
       const t = Number(this.video.currentTime)

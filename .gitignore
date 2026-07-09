@@ -1,5 +1,8 @@
-# macOS
+# macOS / Windows
 .DS_Store
+**/.DS_Store
+Thumbs.db
+Desktop.ini
 
 # Logs
 *.log
@@ -20,26 +23,27 @@ dist/
 build/
 coverage/
 .cache/
+*.tsbuildinfo
 
-# IDE/editor
+# IDE / editor
 .vscode/
 .idea/
+.cursor/
 *.swp
-.commandcode
 *.swo
-
-# Go binaries and build artifacts
-*.exe
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-bin/
+*~
 
 # Temporary files
 tmp/
 temp/
+*.tmp
+*.temp
 
-# Chrome extension local DNR ruleset cache (generated on load unpacked)
+# Chrome extension local artifacts (generated on load unpacked)
 _metadata/
+*.crx
+*.pem
+
+# Local agent / knowledge-graph state
+.code-review-graph/
+.commandcode/

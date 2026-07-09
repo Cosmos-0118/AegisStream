@@ -224,6 +224,10 @@ async function buildDisplayStats() {
     Number(state.stats.cacheHits) || 0,
     streamSnapshot?.hls?.hits || 0
   )
+  const hotHits = Math.max(
+    windowTotals.hotHits || 0,
+    Number(state.stats.hotHits) || 0
+  )
   const misses = Math.max(
     windowTotals.cacheMisses || 0,
     Number(state.stats.cacheMisses) || 0,
@@ -241,6 +245,7 @@ async function buildDisplayStats() {
 
   return {
     cacheHits: hits,
+    hotHits,
     cacheMisses: misses,
     cacheWarmups: warmups,
     cacheLookups: lookups > 0 ? lookups : resolvedLookups,

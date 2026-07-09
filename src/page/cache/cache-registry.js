@@ -162,6 +162,9 @@
         if (!incomingSet.has(key)) evictedPageAhead += 1
       }
       localizedCacheKeys.clear()
+      if (typeof ns.clearHotByteCache === "function") {
+        ns.clearHotByteCache(reason || "registry-replace")
+      }
     }
 
     // Additive merge — routine syncs can only ADD keys, never silently remove

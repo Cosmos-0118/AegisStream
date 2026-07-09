@@ -50,15 +50,66 @@ function logCacheDiagnostics(event, data = {}) {
 }
 
 function noteCacheTelemetry(metric, amount = 1) {
+  // Prefer runtime metric bridge (page → SW). Local bumpActivity is rare/absent
+  // in MAIN world and must not double-count when both exist.
+  if (typeof ns.reportRuntimeMetric === "function") {
+    ns.reportRuntimeMetric("page_cache_telemetry", { metric, amount })
+    return
+  }
   if (typeof ns.bumpActivity === "function") {
     ns.bumpActivity(metric, amount)
   }
 }
 
 function noteCacheDiagnosticCounter(metric, amount = 1) {
-  if (typeof ns.bumpActivity === "function") {
-    ns.bumpActivity(metric, amount)
+  noteCacheTelemetry(metric, amount)
+}
+
+function seedHotBytesFromLookup(url, lookupBytes, lookup) {
+  if (!lookupBytes || typeof ns.putHotBytes !== "function") return
+  try {
+    ns.putHotBytes(url, lookupBytes, {
+      contentType: lookup?.contentType || "application/octet-stream",
+      status: 200
+    })
+  } catch {
+    // L1 seed failures must never break the player response path
   }
+}
+
+function tryServeHotBytes(url, options = {}) {
+  if (ns.extensionEnabled === false || ns.serveFromCache === false) return null
+  if (typeof ns.getHotBytes !== "function") return null
+  let hot = null
+  try {
+    hot = ns.getHotBytes(url)
+  } catch {
+    return null
+  }
+  if (!hot?.ok || !hot.bytes || !(hot.bytes.byteLength > 0)) return null
+  noteCacheTelemetry("cacheLookups", 1)
+  noteCacheTelemetry("cacheHits", 1)
+  noteCacheTelemetry("hotHits", 1)
+  noteCacheTelemetry("cacheServes", 1)
+  if (typeof ns.noteLocalCacheKey === "function") {
+    try {
+      ns.noteLocalCacheKey(url)
+    } catch {
+      // ignore
+    }
+  }
+  if (options.reportFirstByte !== false && typeof reportRuntimeMetric === "function") {
+    reportRuntimeMetric("request_first_byte", {
+      source: "hot-l1",
+      transport: options.transport || "fetch",
+      streamType: "hls",
+      latencyMs: Math.max(0, Math.round(monotonicNow() - (options.startedAt || monotonicNow())))
+    })
+  }
+  return buildChunkResponseFromBytes(hot.bytes, {
+    contentType: hot.contentType,
+    fromCache: true
+  })
 }
 
 function scheduleImmediateFetchChunkCapture({ response, url, method }) {
@@ -96,6 +147,9 @@ function scheduleImmediateFetchChunkCapture({ response, url, method }) {
         hasRange: false,
         captureSource: "fetch-clone"
       }).then((storeRes) => {
+        if (buffer && typeof ns.putHotBytes === "function") {
+          ns.putHotBytes(url, buffer, { contentType, status: 200 })
+        }
         if (!storeRes?.ok && document.visibilityState === "visible") {
           logBridge(
             `Fetch immediate capture store failed (${formatStoreChunkError(storeRes)}): ${String(url).slice(-80)}`,
@@ -108,6 +162,38 @@ function scheduleImmediateFetchChunkCapture({ response, url, method }) {
 }
 
 async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, hasRange = false, options = {}) {
+  // L1 hot path: serve from page heap before any IPC.
+  // Skip when caller already tried L1 (e.g. tryServeHotBytes) to avoid double telemetry.
+  if (!hasRange && options.skipHotLookup !== true && typeof ns.getHotBytes === "function") {
+    let hot = null
+    try {
+      hot = ns.getHotBytes(cacheLookupUrl)
+    } catch {
+      hot = null
+    }
+    if (hot?.ok && hot.bytes && hot.bytes.byteLength > 0) {
+      if (options.recordHotTelemetry !== false) {
+        noteCacheTelemetry("cacheLookups", 1)
+        noteCacheTelemetry("cacheHits", 1)
+        noteCacheTelemetry("hotHits", 1)
+      }
+      logCacheDiagnostics("lookup-hot-hit", {
+        url: String(cacheLookupUrl || "").slice(-96),
+        bytes: hot.byteLength || hot.bytes.byteLength || 0
+      })
+      return {
+        lookup: {
+          ok: true,
+          hit: true,
+          contentType: hot.contentType,
+          fromCache: true,
+          via: "hot-l1"
+        },
+        lookupBytes: hot.bytes
+      }
+    }
+  }
+
   // Registry trust decay (P4): "absent" is a confidence signal, not an oracle.
   // A low-confidence verdict shortens the lookup budget instead of skipping
   // the lookup entirely — a small IPC is always cheaper than a wrong miss.
@@ -170,6 +256,9 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, hasRange = f
   })
   if (lookup?.hit && lookupBytes) noteCacheTelemetry("cacheHits", 1)
   else if (lookup?.ok && lookup?.hit === false) noteCacheTelemetry("cacheMisses", 1)
+  if (lookup?.hit && lookupBytes) {
+    seedHotBytesFromLookup(cacheLookupUrl, lookupBytes, lookup)
+  }
   if (lookup?.hit && hasRange) noteCacheDiagnosticCounter("rangeCacheHits", 1)
   if (hasRange && lookup?.ok && !lookup?.hit) noteCacheDiagnosticCounter("rangeCacheMisses", 1)
   if (!isCandidate && lookup?.ok && lookup.hit && lookupBytes) {
@@ -290,11 +379,12 @@ async function tryCollapseOntoInflightPrefetch({
     url,
     cacheLookupUrl,
     async () => {
+      // Collapse IPC belt: skip L1 telemetry (coalescer already checked L1).
       const { lookup, lookupBytes } = await lookupCachedChunk(
         cacheLookupUrl,
         cacheLookupMethod,
         false,
-        { aggressive: true }
+        { aggressive: true, skipHotLookup: true }
       )
       if (lookup?.ok && lookup.hit && lookupBytes) {
         return {
@@ -312,7 +402,7 @@ async function tryCollapseOntoInflightPrefetch({
         typeof ns.resolveCollapseWaitTimeoutMs === "function"
           ? ns.resolveCollapseWaitTimeoutMs()
           : 8_000,
-      pollMs: 60
+      pollMs: 120
     }
   )
 
@@ -331,6 +421,19 @@ async function tryCollapseOntoInflightPrefetch({
   })
   if (collapsed.fromCache === true && typeof ns.noteLocalCacheKey === "function") {
     ns.noteLocalCacheKey(cacheLookupUrl)
+  }
+  if (collapsed.bytes && typeof ns.putHotBytes === "function") {
+    ns.putHotBytes(cacheLookupUrl || url, collapsed.bytes, {
+      contentType: collapsed.contentType || "application/octet-stream",
+      status: 200
+    })
+  }
+  // Collapse hit telemetry is recorded via request_collapse_hit; only bump
+  // hotHits when the delivery itself came from L1 (not a re-seed).
+  if (collapsed.via === "hot-l1") {
+    noteCacheTelemetry("hotHits", 1)
+    noteCacheTelemetry("cacheHits", 1)
+    noteCacheTelemetry("cacheServes", 1)
   }
   return buildChunkResponseFromBytes(collapsed.bytes, collapsed)
 }
@@ -411,12 +514,30 @@ async function aegisFetchInner(input, init) {
   const cacheLookupMethod = method
   const requestHasRange = Boolean(requestHeaders?.get?.("range"))
 
+  if (!requestHasRange) {
+    const hotResponse = tryServeHotBytes(cacheLookupUrl, {
+      startedAt: requestStartedAt,
+      transport: "fetch"
+    })
+    if (hotResponse) {
+      logCacheDiagnostics("hot-hit-serve", {
+        url: String(cacheLookupUrl || "").slice(-96),
+        bytes: hotResponse?.headers?.get?.("content-length") || 1
+      })
+      return hotResponse
+    }
+  }
+
   try {
     const { lookup, lookupBytes } = await lookupCachedChunk(
       cacheLookupUrl,
       cacheLookupMethod,
       requestHasRange,
-      { aggressive: shouldAggressivePrefetch }
+      {
+        aggressive: shouldAggressivePrefetch,
+        // L1 already checked above via tryServeHotBytes — avoid double telemetry.
+        skipHotLookup: !requestHasRange
+      }
     )
     if (lookup?.ok && lookup.hit && lookupBytes) {
       if (typeof ns.noteLocalCacheKey === "function") {
@@ -426,11 +547,12 @@ async function aegisFetchInner(input, init) {
         url: String(cacheLookupUrl || "").slice(-96),
         range: requestHasRange,
         bytes: lookupBytes.byteLength || 0,
-        contentType: lookup.contentType || "application/octet-stream"
+        contentType: lookup.contentType || "application/octet-stream",
+        via: lookup.via || "idb"
       })
       noteCacheTelemetry("cacheServes", 1)
       reportRuntimeMetric("request_first_byte", {
-        source: "cache",
+        source: lookup.via === "hot-l1" ? "hot-l1" : "cache",
         transport: "fetch",
         streamType: "hls",
         latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))

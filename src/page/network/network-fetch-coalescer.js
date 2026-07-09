@@ -265,7 +265,16 @@
     ;(async () => {
       try {
         const result = await factory()
-        settle(result || { ok: false, error: "empty-result" })
+        const resolved = result || { ok: false, error: "empty-result" }
+        if (resolved?.ok && resolved.bytes && typeof ns.putHotBytes === "function") {
+          ns.putHotBytes(key, resolved.bytes, {
+            contentType: resolved.contentType || "application/octet-stream",
+            status: Number(resolved.status) || 200,
+            pageUrl: representativeUrl || null,
+            cacheKey: key
+          })
+        }
+        settle(resolved)
       } catch (error) {
         settle({
           ok: false,
@@ -322,7 +331,8 @@
 
   async function awaitCollapsedNetworkDelivery(pageUrl, cacheKey, lookupCached, options = {}) {
     const timeoutMs = resolveCollapseWaitTimeoutMs(options.timeoutMs)
-    const pollMs = Math.max(40, Number(options.pollMs) || 60)
+    // Event-driven wake is primary; poll is only a safety net.
+    const pollMs = Math.max(100, Number(options.pollMs) || 120)
     const started = Date.now()
     attachCoalesceConsumer(pageUrl, cacheKey)
     notifyInflightConsumerMutate(cacheKey || pageUrl, 1)
@@ -340,6 +350,48 @@
     }
   }
 
+  async function tryHotOrCachedDelivery(pageUrl, cacheKey, lookupCached, options = {}) {
+    if (typeof ns.getHotBytes === "function") {
+      const hot = ns.getHotBytes(pageUrl, cacheKey)
+      if (hot?.ok && hot.bytes) {
+        return {
+          ok: true,
+          bytes: hot.bytes,
+          contentType: hot.contentType,
+          status: hot.status || 200,
+          fromCache: true,
+          via: "hot-l1"
+        }
+      }
+    }
+
+    // Prefer event/wire wakes; only hit IPC lookup on the first pass or when
+    // explicitly allowed — avoids hammering SW during scrub collapse loops.
+    if (options.allowIpcLookup === false) return null
+
+    if (typeof lookupCached === "function") {
+      const cached = await lookupCached()
+      if (cached?.ok && cached.bytes) {
+        if (typeof ns.putHotBytes === "function") {
+          ns.putHotBytes(pageUrl || cacheKey, cached.bytes, {
+            contentType: cached.contentType || "application/octet-stream",
+            status: Number(cached.status) || 200,
+            cacheKey
+          })
+        }
+        return {
+          ok: true,
+          bytes: cached.bytes,
+          contentType: cached.contentType,
+          status: cached.status,
+          fromCache: true,
+          via: cached.fromCache ? "cache" : "background-wire"
+        }
+      }
+    }
+    return null
+  }
+
   async function awaitCollapsedNetworkDeliveryInner(
     pageUrl,
     cacheKey,
@@ -347,35 +399,75 @@
     options = {}
   ) {
     const timeoutMs = Number(options.timeoutMs) || resolveCollapseWaitTimeoutMs()
-    const pollMs = Math.max(40, Number(options.pollMs) || 60)
+    const pollMs = Math.max(100, Number(options.pollMs) || 120)
     const started = Number(options.started) || Date.now()
-    const wireSliceMs = Math.min(400, pollMs * 4)
+    let ipcLookups = 0
+    const maxIpcLookups = 2
+
+    const immediate = await tryHotOrCachedDelivery(pageUrl, cacheKey, lookupCached, {
+      allowIpcLookup: true
+    })
+    if (immediate) return immediate
+    ipcLookups += 1
 
     while (Date.now() - started < timeoutMs) {
-      const localWire = await joinActivePageWire(pageUrl, cacheKey, {
-        timeoutMs: Math.min(wireSliceMs, timeoutMs - (Date.now() - started))
-      })
-      if (localWire?.ok && localWire.bytes) {
-        return localWire
-      }
-
-      if (typeof lookupCached === "function") {
-        const cached = await lookupCached()
-        if (cached?.ok && cached.bytes) {
-          return {
-            ok: true,
-            bytes: cached.bytes,
-            contentType: cached.contentType,
-            status: cached.status,
-            fromCache: true,
-            via: cached.fromCache ? "cache" : "background-wire"
-          }
-        }
-      }
-
       const remaining = timeoutMs - (Date.now() - started)
       if (remaining <= 0) break
-      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)))
+
+      const waitSliceMs = Math.min(pollMs, remaining)
+      const eventWaiters = []
+
+      if (hasActivePageWire(pageUrl, cacheKey)) {
+        eventWaiters.push(
+          joinActivePageWire(pageUrl, cacheKey, { timeoutMs: waitSliceMs }).then((localWire) =>
+            localWire?.ok && localWire.bytes ? localWire : null
+          )
+        )
+      }
+
+      if (typeof ns.awaitHotBytes === "function") {
+        eventWaiters.push(
+          ns.awaitHotBytes(pageUrl, cacheKey, { timeoutMs: waitSliceMs }).then((hot) =>
+            hot?.ok && hot.bytes
+              ? {
+                  ok: true,
+                  bytes: hot.bytes,
+                  contentType: hot.contentType,
+                  status: hot.status || 200,
+                  fromCache: true,
+                  via: "hot-l1"
+                }
+              : null
+          )
+        )
+      }
+
+      eventWaiters.push(sleep(waitSliceMs).then(() => null))
+
+      let raced = null
+      try {
+        raced = await Promise.race(eventWaiters)
+      } catch {
+        raced = null
+      }
+      if (raced?.ok && raced.bytes) {
+        if (raced.via === "page-wire" && typeof ns.putHotBytes === "function") {
+          ns.putHotBytes(pageUrl || cacheKey, raced.bytes, {
+            contentType: raced.contentType || "application/octet-stream",
+            status: Number(raced.status) || 200,
+            cacheKey
+          })
+        }
+        return raced
+      }
+
+      // Cheap L1-only check every slice; IPC only as a rare safety belt.
+      const allowIpc = ipcLookups < maxIpcLookups
+      const cached = await tryHotOrCachedDelivery(pageUrl, cacheKey, lookupCached, {
+        allowIpcLookup: allowIpc
+      })
+      if (allowIpc) ipcLookups += 1
+      if (cached) return cached
     }
 
     return null

@@ -185,7 +185,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const normalized = typeof ns.normalizeSegments === "function" ? ns.normalizeSegments(segments) : segments
   if (!normalized.length) return
 
-  emitPrefetchDebugLog('H1', 'src/background/prefetch/arbitration/prefetch-scheduler.js:110', 'schedulePrefetch entry', { tabId, startIndex, source: options.source || 'schedule', force: Boolean(options.force), segments: normalized.length })
+  emitPrefetchDebugLog('H1', 'src/background/prefetch/scheduler/prefetch-scheduler.js:110', 'schedulePrefetch entry', { tabId, startIndex, source: options.source || 'schedule', force: Boolean(options.force), segments: normalized.length })
 
   const tabState = typeof ns.upsertPlaylistState === "function" ? ns.upsertPlaylistState(tabId, normalized) : state.playlistByTab.get(tabId)
   if (!tabState) return
@@ -203,7 +203,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const scheduleSignature = buildPrefetchScheduleSignature(tabId, normalized, clampedStartIndex, options.source || "schedule", Number(tabState?.networkGeneration) || 0)
   const scheduleSource = options.source || "schedule"
   if (shouldSkipDuplicateSchedule(tabState, clampedStartIndex, now, force, scheduleSignature)) {
-    emitPrefetchDebugLog('H1', 'src/background/prefetch/arbitration/prefetch-scheduler.js:125', 'duplicate schedule skipped', { tabId, startIndex: clampedStartIndex, lastScheduledFromIndex: tabState.lastScheduledFromIndex, lastScheduledAt: tabState.lastScheduledAt, signature: scheduleSignature, source: scheduleSource })
+    emitPrefetchDebugLog('H1', 'src/background/prefetch/scheduler/prefetch-scheduler.js:125', 'duplicate schedule skipped', { tabId, startIndex: clampedStartIndex, lastScheduledFromIndex: tabState.lastScheduledFromIndex, lastScheduledAt: tabState.lastScheduledAt, signature: scheduleSignature, source: scheduleSource })
     return
   }
   if (typeof ns.computeCongestionDirectivesForTab === "function") ns.computeCongestionDirectivesForTab(tabId)
@@ -296,11 +296,18 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
 
   ns.clearPrefetchCapRetry(tabState)
   const availableSlots = globalCap - globalInflight
-  const batchInflightCap = Math.max(1, Number(constants.PREFETCH_BATCH_INFLIGHT_CAP) || 8)
+  const defaultBatchCap = Math.max(1, Number(constants.PREFETCH_BATCH_INFLIGHT_CAP) || 8)
+  const scrubBatchCap = Math.max(defaultBatchCap, Number(constants.PREFETCH_SCRUB_BATCH_INFLIGHT_CAP) || 12)
+  const scrubSurge =
+    /scrub-snap-back|scrub-velocity|teleport|buffer-emergency|rescue/i.test(String(source || "")) ||
+    (typeof ns.isScrubGuardActive === "function" && ns.isScrubGuardActive(tabState)) ||
+    Date.now() < Number(tabState?.scrubFeedSurgeUntil || 0) ||
+    (typeof ns.isTabInScrubbingTrain === "function" && ns.isTabInScrubbingTrain(tabState))
+  const batchInflightCap = scrubSurge ? scrubBatchCap : defaultBatchCap
   const batch = uncached.slice(0, Math.min(availableSlots, batchInflightCap))
 
   if (!batch.length) {
-    emitPrefetchDebugLog('H2', 'src/background/prefetch/arbitration/prefetch-scheduler.js:167', 'prefetch batch empty after filtering', { tabId, startIndex: clampedStartIndex, source, blockedInflight, blockedCooldown, blockedLane, targets: targets.length })
+    emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:167', 'prefetch batch empty after filtering', { tabId, startIndex: clampedStartIndex, source, blockedInflight, blockedCooldown, blockedLane, targets: targets.length })
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
     if ((blockedInflight > 0 || blockedCooldown > 0 || blockedLane > 0) && shouldLogSkip) {
       addLog("INFO", `Prefetch paused on tab ${tabId}: inflight=${blockedInflight}, retryCooldown=${blockedCooldown}, laneBlocked=${blockedLane}`)
@@ -329,7 +336,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
     if (typeof inflightEntry.segmentIndex === "number") ns.noteInflightSegmentIndices(tabState, inflightEntry.segmentIndex, 1)
   }
 
-  emitPrefetchDebugLog('H2', 'src/background/prefetch/arbitration/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, availableSlots, globalCap, globalInflight })
+  emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, availableSlots, globalCap, globalInflight })
   addLog("INFO", `Scheduling prefetch of ${batch.length} chunks for tab ${tabId} (from index ${clampedStartIndex}, source=${source}, mode=${engineMode || "NORMAL"})`)
   tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.lastPrefetchScheduleSignature = scheduleSignature; tabState.updatedAt = now
 

@@ -111,6 +111,13 @@ function cacheNetworkStreamInBackground({
       captureSource: "fetch-tee"
     }).catch((error) => ({ ok: false, error: formatStoreChunkError(null, error) }))
 
+    if (streamed.bytes && typeof ns.putHotBytes === "function") {
+      ns.putHotBytes(cacheLookupUrl, streamed.bytes, {
+        contentType,
+        status: 200
+      })
+    }
+
     if (!storeRes?.ok) {
       logBridge(
         `Network chunk store failed (${formatStoreChunkError(storeRes)}): ${String(urlForLog).slice(-80)}`,
