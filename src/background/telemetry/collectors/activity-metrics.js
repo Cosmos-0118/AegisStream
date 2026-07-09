@@ -66,6 +66,25 @@ function bumpLookupMetric(metric, url, amount = 1) {
   bumpActivity(metric, amount)
 }
 
+/**
+ * Rolling per-tab hit rate driven by *actual* lookup outcomes (not proxy
+ * signals like buffer runway or seek-jump counts). This closes the loop that
+ * `resolveEffectivePrefetchWindow`'s adaptive boost depends on — without it,
+ * the prefetch window only reacts to indirect heuristics and never widens in
+ * response to a tab that is measurably missing cache on real requests.
+ */
+function updateTabPrefetchHitRate(tabId, wasHit) {
+  if (!Number.isFinite(tabId)) return
+  const tabState = state.playlistByTab?.get(tabId)
+  if (!tabState) return
+  const alpha = Number(constants.PREFETCH_ADAPTIVE_HIT_RATE_ALPHA) || 0.25
+  const sample = wasHit ? 1 : 0
+  const samples = Number(tabState.prefetchHitRateSamples || 0) + 1
+  tabState.prefetchHitRateSamples = samples
+  const previous = Number.isFinite(tabState.prefetchHitRate) ? tabState.prefetchHitRate : sample
+  tabState.prefetchHitRate = samples <= 1 ? sample : alpha * sample + (1 - alpha) * previous
+}
+
 /** Always count player-facing cache serves (no per-URL dedupe). */
 function recordCacheServeHit(url, meta = {}) {
   const kind = String(meta.kind || "hit")
@@ -79,6 +98,7 @@ function recordCacheServeHit(url, meta = {}) {
     pruneLookupMetricDedupe()
     recentLookupMetricAt.set(`cacheHits:${url}`, Date.now())
   }
+  updateTabPrefetchHitRate(Number(meta.tabId), true)
 }
 
 function recordCacheLookupMiss(url, meta = {}) {
@@ -94,6 +114,7 @@ function recordCacheLookupMiss(url, meta = {}) {
   if (typeof ns.notePainCacheMiss === "function") {
     ns.notePainCacheMiss(1)
   }
+  updateTabPrefetchHitRate(Number(meta.tabId), false)
 }
 
 function recordCacheLookupOutcome(url, outcome, meta = {}) {
@@ -344,6 +365,7 @@ async function buildDisplayStats() {
 ns.ACTIVITY_WINDOW_MS = WINDOW_MS
 ns.bumpActivity = bumpActivity
 ns.bumpLookupMetric = bumpLookupMetric
+ns.updateTabPrefetchHitRate = updateTabPrefetchHitRate
 ns.recordCacheServeHit = recordCacheServeHit
 ns.recordCacheLookupMiss = recordCacheLookupMiss
 ns.recordCacheLookupOutcome = recordCacheLookupOutcome

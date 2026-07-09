@@ -89,6 +89,29 @@ ns.dropStalePrefetchWork = function dropStalePrefetchWork(tabId, tabState, pendi
 
 // ─── Window and duplicate resolution ───
 
+/**
+ * How much to widen the prefetch window based on the tab's *observed*
+ * rolling hit rate (see `updateTabPrefetchHitRate`), independent of buffer
+ * runway. Buffer runway is a lagging indicator — it only drops once misses
+ * have already forced network fallbacks — so a tab that is measurably
+ * missing cache on real requests should widen its window immediately, before
+ * runway pressure ever kicks in. Requires a minimum sample count so a cold
+ * tab (no data yet) doesn't get a false boost or false confidence of health.
+ */
+ns.resolveAdaptiveHitRateBoost = function resolveAdaptiveHitRateBoost(tabState) {
+  if (!tabState) return 0
+  const samples = Number(tabState.prefetchHitRateSamples || 0)
+  const minSamples = Number(constants.PREFETCH_ADAPTIVE_MIN_SAMPLES) || 3
+  if (samples < minSamples) return 0
+  const hitRate = Number(tabState.prefetchHitRate)
+  if (!Number.isFinite(hitRate)) return 0
+  const target = Number(constants.PREFETCH_ADAPTIVE_HIT_TARGET) || 0.88
+  const deficit = Math.max(0, target - hitRate)
+  if (deficit <= 0) return 0
+  const maxBoost = Number(constants.PREFETCH_ADAPTIVE_MAX_WINDOW_BOOST) || 4
+  return Math.min(maxBoost, Math.round(deficit * 10))
+}
+
 ns.resolveEffectivePrefetchWindow = function resolveEffectivePrefetchWindow(tabId) {
   if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) return 0
   const baseWindow = Math.max(1, Number(state.settings.prefetchWindow) || 1)
@@ -109,6 +132,8 @@ ns.resolveEffectivePrefetchWindow = function resolveEffectivePrefetchWindow(tabI
       windowSize = Math.max(windowSize, Math.min(baseWindow + 2, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8))
     }
   }
+
+  windowSize = Math.min(20, windowSize + ns.resolveAdaptiveHitRateBoost(tabState))
 
   if (typeof ns.isInRefreshRecovery === "function" && ns.isInRefreshRecovery(tabState)) windowSize = Math.min(windowSize, constants.REFRESH_RECOVERY_MAX_CHUNKS)
   if (typeof ns.resolveBufferAdjustedPrefetchWindow === "function") windowSize = ns.resolveBufferAdjustedPrefetchWindow(tabId, windowSize)
@@ -211,8 +236,9 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const windowPressure = Number.isFinite(runwaySec) && runwaySec > 0 ? Math.max(0, (Number(constants.BUFFER_RUNWAY_NORMAL_SEC) || 30) - runwaySec) : 0
   const boostActiveUntil = Number(tabState?.prefetchWindowBoostUntil || 0)
   const boostActive = boostActiveUntil > now
-  const hitRate = Number(tabState?.prefetchHitRate || tabState?.hitRate || 0)
-  const lowHitRateBoost = Number.isFinite(hitRate) && hitRate > 0 && hitRate < 0.4 ? 2 : 0
+  // Hit-rate-driven widening is already folded into `effectiveWindow` via
+  // resolveEffectivePrefetchWindow() -> resolveAdaptiveHitRateBoost(), so it
+  // always applies (not just when runway pressure/boost windows are active).
   const adaptiveBoost = Number(tabState?.adaptivePrefetchBoost || 0)
   const aggressiveBufferBoost =
     Number.isFinite(runwaySec) && runwaySec > 0 && runwaySec <= Number(constants.BUFFER_RUNWAY_EMERGENCY_SEC)
@@ -231,7 +257,6 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
         Math.round(
           effectiveWindow +
             Math.min(windowPressure / 4, Number(constants.PREFETCH_BURST_WINDOW_CAP) || 8) +
-            lowHitRateBoost +
             adaptiveBoost +
             aggressiveBufferBoost +
             seekPressureBoost +

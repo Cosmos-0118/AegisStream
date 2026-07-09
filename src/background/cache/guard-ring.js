@@ -47,12 +47,19 @@ function collectGuardRingProtectedUrls() {
     if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue
     const seekChurn = isTabInSeekChurnAggressive(tabState)
     const teleportActive = Date.now() < Number(tabState.teleportModeUntil || 0)
-    const past = seekChurn || teleportActive
+    // A tab with a measurably low real hit rate is being widened via
+    // resolveAdaptiveHitRateBoost() on the prefetch side — extend the same
+    // amount of protection here so those extra fetches aren't reclaimed by
+    // eviction before playback ever reaches them (would otherwise show up
+    // as wasted fill / "recentlyEvictedMisses").
+    const hitRateBoost =
+      typeof ns.resolveAdaptiveHitRateBoost === "function" ? ns.resolveAdaptiveHitRateBoost(tabState) : 0
+    const past = (seekChurn || teleportActive
       ? Math.max(defaultPast, Number(constants.CACHE_GUARD_RING_SEEK_CHURN_PAST) || 5)
-      : defaultPast
-    const future = seekChurn || teleportActive
+      : defaultPast) + Math.ceil(hitRateBoost / 2)
+    const future = (seekChurn || teleportActive
       ? Math.max(defaultFuture, Number(constants.CACHE_GUARD_RING_SEEK_CHURN_FUTURE) || 24)
-      : defaultFuture
+      : defaultFuture) + hitRateBoost
     const anchor =
       teleportActive && typeof tabState.teleportTargetIndex === "number"
         ? tabState.teleportTargetIndex

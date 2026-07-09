@@ -311,6 +311,10 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
     playlistClassification: playbackState === ns.PlaybackStates?.NEW_PLAYBACK ? "new-playback" : playbackState === ns.PlaybackStates?.QUALITY_SWITCHING ? "quality-switch" : playbackState === ns.PlaybackStates?.TOKEN_REFRESHING ? "token-refresh" : playbackState === ns.PlaybackStates?.STABLE_PLAYBACK && urlsChanged ? "stable-refresh" : tokensRefreshed ? "token-refresh" : urlsChanged ? "urls-changed" : "unchanged",
     recentAnchorChanges: qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint ? [] : previous?.recentAnchorChanges || [],
     rapidSeekUntil: qualityVariantSwitch || segmentCountChanged || episodeChangedByFingerprint ? 0 : Number(previous?.rapidSeekUntil || 0),
+    // Rolling observed hit-rate signal driving the adaptive prefetch window
+    // boost — stale data from a previous episode/session must not linger.
+    prefetchHitRate: episodeChangedByFingerprint ? null : typeof previous?.prefetchHitRate === "number" ? previous.prefetchHitRate : null,
+    prefetchHitRateSamples: episodeChangedByFingerprint ? 0 : Number(previous?.prefetchHitRateSamples || 0),
     lastQualityVariantSwitchAt: qualityVariantSwitch ? Date.now() : Number(previous?.lastQualityVariantSwitchAt || 0),
     variantSwitchGraceUntil: qualityVariantSwitch ? Date.now() + (Number(constants.VARIANT_SWITCH_GRACE_MS) || 8_000) : Number(previous?.variantSwitchGraceUntil || 0),
     variantSwitchAnchorIndex: qualityVariantSwitch ? (typeof anchorIndex === "number" ? anchorIndex : typeof previous?.anchorIndex === "number" ? previous.anchorIndex : null) : typeof previous?.variantSwitchAnchorIndex === "number" ? previous.variantSwitchAnchorIndex : null,

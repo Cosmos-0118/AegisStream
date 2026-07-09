@@ -769,9 +769,15 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
           })
         }
       }
+      // Rapid-seek misses are expected/discounted from the *global* hit-rate
+      // stats (they're noisy, not representative), but the per-tab adaptive
+      // signal must still see them — a burst of misses during aggressive
+      // seeking is exactly the case the window boost should react to.
       if (!rapidSeek) {
-        if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, outcome, { collapsedFromInflight })
-        else recordCacheLookupMiss(lookupUrl)
+        if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, outcome, { collapsedFromInflight, tabId })
+        else recordCacheLookupMiss(lookupUrl, { tabId })
+      } else if (typeof ns.updateTabPrefetchHitRate === "function") {
+        ns.updateTabPrefetchHitRate(tabId, false)
       }
       addLog(
         "WARN",
@@ -790,8 +796,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       "INFO",
       `Cache lookup hit: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} source=${collapsedFromInflight ? "inflight-collapse" : "idb"}`
     )
-    if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, collapsedFromInflight ? "collapsed-hit" : "hit", { collapsedFromInflight })
-    else recordCacheServeHit(lookupUrl)
+    if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, collapsedFromInflight ? "collapsed-hit" : "hit", { collapsedFromInflight, tabId })
+    else recordCacheServeHit(lookupUrl, { tabId })
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
       if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
@@ -1246,7 +1252,7 @@ function registerMessageRouter() {
     }
     case "AegisStream:CacheServeHit": {
       if (message.url) {
-        recordCacheServeHit(message.url)
+        recordCacheServeHit(message.url, { tabId: sender?.tab?.id })
       }
       sendResponse({ ok: true })
       return true

@@ -35,10 +35,15 @@ ns.constants = {
   PREFETCH_BURST_WINDOW_CAP: 8,
   PREFETCH_LOG_THROTTLE_MS: 5_000,
   PREFETCH_ADAPTIVE_MIN_INTERVAL_MS: 30_000,
-  PREFETCH_ADAPTIVE_HIT_TARGET: 0.7,
+  /** Aspirational per-tab hit rate — window keeps widening until observed rate clears this. */
+  PREFETCH_ADAPTIVE_HIT_TARGET: 0.88,
   PREFETCH_ADAPTIVE_MISS_TARGET: 0.18,
   PREFETCH_ADAPTIVE_MAX_WINDOW_BOOST: 4,
   PREFETCH_ADAPTIVE_MAX_RUNWAY_BOOST: 6,
+  /** Minimum resolved lookups on a tab before trusting its rolling hit rate signal. */
+  PREFETCH_ADAPTIVE_MIN_SAMPLES: 3,
+  /** EWMA smoothing for the per-tab rolling hit-rate signal (higher = reacts faster). */
+  PREFETCH_ADAPTIVE_HIT_RATE_ALPHA: 0.25,
   MAX_MASTER_VARIANTS_TO_SCAN: 6,
   SPECULATIVE_MIN_RUNWAY_SEC: 15,
   SPECULATIVE_MATRIX_MAX_RUNGS: 6,
