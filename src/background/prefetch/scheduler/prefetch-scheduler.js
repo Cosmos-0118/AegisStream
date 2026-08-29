@@ -304,9 +304,15 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const globalCap = typeof ns.resolveCongestionGlobalCap === "function" ? ns.resolveCongestionGlobalCap(tabId) : (typeof ns.resolveBufferAdjustedGlobalCap === "function" ? ns.resolveBufferAdjustedGlobalCap(tabId) : Infinity)
   const globalInflight = typeof ns.countGlobalInflightPrefetches === "function" ? ns.countGlobalInflightPrefetches() : 0
 
-  const uncached = []; let blockedInflight = 0, blockedCooldown = 0, blockedLane = 0
+  const uncached = []; let blockedInflight = 0, blockedCooldown = 0, blockedLane = 0, blockedCached = 0
 
   for (const url of targets) {
+    // Cheapest and most decisive check: we may already hold this segment.
+    // Without it this loop only filtered on in-flight/cooldown/lane, so every
+    // reschedule re-delegated segments already in cache — the page refetched
+    // them over the network and the write was rejected downstream as a
+    // duplicate, burning real bandwidth against the playing stream.
+    if (typeof ns.isCacheRegistryHit === "function" && ns.isCacheRegistryHit(url)) { blockedCached += 1; continue }
     if (ns.segmentIndexHasActivePrefetch(tabId, tabState, normalized.indexOf(url))) { blockedInflight += 1; continue }
     const normalizedUrl = ns.normalizePrefetchUrl(url)
     if (!normalizedUrl) { blockedCooldown += 1; continue }
@@ -332,13 +338,13 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   const batch = uncached.slice(0, Math.min(availableSlots, batchInflightCap))
 
   if (!batch.length) {
-    emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:167', 'prefetch batch empty after filtering', { tabId, startIndex: clampedStartIndex, source, blockedInflight, blockedCooldown, blockedLane, targets: targets.length })
+    emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:167', 'prefetch batch empty after filtering', { tabId, startIndex: clampedStartIndex, source, blockedCached, blockedInflight, blockedCooldown, blockedLane, targets: targets.length })
     const shouldLogSkip = now - tabState.lastSkipLogAt > constants.PREFETCH_LOG_THROTTLE_MS
     if ((blockedInflight > 0 || blockedCooldown > 0 || blockedLane > 0) && shouldLogSkip) {
-      addLog("INFO", `Prefetch paused on tab ${tabId}: inflight=${blockedInflight}, retryCooldown=${blockedCooldown}, laneBlocked=${blockedLane}`)
+      addLog("INFO", `Prefetch paused on tab ${tabId}: cached=${blockedCached}, inflight=${blockedInflight}, retryCooldown=${blockedCooldown}, laneBlocked=${blockedLane}`)
       if (blockedLane > 0 && typeof ns.notePainLaneBlocked === "function") ns.notePainLaneBlocked(prefetchLane, blockedLane)
       tabState.lastSkipLogAt = now
-    } else if (blockedInflight === 0 && blockedCooldown === 0 && shouldLogSkip) { addLog("INFO", `All ${targets.length} target chunks already cached`); tabState.lastSkipLogAt = now }
+    } else if (blockedInflight === 0 && blockedCooldown === 0 && shouldLogSkip) { addLog("INFO", `All ${targets.length} target chunks already cached (tab ${tabId})`); tabState.lastSkipLogAt = now }
     if (blockedInflight > 0 && uncached.length > 0 && !options.inflightRetry) schedulePrefetchInflightRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule")
     tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.updatedAt = now; return
   }
@@ -361,7 +367,7 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
     if (typeof inflightEntry.segmentIndex === "number") ns.noteInflightSegmentIndices(tabState, inflightEntry.segmentIndex, 1)
   }
 
-  emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, availableSlots, globalCap, globalInflight })
+  emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, blockedCached, availableSlots, globalCap, globalInflight })
   addLog("INFO", `Scheduling prefetch of ${batch.length} chunks for tab ${tabId} (from index ${clampedStartIndex}, source=${source}, mode=${engineMode || "NORMAL"})`)
   tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.lastPrefetchScheduleSignature = scheduleSignature; tabState.updatedAt = now
 

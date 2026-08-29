@@ -92,7 +92,9 @@ function recordCacheServeHit(url, meta = {}) {
     ns.recordStreamMetric("hls", "hits", 1)
   }
   bumpActivity("cacheHits", 1)
-  bumpActivity("cacheLookups", 1)
+  // cacheLookups is owned by the lookup handler in message-router. Bumping it
+  // again here counted every hit twice, so lookups matched neither hits+misses
+  // nor its own siblings (keyFormat/lookupMap) in the same rollup line.
   bumpActivity(`cacheLookup_${kind}`, 1)
   if (url && typeof url === "string") {
     pruneLookupMetricDedupe()
@@ -106,7 +108,11 @@ function recordCacheLookupMiss(url, meta = {}) {
   if (typeof ns.recordStreamMetric === "function") {
     ns.recordStreamMetric("hls", "misses", 1)
   }
-  bumpLookupMetric("cacheMisses", url, 1)
+  // Counted on the same terms as hits. recordCacheServeHit deliberately does
+  // not dedupe ("Always count player-facing cache serves"), so deduping misses
+  // per-URL biased cacheHitRatePercent upward for exactly the access pattern
+  // that signals trouble: the player retrying a segment we do not have.
+  bumpActivity("cacheMisses", 1)
   bumpActivity(`cacheLookup_${kind}`, 1)
   if (typeof ns.noteRecentlyEvictedMiss === "function") {
     ns.noteRecentlyEvictedMiss(url)

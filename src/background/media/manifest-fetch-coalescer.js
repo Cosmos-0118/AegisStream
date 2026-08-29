@@ -27,6 +27,16 @@
 
     const fetchPromise = (async () => {
       try {
+        // This is the call that hotlink-protected hosts answer with 403: a
+        // service-worker fetch carries no Referer, unlike the identical
+        // request from the page. Referer cannot be set on the init object
+        // (forbidden header name), so it is installed as a session DNR rule
+        // scoped to extension-initiated requests before the fetch goes out.
+        if (typeof ns.ensureMediaRefererRule === "function") {
+          const refererUrl =
+            typeof ns.getPlayerRefererUrl === "function" ? ns.getPlayerRefererUrl(tabId) : null
+          if (refererUrl) await ns.ensureMediaRefererRule(normalized, refererUrl).catch(() => {})
+        }
         const res = await fetch(normalized, {
           credentials: "include",
           cache: "no-store"

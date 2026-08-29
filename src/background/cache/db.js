@@ -540,6 +540,8 @@ async function ageSweepCacheEntries(db, policy) {
   if (!maxAgeMs || !maxDeletes) return { deleted: 0 }
   const cutoff = Date.now() - maxAgeMs
   let deleted = 0
+  const sweptKeys = []
+  const sweptItems = []
   await new Promise((resolve, reject) => {
     const tx = db.transaction(constants.STORE_CHUNKS, "readwrite")
     const store = tx.objectStore(constants.STORE_CHUNKS)
@@ -550,6 +552,11 @@ async function ageSweepCacheEntries(db, policy) {
       const cursor = req.result
       if (!cursor || deleted >= maxDeletes) return
       deleted += 1
+      const primaryKey = typeof cursor.primaryKey === "string" ? cursor.primaryKey : null
+      const recordUrl = typeof cursor.value?.url === "string" ? cursor.value.url : null
+      if (primaryKey) sweptKeys.push(primaryKey)
+      if (recordUrl && recordUrl !== primaryKey) sweptKeys.push(recordUrl)
+      sweptItems.push({ url: recordUrl || primaryKey, byteLength: Number(cursor.value?.byteLength) || 0 })
       cursor.delete()
       cursor.continue()
     }
@@ -557,7 +564,24 @@ async function ageSweepCacheEntries(db, policy) {
     tx.onerror = () => reject(tx.error)
   })
   if (deleted > 0) {
-    addLog("INFO", `TTL sweep removed ${deleted} stale cache chunks (> ${Math.round(maxAgeMs / 60000)} min)`)
+    // The rows are gone, so every structure that answers "is this cached?"
+    // must forget them too — the in-memory key index and the registry synced
+    // to the page. The overflow-eviction path above already does this; when
+    // this sweep skipped it the registry kept claiming hits for content that
+    // no longer existed, and the prefetch scheduler (which now skips registry
+    // hits) would stop re-fetching those segments entirely.
+    if (sweptKeys.length > 0) {
+      dropIndexedPrimaryKeys(sweptKeys)
+      if (typeof ns.unregisterCacheKeys === "function") ns.unregisterCacheKeys(sweptKeys)
+    }
+    if (sweptItems.length > 0 && typeof ns.recordEvictedChunks === "function") {
+      ns.recordEvictedChunks(sweptItems)
+    }
+    const aliasDeleted = sweptKeys.length > 0
+      ? await cleanupAliasesForTargets(sweptKeys).catch(() => 0)
+      : 0
+    const aliasNote = aliasDeleted > 0 ? `, ${aliasDeleted} aliases` : ""
+    addLog("INFO", `TTL sweep removed ${deleted} stale cache chunks${aliasNote} (> ${Math.round(maxAgeMs / 60000)} min)`)
   }
   return { deleted }
 }
@@ -587,6 +611,13 @@ async function cacheChunk(url, contentType, bytes, scope = null) {
     if (typeof ns.scheduleEviction === "function") {
       ns.scheduleEviction(false)
     }
+    // markStoreDedupKey only runs after a successful dbPut, so a hit here
+    // proves this URL is on disk. Registering keeps the scheduler's cache
+    // filter honest for a segment whose first store of this session was a
+    // duplicate — those never reached the registerCacheKeys call below.
+    if (typeof ns.registerCacheKeys === "function") {
+      ns.registerCacheKeys(cacheKeys)
+    }
     return { ok: true, stored: false, duplicate: true, dedup: "invariant-crc" }
   }
   const existing = await dbGet(constants.STORE_CHUNKS, primaryKey).catch(() => null)
@@ -601,6 +632,9 @@ async function cacheChunk(url, contentType, bytes, scope = null) {
   ) {
     // Bytes are already on disk under this primary key — keep the index warm.
     indexCacheKeys(primaryKey, cacheKeys.slice(1))
+    if (typeof ns.registerCacheKeys === "function") {
+      ns.registerCacheKeys(cacheKeys)
+    }
     if (typeof ns.bumpActivity === "function") {
       ns.bumpActivity("storeDedupUrlWindowSkipped", 1)
       ns.bumpActivity("storeDedupSkipped", 1)

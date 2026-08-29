@@ -48,6 +48,49 @@ function clearManifestRefreshTimeout(tabState) {
   tabState.manifestRefreshTimer = null
 }
 
+/**
+ * auth_expired has exactly one exit (requestManifestRefreshForTab), and
+ * AUTH_EXPIRED_RETRY_COOLDOWN_MS only *permits* that exit — nothing schedules
+ * it. Its practical trigger was a tab visibility transition, so a tab that hit
+ * auth_expired while the user simply watched the video stayed there
+ * indefinitely with prefetch hard-blocked by isPrefetchBlocked(). One observed
+ * session sat parked for 14m48s of 17.5 minutes.
+ *
+ * Attempts are bounded and back off, so a genuinely expired session settles
+ * down instead of re-probing a 403 forever.
+ */
+function scheduleAuthExpiredSelfHeal(tabId, tabState) {
+  if (!tabState) return
+  clearAuthExpiredSelfHealTimer(tabState)
+  const maxAttempts = Math.max(0, Math.round(Number(constants.AUTH_EXPIRED_SELF_HEAL_MAX_ATTEMPTS) || 0))
+  if (!maxAttempts) return
+  const attempt = Number(tabState.authSelfHealAttempt || 0) + 1
+  if (attempt > maxAttempts) {
+    addLog("DEBUG", `Auth-expired self-heal exhausted on tab ${tabId} after ${maxAttempts} attempts`)
+    return
+  }
+  tabState.authSelfHealAttempt = attempt
+  const cooldown = Math.max(1_000, Number(constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS) || 30_000)
+  // Clear the cooldown gate by a margin, then widen on each successive failure.
+  const delayMs = Math.round(cooldown * (1 + attempt) * 1.1)
+  addLog(
+    "DEBUG",
+    `Auth-expired self-heal #${attempt}/${maxAttempts} scheduled on tab ${tabId} in ${Math.round(delayMs / 1000)}s`
+  )
+  tabState.authSelfHealTimer = setTimeout(() => {
+    tabState.authSelfHealTimer = null
+    const latest = state.playlistByTab.get(tabId)
+    if (!latest || latest.refreshState !== ns.REFRESH_STATE_AUTH_EXPIRED) return
+    void ns.requestManifestRefreshForTab(tabId, "auth-expired-self-heal")
+  }, delayMs)
+}
+
+function clearAuthExpiredSelfHealTimer(tabState) {
+  if (!tabState?.authSelfHealTimer) return
+  clearTimeout(tabState.authSelfHealTimer)
+  tabState.authSelfHealTimer = null
+}
+
 function scheduleRefreshRetry(tabId, tabState, reason) {
   if (!tabState || tabState.refreshState !== ns.REFRESH_STATE_REFRESHING) return
   clearManifestRefreshRetryTimer(tabState)
@@ -61,6 +104,7 @@ function scheduleRefreshRetry(tabId, tabState, reason) {
       ns.blockPlaylistAuthRecovery(tabState, Number(constants.AUTH_EXPIRED_RETRY_COOLDOWN_MS) || 120_000)
     }
     addLog("WARN", `Soft recovery failed on tab ${tabId} — page authentication may have expired. Playback may resume if the player refreshes its manifest; reload only if it stays broken.`)
+    scheduleAuthExpiredSelfHeal(tabId, tabState)
     return
   }
 
@@ -85,8 +129,33 @@ function scheduleManifestRefreshTimeout(tabId, tabState) {
 }
 
 async function delegatePlaylistRefreshToPage(tabId, playlistUrl, generation) {
+  const message = { type: "AegisStream:RefreshPlaylist", url: playlistUrl, generation }
+  const tabState = state.playlistByTab.get(tabId)
+  const frameId = Number(tabState?.playerFrameId)
+
+  // Target the frame that owns the player when we know it. Without this the
+  // message reaches every frame (content scripts are all_frames:true), each
+  // runs the fetch, and each reports its own PLAYLIST_REFRESH_FAILED for the
+  // same generation. Fall back to the broadcast if the frame has gone away, so
+  // a stale frame id can never leave the tab unable to refresh.
+  if (Number.isFinite(frameId) && frameId >= 0) {
+    try {
+      await chrome.tabs.sendMessage(tabId, message, { frameId })
+      return true
+    } catch (e) {
+      addLog(
+        "DEBUG",
+        `Targeted playlist refresh to frame ${frameId} on tab ${tabId} failed (${e.message}) — broadcasting`
+      )
+      if (tabState) {
+        tabState.playerFrameId = null
+        tabState.playerFrameAuthoritative = false
+      }
+    }
+  }
+
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "AegisStream:RefreshPlaylist", url: playlistUrl, generation })
+    await chrome.tabs.sendMessage(tabId, message)
     return true
   } catch (e) {
     addLog("WARN", `Page playlist refresh delegate failed on tab ${tabId}: ${e.message}`)
@@ -108,6 +177,12 @@ ns.transitionRefreshState = function transitionRefreshState(tabId, tabState, new
     tabState.refreshRetryAttempt = 0
     clearManifestRefreshTimeout(tabState)
     clearManifestRefreshRetryTimer(tabState)
+    // NB: the self-heal budget is deliberately NOT reset here. HEALTHY is also
+    // entered speculatively by requestManifestRefreshForTab's "auth-expired-retry"
+    // hop before the refresh has actually succeeded; resetting on that would
+    // make the bounded retry unbounded. It resets on RECOVERING, which is only
+    // reached after a playlist is genuinely captured.
+    clearAuthExpiredSelfHealTimer(tabState)
     setPlaylistCaptureState(tabState, PLAYLIST_CAPTURE_STATE.HEALTHY)
     tabState.playlistRecaptureRequired = false
     tabState.warmRecovery = false
@@ -120,6 +195,8 @@ ns.transitionRefreshState = function transitionRefreshState(tabId, tabState, new
     clearManifestRefreshTimeout(tabState)
     clearManifestRefreshRetryTimer(tabState)
     tabState.refreshRetryAttempt = 0
+    tabState.authSelfHealAttempt = 0
+    clearAuthExpiredSelfHealTimer(tabState)
     if (typeof ns.beginRefreshRecovery === "function") ns.beginRefreshRecovery(tabState)
     else {
       tabState.refreshRecoveryUntil = Date.now() + constants.REFRESH_RECOVERY_MAX_MS
@@ -176,6 +253,12 @@ ns.executeManifestRefreshAttempt = async function executeManifestRefreshAttempt(
   if (typeof ns.recordManifestRefreshStart === "function") ns.recordManifestRefreshStart(tabId)
 
   scheduleManifestRefreshTimeout(tabId, tabState)
+  // The background fallback below fetches from the service worker, which sends
+  // no Referer of its own; hosts with hotlink protection answer that with 403.
+  if (typeof ns.ensureMediaRefererRule === "function") {
+    const refererUrl = typeof ns.getPlayerRefererUrl === "function" ? ns.getPlayerRefererUrl(tabId) : null
+    if (refererUrl) void ns.ensureMediaRefererRule(playlistUrl, refererUrl).catch(() => {})
+  }
   const delegated = await delegatePlaylistRefreshToPage(tabId, playlistUrl, generation)
   const pageFirstMs = Math.max(0, Number(constants.MANIFEST_REFRESH_PAGE_FIRST_MS) || 300)
   const backgroundFallbackMs = delegated ? Math.max(pageFirstMs, Number(constants.MANIFEST_REFRESH_BACKGROUND_FALLBACK_MS) || 2_500) : pageFirstMs
@@ -199,6 +282,21 @@ ns.noteManifestRefreshFailed = function noteManifestRefreshFailed(tabId, generat
   const pendingGen = Number(tabState.pendingManifestGeneration) || 0
   const msgGen = Number(generation)
   if (pendingGen > 0 && Number.isFinite(msgGen) && msgGen !== pendingGen) return
+
+  // Content scripts are injected with all_frames:true and the refresh is
+  // broadcast with chrome.tabs.sendMessage (no frameId), so every frame runs
+  // the fetch and every frame reports its own failure for the SAME generation.
+  // Counting each as a retry burned the whole budget in milliseconds: on a
+  // 4-frame embed page MANIFEST_REFRESH_MAX_RETRIES=5 became 2 real network
+  // rounds with none of the intended backoff, and the tab fell into
+  // auth_expired within 8 seconds. A generation advances once per attempt
+  // (executeManifestRefreshAttempt -> bumpManifestGeneration), so it is the
+  // correct unit to charge a retry against.
+  if (Number.isFinite(msgGen) && msgGen > 0) {
+    if (Number(tabState.lastRetriedManifestGeneration || 0) === msgGen) return
+    tabState.lastRetriedManifestGeneration = msgGen
+  }
+
   const statusLabel = Number.isFinite(Number(status)) ? `HTTP ${status}` : "fetch failed"
   scheduleRefreshRetry(tabId, tabState, statusLabel)
 }

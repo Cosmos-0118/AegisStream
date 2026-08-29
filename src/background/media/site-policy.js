@@ -194,6 +194,49 @@ function pruneTabPageHosts() {
   }
 }
 
+/**
+ * Which frame is actually driving playback.
+ *
+ * Content scripts are injected with all_frames:true, so a bare
+ * chrome.tabs.sendMessage reaches every frame on the page. For fire-and-forget
+ * work that is merely wasteful, but the playlist refresh asks each frame to
+ * report success or failure — and failures are reported unconditionally, even
+ * by frames with no player. On a 4-frame embed page one refresh produced four
+ * failure reports.
+ *
+ * PlaylistContent is the authoritative signal (that frame demonstrably read
+ * the manifest); chunk stores are a weaker one, used only to seed or refresh a
+ * frame we have not otherwise identified.
+ */
+function notePlayerFrame(tabId, frameId, frameUrl, { authoritative = false } = {}) {
+  if (!Number.isFinite(tabId) || !Number.isFinite(frameId) || frameId < 0) return
+  const tabState = state.playlistByTab?.get(tabId)
+  if (!tabState) return
+  if (!authoritative && tabState.playerFrameAuthoritative === true) {
+    if (tabState.playerFrameId === frameId) tabState.playerFrameSeenAt = Date.now()
+    return
+  }
+  tabState.playerFrameId = frameId
+  tabState.playerFrameSeenAt = Date.now()
+  if (authoritative) tabState.playerFrameAuthoritative = true
+  if (typeof frameUrl === "string" && frameUrl) {
+    try {
+      const parsed = new URL(frameUrl)
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        tabState.playerFrameUrl = frameUrl
+      }
+    } catch {
+      // keep whatever we had
+    }
+  }
+}
+
+/** The frame URL to attribute the extension's own media fetches to. */
+function getPlayerRefererUrl(tabId) {
+  const tabState = state.playlistByTab?.get(tabId)
+  return tabState?.playerFrameUrl || getTabPageUrlFingerprint(tabId) || null
+}
+
 ns.TWITCH_CLIENT_ID = TWITCH_CLIENT_ID
 ns.TWITCH_ORIGIN = TWITCH_ORIGIN
 ns.TWITCH_REFERER = TWITCH_REFERER
@@ -213,4 +256,6 @@ ns.tabHasPlaybackState = tabHasPlaybackState
 ns.isTabMediaContext = isTabMediaContext
 ns.findBackgroundMediaTabId = findBackgroundMediaTabId
 ns.pruneTabPageHosts = pruneTabPageHosts
+ns.notePlayerFrame = notePlayerFrame
+ns.getPlayerRefererUrl = getPlayerRefererUrl
 })()

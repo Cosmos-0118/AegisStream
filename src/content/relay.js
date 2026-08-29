@@ -209,10 +209,27 @@ function copyArrayBuffer(bytes) {
   return null
 }
 
-/** Stay under chrome.runtime.sendMessage size limits (base64 expands ~4/3). */
-const MAX_RELAY_STORE_BYTES = 16 * 1024 * 1024
+/**
+ * Stay under chrome.runtime.sendMessage size limits (base64 expands ~4/3).
+ *
+ * Must match the capture cap in page/interceptors/xhr.js and the wire cap in
+ * background/media/serializers.js, both 32 MiB. This was 16 MiB, so payloads
+ * between 16 and 32 MiB were captured and accepted at both endpoints but
+ * silently rejected here in the middle — fetched, copied, then dropped, with
+ * the page's own store and the extension cache left disagreeing about whether
+ * the segment was cached. 32 MiB base64-expands to ~42.7 MiB, still inside the
+ * ~64 MiB structured-clone budget the sibling caps are written against.
+ */
+const MAX_RELAY_STORE_BYTES = 32 * 1024 * 1024
 
 function storeBytesForExtensionMessage(bytes) {
+  // Size-check before copying: the reject path used to duplicate the whole
+  // buffer first, so an oversized segment cost a full extra allocation to
+  // throw away.
+  const byteLength = Number(bytes?.byteLength)
+  if (Number.isFinite(byteLength) && byteLength > MAX_RELAY_STORE_BYTES) {
+    return { error: "relay-oversized-bytes" }
+  }
   const copied = copyArrayBuffer(bytes)
   if (!copied || copied.byteLength <= 0) return null
   if (copied.byteLength > MAX_RELAY_STORE_BYTES) return { error: "relay-oversized-bytes" }

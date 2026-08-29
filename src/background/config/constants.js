@@ -60,6 +60,10 @@ ns.constants = {
   MANIFEST_REFRESH_RETRY_BASE_MS: 1_000,
   MANIFEST_REFRESH_RETRY_MAX_MS: 8_000,
   AUTH_EXPIRED_RETRY_COOLDOWN_MS: 30_000,
+  // Bounded self-heal probes after a tab falls into auth_expired. Without any,
+  // the state has no timer-driven exit and persists until the user happens to
+  // switch tabs.
+  AUTH_EXPIRED_SELF_HEAL_MAX_ATTEMPTS: 4,
 
   /**
    * Pattern-addressed segment ladders (see media/segment-sequence.js): sites
@@ -437,6 +441,10 @@ ns.constants = {
       manifestIndexQualityReports: 0,
       manifestIndexLowCoverageReports: 0,
       manifestIndexAmbiguousMappings: 0,
+      cacheFillWrites: 0,
+      cacheFillBytes: 0,
+      prefetchFillWrites: 0,
+      prefetchFillBytes: 0,
       lookupKeyRawUrlCount: 0,
       lookupKeyInvariantCount: 0,
       registryFalseNegativeCount: 0,

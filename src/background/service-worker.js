@@ -69,6 +69,7 @@ importScripts(
   "./prefetch/arbitration/speculation-arbitrator.js",
   "./prefetch/lanes/speculative-prefetch.js",
   "./network/fetch-priority.js",
+  "./network/media-referer-rules.js",
   "./network/extension-fetch.js",
   "./network/html-head-scanner.js",
   "./network/stream-injector.js",

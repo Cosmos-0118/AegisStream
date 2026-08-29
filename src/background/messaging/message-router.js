@@ -17,7 +17,6 @@ const {
   maybeLogUmpHealthSummary,
   handleRuntimeMetric,
   bumpActivity,
-  bumpLookupMetric,
   recordCacheServeHit,
   recordCacheLookupMiss,
   buildDisplayStats,
@@ -595,7 +594,9 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       return
     }
 
-    bumpLookupMetric("cacheLookups", lookupUrl, 1)
+    // Undeduped, so lookups reconciles against hits+misses and against the
+    // keyFormat/lookupMap counters emitted from this same handler.
+    bumpActivity("cacheLookups", 1)
     if (lookupUrl && lookupUrl.startsWith("aegis|")) {
       bumpActivity("lookupKeyInvariantCount", 1)
     } else {
@@ -704,6 +705,18 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     let collapsedFromInflight = false
     if (!resolved?.item) {
       if (tabState?.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED || tabState?.playlistCaptureState === (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked")) {
+        // Skip *recovery* here (it would spin a miss-loop), but the miss is
+        // still a miss and must be accounted. This return used to precede the
+        // only cacheMisses increment, so on an auth-expired tab misses were
+        // structurally unrecordable: cacheHitRatePercent = hits/(hits+misses)
+        // could then only ever evaluate to 100% or null. A tab that had given
+        // up entirely reported a perfect hit rate, which is precisely the
+        // signal we rely on to notice that it had given up.
+        if (typeof ns.recordCacheLookupOutcome === "function") {
+          ns.recordCacheLookupOutcome(lookupUrl, "miss", { collapsedFromInflight: false, tabId })
+        } else if (typeof recordCacheLookupMiss === "function") {
+          recordCacheLookupMiss(lookupUrl, { tabId })
+        }
         sendResponse({ ok: true, hit: false, reason: "auth-expired" })
         return
       }
@@ -1194,6 +1207,9 @@ function registerMessageRouter() {
       handleInflightWireResolve(message, sendResponse)
       return true
     case "AegisStream:StoreChunk":
+      if (typeof ns.notePlayerFrame === "function") {
+        ns.notePlayerFrame(sender?.tab?.id, sender?.frameId, sender?.url)
+      }
       handleStoreChunk(message, sendResponse, sender?.tab?.id)
       return true
     case "AegisStream:ClearCache":
@@ -1241,6 +1257,9 @@ function registerMessageRouter() {
     case "AegisStream:PlaylistContent": {
       const tabId = sender?.tab?.id
       if (sender?.tab?.url) noteTabPageUrl(tabId, sender.tab.url)
+      if (typeof ns.notePlayerFrame === "function") {
+        ns.notePlayerFrame(tabId, sender?.frameId, sender?.url, { authoritative: true })
+      }
       if (tabId && message.url && message.text && state.settings.enabled) {
         addLog(
           "INFO",

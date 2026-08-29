@@ -131,6 +131,14 @@ async function fetchExtensionResponse(url, method = "GET", headers = {}, body = 
   if (typeof ns.applyTwitchSessionToUrl === "function" && Number.isFinite(tabId)) {
     fetchUrl = ns.applyTwitchSessionToUrl(tabId, fetchUrl)
   }
+  // Referer is a forbidden header for fetch(), so it is applied out-of-band by
+  // a session DNR rule scoped to extension-initiated requests. Without it the
+  // worker's fetches arrive refererless and hotlink-protected hosts 403 them,
+  // while the identical request from the page succeeds.
+  if (typeof ns.ensureMediaRefererRule === "function" && Number.isFinite(tabId)) {
+    const refererUrl = typeof ns.getPlayerRefererUrl === "function" ? ns.getPlayerRefererUrl(tabId) : null
+    if (refererUrl) await ns.ensureMediaRefererRule(fetchUrl, refererUrl).catch(() => {})
+  }
   const requestHeaders =
     typeof ns.mergeTwitchRequestHeaders === "function"
       ? ns.mergeTwitchRequestHeaders(fetchUrl, sanitizeRequestHeaders(headers), tabId)

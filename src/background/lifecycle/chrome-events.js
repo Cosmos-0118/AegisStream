@@ -166,6 +166,14 @@ function registerChromeEventListeners() {
     if (changeInfo.url) {
       noteTabPageUrl(tabId, changeInfo.url)
       state.bridgeHeartbeatByTab.delete(tabId)
+      // Frame ids are not stable across a navigation; a stale one would send
+      // every refresh to a frame that no longer exists before falling back.
+      const navState = state.playlistByTab.get(tabId)
+      if (navState) {
+        navState.playerFrameId = null
+        navState.playerFrameUrl = null
+        navState.playerFrameAuthoritative = false
+      }
       if (typeof ns.handleTabNavigation === "function") {
         ns.handleTabNavigation(tabId, changeInfo.url, "navigation")
       }
