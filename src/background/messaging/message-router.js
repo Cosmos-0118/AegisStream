@@ -981,6 +981,18 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
       void bridgeStoredChunkRotationAliases(tabId, storeUrl).catch(() => {})
     }
     bumpActivity("cachedChunks", 1)
+    // Sites that expose no playlist are only visible here, where a segment's
+    // URL and its byte length are both known. A ladder adopted on this store
+    // is anchored immediately so scheduling starts at the live playhead
+    // rather than index 0.
+    if (
+      Number.isFinite(tabId) &&
+      typeof ns.noteSequentialSegmentObservation === "function" &&
+      ns.noteSequentialSegmentObservation(tabId, storeUrl, byteLength) &&
+      typeof ns.handleChunkObserved === "function"
+    ) {
+      void ns.handleChunkObserved(tabId, storeUrl, { countMetric: false }).catch(() => {})
+    }
     void refreshCacheEntryCount(true).catch(() => {})
     sendResponse({ ok: true })
   })().catch((e) => {

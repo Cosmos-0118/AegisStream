@@ -60,6 +60,24 @@ ns.constants = {
   MANIFEST_REFRESH_RETRY_BASE_MS: 1_000,
   MANIFEST_REFRESH_RETRY_MAX_MS: 8_000,
   AUTH_EXPIRED_RETRY_COOLDOWN_MS: 30_000,
+
+  /**
+   * Pattern-addressed segment ladders (see media/segment-sequence.js): sites
+   * that expose no .m3u8/.mpd and address segments by a counter in the URL.
+   * Thresholds are deliberately strict — adoption points the prefetcher at a
+   * synthesized URL list, so a false positive costs real bandwidth.
+   */
+  /** Floor for treating a stored payload as a media segment, not page furniture. */
+  SEQUENTIAL_SEGMENT_MIN_BYTES: 256 * 1024,
+  /** Forward-moving observations required on one tab before adopting a ladder. */
+  SEQUENTIAL_SEGMENT_MIN_OBSERVATIONS: 3,
+  /** Largest index step still counted as part of a run (tolerates a dropped store). */
+  SEQUENTIAL_SEGMENT_MAX_INDEX_GAP: 3,
+  SEQUENTIAL_SEGMENT_OBSERVATION_TTL_MS: 3 * 60 * 1000,
+  /** Synthesized ladder length; ~5.5h at 10s segments, so it never needs extending. */
+  SEQUENTIAL_SEGMENT_SYNTH_COUNT: 2000,
+  /** Minimum counter digits; 1-digit runs are too common in ordinary asset names. */
+  SEQUENTIAL_SEGMENT_MIN_DIGITS: 2,
   PREFETCH_AUTH_FAILURE_WINDOW_MS: 4_000,
   PREFETCH_AUTH_FAILURE_THRESHOLD: 3,
   PREFETCH_CONSECUTIVE_MAYBE_AUTH_THRESHOLD: 6,
@@ -419,6 +437,10 @@ ns.constants = {
       manifestIndexQualityReports: 0,
       manifestIndexLowCoverageReports: 0,
       manifestIndexAmbiguousMappings: 0,
+      lookupKeyRawUrlCount: 0,
+      lookupKeyInvariantCount: 0,
+      registryFalseNegativeCount: 0,
+      sequentialLaddersAdopted: 0,
       lookupMappingChecks: 0,
       lookupMappingResolved: 0,
       lookupMappingUnresolved: 0

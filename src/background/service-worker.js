@@ -10,6 +10,7 @@ importScripts(
   "./media/manifest-fetch-coalescer.js",
   "./media/playlist-matrix.js",
   "./media/url-classifiers.js",
+  "./media/segment-sequence.js",
   "./media/site-policy.js",
   "./media/twitch-session.js",
   "./media/playlist-parser.js",

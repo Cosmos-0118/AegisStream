@@ -24,6 +24,7 @@ ns.pruneRuntimeState = function pruneRuntimeState() {
   for (const [tabId, tabState] of state.playlistByTab.entries()) {
     if (now - tabState.updatedAt > constants.STALE_TAB_STATE_MS) {
       state.playlistByTab.delete(tabId)
+      if (typeof ns.resetSequentialSegmentTracking === "function") ns.resetSequentialSegmentTracking(tabId)
       state.tabAnchorJumps.delete(tabId)
       state.bridgeHeartbeatByTab.delete(tabId)
       const pending = state.pendingPrefetchByTab.get(tabId)

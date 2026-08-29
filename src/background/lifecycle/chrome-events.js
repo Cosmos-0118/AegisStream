@@ -84,6 +84,9 @@ function registerChromeEventListeners() {
       void refreshActivePrefetchTab()
     }
     state.playlistByTab.delete(tabId)
+    if (typeof ns.resetSequentialSegmentTracking === "function") {
+      ns.resetSequentialSegmentTracking(tabId)
+    }
     if (typeof ns.clearEpisodeTransitionTelemetry === "function") {
       ns.clearEpisodeTransitionTelemetry(tabId)
     }

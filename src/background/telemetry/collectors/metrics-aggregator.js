@@ -200,7 +200,8 @@
     "prefetchFillBytes",
     "lookupKeyRawUrlCount",
     "lookupKeyInvariantCount",
-    "registryFalseNegativeCount"
+    "registryFalseNegativeCount",
+    "sequentialLaddersAdopted"
   ]
 
   let lastCacheRollupBaseline = Object.create(null)
@@ -269,7 +270,8 @@
       `registryFalseNeg=${cache.registryFalseNegativeCount || 0}`,
       `lookupMap=${cache.lookupMappingChecks || 0}(ok=${cache.lookupMappingResolved || 0},miss=${cache.lookupMappingUnresolved || 0},coverage=${lookupCoverage})`,
       `evictMiss=${cache.recentlyEvictedMisses || 0}(${evictMissRate})`,
-      `cacheEvicted=${cache.cacheChunksEvicted || 0}`
+      `cacheEvicted=${cache.cacheChunksEvicted || 0}`,
+      `seqLadders=${cache.sequentialLaddersAdopted || 0}`
     ].join(", ")
   }
 
