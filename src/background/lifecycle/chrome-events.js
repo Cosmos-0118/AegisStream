@@ -172,6 +172,7 @@ function registerChromeEventListeners() {
       if (navState) {
         navState.playerFrameId = null
         navState.playerFrameUrl = null
+        navState.playerFrameRank = 0
         navState.playerFrameAuthoritative = false
       }
       if (typeof ns.handleTabNavigation === "function") {

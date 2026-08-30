@@ -159,9 +159,9 @@ function buildPrefetchScheduleSignature(tabId, segments, startIndex, source, gen
   return [tabId, generation || 0, source || "schedule", startIndex, segments?.length || 0, first, last].join("|")
 }
 
-function schedulePrefetchInflightRetry(tabId, tabState, segments, startIndex, source = "schedule") {
+function schedulePrefetchInflightRetry(tabId, tabState, segments, startIndex, source = "schedule", windowOverride = null) {
   if (!tabState) return
-  const pendingSnapshot = { segments, startIndex, source, queuedAt: Date.now(), scheduleGeneration: Number(tabState.networkGeneration) || 0 }
+  const pendingSnapshot = { segments, startIndex, source, windowOverride, queuedAt: Date.now(), scheduleGeneration: Number(tabState.networkGeneration) || 0 }
   tabState.prefetchInflightRetryPending = pendingSnapshot
   if (tabState.prefetchInflightRetryTimer) clearTimeout(tabState.prefetchInflightRetryTimer)
   tabState.prefetchInflightRetryTimer = setTimeout(() => {
@@ -170,15 +170,19 @@ function schedulePrefetchInflightRetry(tabId, tabState, segments, startIndex, so
     if (!pending) return
     tabState.prefetchInflightRetryPending = null
     if (ns.isPrefetchWorkStale(tabState, pending)) { ns.dropStalePrefetchWork(tabId, tabState, pending, "inflight-retry-stale"); return }
-    void ns.schedulePrefetch(tabId, pending.segments, pending.startIndex, { source: pending.source, force: true, inflightRetry: true })
+    void ns.schedulePrefetch(tabId, pending.segments, pending.startIndex, { source: pending.source, force: true, inflightRetry: true, prefetchWindowOverride: pending.windowOverride ?? undefined })
   }, constants.PREFETCH_INFLIGHT_RETRY_MS)
 }
 
-function schedulePrefetchCapRetry(tabId, tabState, segments, startIndex, source) {
+function schedulePrefetchCapRetry(tabId, tabState, segments, startIndex, source, windowOverride = null) {
   if (!tabState) return
   const existing = tabState.prefetchCapRetryPending
   const queuedAt = existing?.queuedAt || Date.now()
-  const pendingSnapshot = { segments, startIndex, source, queuedAt, scheduleGeneration: Number(tabState.networkGeneration) || 0 }
+  // The override must ride along. A depth pass asks for a window of ~45 but is
+  // capped to 4 in flight, so it *always* leaves work behind and *always* takes
+  // this path; retrying at the urgent window would find the near segments
+  // already cached, schedule nothing, and burn the retry budget to exhaustion.
+  const pendingSnapshot = { segments, startIndex, source, windowOverride, queuedAt, scheduleGeneration: Number(tabState.networkGeneration) || 0 }
   if (ns.isPrefetchWorkStale(tabState, pendingSnapshot)) { ns.dropStalePrefetchWork(tabId, tabState, pendingSnapshot, "queue-age"); return }
   const attempts = Number(tabState.prefetchCapRetryAttempts || 0) + 1
   if (attempts > constants.PREFETCH_CAP_RETRY_MAX_ATTEMPTS) { ns.clearPrefetchCapRetry(tabState); addLog("WARN", `Prefetch cap retry exhausted on tab ${tabId} after ${constants.PREFETCH_CAP_RETRY_MAX_ATTEMPTS} attempts`); return }
@@ -191,7 +195,7 @@ function schedulePrefetchCapRetry(tabId, tabState, segments, startIndex, source)
     if (!pending) return
     if (ns.isPrefetchWorkStale(tabState, pending)) { ns.dropStalePrefetchWork(tabId, tabState, pending, "queue-age"); return }
     tabState.prefetchCapRetryPending = null
-    void ns.schedulePrefetch(tabId, pending.segments, pending.startIndex, { source: pending.source, force: true, capRetry: true })
+    void ns.schedulePrefetch(tabId, pending.segments, pending.startIndex, { source: pending.source, force: true, capRetry: true, prefetchWindowOverride: pending.windowOverride ?? undefined })
   }, delayMs)
 }
 
@@ -265,8 +269,11 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
       )
     )
   }
-  const windowOverride = Number(options.prefetchWindowOverride)
-  if (Number.isFinite(windowOverride) && windowOverride > 0) effectiveWindow = Math.max(effectiveWindow, Math.min(windowOverride, normalized.length))
+  const windowOverrideRaw = Number(options.prefetchWindowOverride)
+  // null, not NaN: this value is carried into retry snapshots, and `??` does
+  // not treat NaN as absent.
+  const windowOverride = Number.isFinite(windowOverrideRaw) && windowOverrideRaw > 0 ? windowOverrideRaw : null
+  if (windowOverride !== null) effectiveWindow = Math.max(effectiveWindow, Math.min(windowOverride, normalized.length))
   if (effectiveWindow === 0) { tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.updatedAt = now; return }
 
   if (windowPressure > 0 && typeof ns.requestPrefetchBoost === "function") {
@@ -334,7 +341,11 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
     (typeof ns.isScrubGuardActive === "function" && ns.isScrubGuardActive(tabState)) ||
     Date.now() < Number(tabState?.scrubFeedSurgeUntil || 0) ||
     (typeof ns.isTabInScrubbingTrain === "function" && ns.isTabInScrubbingTrain(tabState))
-  const batchInflightCap = scrubSurge ? scrubBatchCap : defaultBatchCap
+  const isDepthFill = typeof ns.isDepthFillSource === "function" && ns.isDepthFillSource(source)
+  // Depth runs under a tighter cap than the urgent lane so a fill pass always
+  // leaves global slots free for the player's own needs to preempt it.
+  const depthBatchCap = Math.max(1, Number(constants.PREFETCH_DEPTH_BATCH_INFLIGHT_CAP) || 4)
+  const batchInflightCap = isDepthFill ? depthBatchCap : scrubSurge ? scrubBatchCap : defaultBatchCap
   const batch = uncached.slice(0, Math.min(availableSlots, batchInflightCap))
 
   if (!batch.length) {
@@ -345,7 +356,15 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
       if (blockedLane > 0 && typeof ns.notePainLaneBlocked === "function") ns.notePainLaneBlocked(prefetchLane, blockedLane)
       tabState.lastSkipLogAt = now
     } else if (blockedInflight === 0 && blockedCooldown === 0 && shouldLogSkip) { addLog("INFO", `All ${targets.length} target chunks already cached (tab ${tabId})`); tabState.lastSkipLogAt = now }
-    if (blockedInflight > 0 && uncached.length > 0 && !options.inflightRetry) schedulePrefetchInflightRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule")
+    // Every urgent target is already held and nothing is queued behind it: the
+    // standing start the depth lane waits for. Guarded on the *reason* the batch
+    // was empty — if anything was blocked in-flight or on cooldown the urgent
+    // lane still has work, and depth must not take bandwidth from it. Not
+    // re-entered from a depth pass of its own.
+    if (!isDepthFill && blockedInflight === 0 && blockedCooldown === 0 && blockedLane === 0 && blockedCached > 0 && typeof ns.maybeScheduleDepthFill === "function") {
+      ns.maybeScheduleDepthFill(tabId, tabState, normalized, clampedStartIndex, { urgentWindow: targets.length })
+    }
+    if (blockedInflight > 0 && uncached.length > 0 && !options.inflightRetry) schedulePrefetchInflightRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule", windowOverride)
     tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.updatedAt = now; return
   }
 
@@ -369,11 +388,12 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
 
   emitPrefetchDebugLog('H2', 'src/background/prefetch/scheduler/prefetch-scheduler.js:200', 'scheduling prefetch batch', { tabId, startIndex: clampedStartIndex, source, mode: engineMode || 'NORMAL', batch: batch.length, uncached: uncached.length, blockedCached, availableSlots, globalCap, globalInflight })
   addLog("INFO", `Scheduling prefetch of ${batch.length} chunks for tab ${tabId} (from index ${clampedStartIndex}, source=${source}, mode=${engineMode || "NORMAL"})`)
+  if (isDepthFill && typeof ns.bumpActivity === "function") ns.bumpActivity("depthFillSegments", batch.length)
   tabState.lastScheduledFromIndex = clampedStartIndex; tabState.lastScheduledAt = now; tabState.lastPrefetchScheduleSignature = scheduleSignature; tabState.updatedAt = now
 
   const delegated = await ns.delegatePrefetchToPage(tabId, batch, { source: scheduleSource, priority: options.priority || (/buffer-load-push|rescue|buffer-emergency|scrub-snap-back/.test(scheduleSource) ? "high" : "low") })
   if (!delegated) { for (const url of batch) ns.updatePrefetchOutcome(url, false, "delegate-failed"); return }
-  if (uncached.length > batch.length) schedulePrefetchCapRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule")
+  if (uncached.length > batch.length) schedulePrefetchCapRetry(tabId, tabState, normalized, clampedStartIndex, options.source || "schedule", windowOverride)
   if (typeof ns.maybeScheduleSpeculativePrefetch === "function" && engineMode !== ns.EngineModes?.RESCUE && !(typeof ns.isRescueModeActive === "function" && ns.isRescueModeActive(tabState))) ns.maybeScheduleSpeculativePrefetch(tabId)
 }
 

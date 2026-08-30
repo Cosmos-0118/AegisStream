@@ -167,7 +167,7 @@ ns.delegatePrefetchToPage = async function delegatePrefetchToPage(tabId, urls, o
       return true
     } catch (e) {
       addLog("DEBUG", `Targeted prefetch to frame ${frameId} on tab ${tabId} failed (${e.message}) — broadcasting`)
-      if (tabState) { tabState.playerFrameId = null; tabState.playerFrameAuthoritative = false }
+      if (tabState) { tabState.playerFrameId = null; tabState.playerFrameRank = 0; tabState.playerFrameAuthoritative = false }
     }
   }
 

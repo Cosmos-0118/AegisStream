@@ -275,6 +275,26 @@ ns.upsertPlaylistState = function upsertPlaylistState(tabId, normalizedSegments,
 
   // Build tab state object
   const tabState = {
+    // Which frame owns the player. Carried across the rebuild on purpose: this
+    // is a property of the tab's DOM, not of the manifest we just parsed.
+    //
+    // Dropping it meant every playlist re-parse — a routine token refresh, a
+    // chunk-observed rebuild — silently reset the tab to "player frame unknown",
+    // and it was only relearned from the next StoreChunk, i.e. from the very
+    // fan-out the frame id exists to prevent. Measured over one 10.7-minute
+    // session: 43 delegations after the id was first learned, only 20 of them
+    // targeted, alternating in runs as each refresh wiped it again. The other 23
+    // went to every frame in the tab, and every frame fetched every URL.
+    //
+    // A real navigation is the signal that frame ids have changed, and
+    // chrome.tabs.onUpdated already clears these three on changeInfo.url. If the
+    // frame goes away without one, the targeted send throws and both delegate
+    // paths fall back to the broadcast and clear the id themselves.
+    playerFrameId: previous?.playerFrameId ?? null,
+    playerFrameUrl: previous?.playerFrameUrl ?? null,
+    playerFrameAuthoritative: previous?.playerFrameAuthoritative === true,
+    playerFrameRank: Number(previous?.playerFrameRank || 0),
+    playerFrameSeenAt: Number(previous?.playerFrameSeenAt || 0),
     pageUrl: pageUrlForFingerprint || previous?.pageUrl || null,
     segments: normalizedSegments, segmentUrlHistory, manifestSignatures, signatureToIndex,
     indexQuality, indexQualityRecordedAt: indexQuality ? Date.now() : null,

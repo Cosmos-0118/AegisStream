@@ -68,6 +68,7 @@ importScripts(
   "./cache/eviction-manager.js",
   "./prefetch/arbitration/speculation-arbitrator.js",
   "./prefetch/lanes/speculative-prefetch.js",
+  "./prefetch/lanes/depth-lane.js",
   "./network/fetch-priority.js",
   "./network/media-referer-rules.js",
   "./network/extension-fetch.js",

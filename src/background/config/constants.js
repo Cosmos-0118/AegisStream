@@ -33,6 +33,26 @@ ns.constants = {
   PREFETCH_TAB_BURST_WINDOW_MS: 5_000,
   PREFETCH_TAB_BURST_THRESHOLD: 8,
   PREFETCH_BURST_WINDOW_CAP: 8,
+
+  // Depth lane — see prefetch/lanes/depth-lane.js. These govern how far ahead
+  // the cache is allowed to reach once the urgent window is satisfied, which is
+  // what actually survives a network slowdown.
+  PREFETCH_DEPTH_ENABLED: true,
+  // Seconds of video to hold ahead of the playhead. ~45 segments at a 4s target
+  // duration; the caps below bound it in absolute terms as well.
+  PREFETCH_DEPTH_TARGET_SEC: 180,
+  PREFETCH_DEPTH_MAX_SEGMENTS: 120,
+  // Depth may never claim more than this share of the cache. Eviction is
+  // playback-distance aware, so an unbounded depth target would evict its own
+  // far end and then start on the near-playhead segments — worse than not
+  // filling at all.
+  PREFETCH_DEPTH_CACHE_SHARE: 0.5,
+  // Only spend bandwidth on the future while the present is comfortable.
+  PREFETCH_DEPTH_MIN_RUNWAY_SEC: 15,
+  PREFETCH_DEPTH_COOLDOWN_MS: 1_500,
+  // Smaller than PREFETCH_BATCH_INFLIGHT_CAP so a depth pass always leaves
+  // global slots free for the urgent lane to preempt it.
+  PREFETCH_DEPTH_BATCH_INFLIGHT_CAP: 4,
   PREFETCH_LOG_THROTTLE_MS: 5_000,
   PREFETCH_ADAPTIVE_MIN_INTERVAL_MS: 30_000,
   /** Aspirational per-tab hit rate — window keeps widening until observed rate clears this. */
@@ -377,11 +397,18 @@ ns.constants = {
   createInitialStats() {
     return {
       cacheLookups: 0,
+      // Depth-lane passes and the segments they actually delegated. Zero passes
+      // with a healthy runway means the lane's guards are never opening.
+      depthFillPasses: 0,
+      depthFillSegments: 0,
       // Lookups that reached the handler but produced neither hit nor miss.
       // Must stay 0; any drift means an exit path is skipping its accounting,
       // which is exactly how cacheHitRatePercent became unreadable.
       cacheLookupUnaccounted: 0,
       cacheLookupTimeouts: 0,
+      // Lookups that threw. Distinct from a miss: a miss means we did not have
+      // the segment, an error means our own code failed before it could find out.
+      cacheLookupErrors: 0,
       idbTimeouts: 0,
       cacheHits: 0,
       hotHits: 0,

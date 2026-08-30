@@ -11,6 +11,7 @@ const {
   describeStoreMessageWire,
   formatCrcTelemetry,
   arrayBufferToBase64,
+  buildCacheKeyVariants,
   cacheChunk,
   resolveCachedChunk,
   clearCacheStores,
@@ -966,7 +967,20 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     .catch((error) => {
       // A throw is still an outcome. finalize() below books it, but respond now
       // so the player is not left waiting on the watchdog.
-      addLog("DEBUG", `Cache lookup threw: ${error?.message || "unknown"}`)
+      //
+      // WARN, not DEBUG, and counted separately from a miss. A `ReferenceError:
+      // buildCacheKeyVariants is not defined` lived on this path for 17 commits:
+      // it fires only after the first IDB pass misses, so it took out the entire
+      // recovery chain (bridge wait, inflight-prefetch collapse, inflight-write
+      // collapse) while presenting as an ordinary cache miss. Every throw is a
+      // bug in us, never a property of the stream — it must never be
+      // indistinguishable from a segment we simply did not have.
+      bumpActivity("cacheLookupErrors", 1)
+      addLog(
+        "WARN",
+        `Cache lookup threw (${error?.name || "Error"}: ${error?.message || "unknown"}) — ` +
+          `recovery chain skipped for ${String(urlRef.url || "").slice(-72)}`
+      )
       ledger.respond({ ok: false, hit: false })
     })
     // Runs on every path — return, throw, or early exit. This is what makes
@@ -1305,7 +1319,13 @@ function registerMessageRouter() {
       return true
     case "AegisStream:StoreChunk":
       if (typeof ns.notePlayerFrame === "function") {
-        ns.notePlayerFrame(sender?.tab?.id, sender?.frameId, sender?.url)
+        // "prefetch" means this frame fetched the segment because we told it to,
+        // so it identifies nothing — and while the player frame is unknown we
+        // tell every frame, so every frame answers. Only an interception of the
+        // page's own player traffic actually points at the player.
+        ns.notePlayerFrame(sender?.tab?.id, sender?.frameId, sender?.url, {
+          evidence: message?.captureSource === "prefetch" ? "echo" : "observed"
+        })
       }
       handleStoreChunk(message, sendResponse, sender?.tab?.id)
       return true

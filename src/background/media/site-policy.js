@@ -234,18 +234,54 @@ function isUntrustedRefererFrameUrl(url) {
   }
 }
 
-function notePlayerFrame(tabId, frameId, frameUrl, { authoritative = false } = {}) {
+/**
+ * How strong the evidence is that a given frame owns the player.
+ *
+ *  3 authoritative — the frame delivered playlist content. Only this tier is
+ *    trusted to supply a Referer; get that wrong and the host 403s us.
+ *  2 observed — we intercepted the page's *own* player traffic in that frame
+ *    (an xhr- or fetch- capture). Strong: only the player's frame issues those.
+ *  1 echo — the frame reported a chunk it fetched because we asked it to. This
+ *    is self-confirming and worthless as identification: prefetch is delegated
+ *    by broadcast whenever the frame is unknown, so EVERY frame answers, and
+ *    last-writer-wins let a non-player frame take the id and keep it. An echo
+ *    may only fill a vacuum, never displace a real observation.
+ */
+const PLAYER_FRAME_EVIDENCE_RANK = { echo: 1, observed: 2, authoritative: 3 }
+
+function notePlayerFrame(tabId, frameId, frameUrl, { authoritative = false, evidence = null } = {}) {
   if (!Number.isFinite(tabId) || !Number.isFinite(frameId) || frameId < 0) return
-  const tabState = state.playlistByTab?.get(tabId)
-  if (!tabState) return
   // A third-party utility frame is never the player, whatever it claims and
   // however early it claims it.
   if (typeof frameUrl === "string" && frameUrl && isUntrustedRefererFrameUrl(frameUrl)) return
-  if (!authoritative && tabState.playerFrameAuthoritative === true) {
+
+  let tabState = state.playlistByTab?.get(tabId)
+  if (!tabState) {
+    // Create the placeholder rather than dropping the signal. PlaylistContent —
+    // the only authoritative source — is handled before parsePlaylistContentForTab
+    // has built the tab state, so on a fresh tab the strongest evidence we ever
+    // get was being discarded at exactly the moment it mattered most. Same shape
+    // the other lazy creators in the prefetch layer use.
+    if (!state.playlistByTab) return
+    tabState = { segments: [], updatedAt: Date.now() }
+    state.playlistByTab.set(tabId, tabState)
+  }
+
+  const rank = authoritative
+    ? PLAYER_FRAME_EVIDENCE_RANK.authoritative
+    : PLAYER_FRAME_EVIDENCE_RANK[evidence] || PLAYER_FRAME_EVIDENCE_RANK.observed
+  const heldRank = Number(tabState.playerFrameRank || 0)
+
+  // Equal-tier claims may still take effect at "observed" and above (two frames
+  // both intercepting player traffic means the player really did move), but an
+  // echo can only ever claim an unclaimed tab.
+  if (rank < heldRank || (rank === heldRank && rank < PLAYER_FRAME_EVIDENCE_RANK.observed)) {
     if (tabState.playerFrameId === frameId) tabState.playerFrameSeenAt = Date.now()
     return
   }
+
   tabState.playerFrameId = frameId
+  tabState.playerFrameRank = rank
   tabState.playerFrameSeenAt = Date.now()
   if (authoritative) tabState.playerFrameAuthoritative = true
   if (typeof frameUrl === "string" && frameUrl) {

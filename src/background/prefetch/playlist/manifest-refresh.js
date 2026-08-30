@@ -149,6 +149,10 @@ async function delegatePlaylistRefreshToPage(tabId, playlistUrl, generation) {
       )
       if (tabState) {
         tabState.playerFrameId = null
+        // Clear the rank with the id. Leaving it set would make the held
+        // evidence tier outrank every future claim, so a tab whose frame went
+        // away could never learn a new one.
+        tabState.playerFrameRank = 0
         tabState.playerFrameAuthoritative = false
       }
     }
