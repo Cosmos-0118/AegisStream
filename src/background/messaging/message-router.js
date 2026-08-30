@@ -565,7 +565,98 @@ async function awaitInflightPrefetchCacheEntry(lookupUrl, tabId = null) {
   })
 }
 
+/**
+ * One lookup in, exactly one outcome out.
+ *
+ * Field failure: 49 of 65 cache lookups in a single session produced no outcome
+ * at all. The service worker's own running counters read
+ * `lookups=65 hits=16 misses=0` — the handler had entered, incremented
+ * cacheLookups, then stalled on an unbounded IndexedDB await and never reached
+ * any of its accounting branches. The player, never answered, timed out and
+ * fetched the segment itself.
+ *
+ * That produced two failures at once, and the second is the dangerous one:
+ * playback lost the cache, and cacheHitRatePercent = hits/(hits+misses) silently
+ * became hits/hits — permanently 100% or n/a. A metric that can only report
+ * success is worse than no metric, because it is acted on.
+ *
+ * So accounting is no longer the responsibility of each exit path. The ledger is
+ * opened when cacheLookups is incremented and closed exactly once, whatever the
+ * handler does — returns early, throws, or hangs. Anything that reaches finalize
+ * unsettled is counted as a miss (it certainly was not a hit) AND recorded
+ * separately in cacheLookupUnaccounted, which must stay 0. If it ever drifts,
+ * the rollup says so beside the hit rate instead of quietly inflating it.
+ *
+ * The watchdog is the behavioural half: the player gets an answer within a
+ * bounded time no matter what, so a stuck lookup costs one network fetch rather
+ * than a stalled buffer.
+ */
+const LOOKUP_WATCHDOG_MS = 5_000
+
+function createLookupLedger(sendResponse, tabId, urlRef) {
+  let opened = false
+  let settled = false
+  let responded = false
+  let watchdog = null
+
+  const respond = (payload) => {
+    if (responded) return
+    responded = true
+    if (watchdog) { clearTimeout(watchdog); watchdog = null }
+    try { sendResponse(payload) } catch { /* channel already closed */ }
+  }
+
+  const settle = (outcome) => {
+    if (settled) return
+    settled = true
+    if (!opened) return
+    if (typeof ns.recordCacheLookupOutcome === "function") {
+      ns.recordCacheLookupOutcome(urlRef.url, outcome, { tabId, collapsedFromInflight: outcome === "collapsed-hit" })
+    } else if (outcome === "hit" || outcome === "collapsed-hit" || outcome === "recovered-hit") {
+      recordCacheServeHit(urlRef.url, { tabId })
+    } else {
+      recordCacheLookupMiss(urlRef.url, { tabId })
+    }
+  }
+
+  return {
+    open() {
+      if (opened) return
+      opened = true
+      bumpActivity("cacheLookups", 1)
+      watchdog = setTimeout(() => {
+        if (responded && settled) return
+        bumpActivity("cacheLookupTimeouts", 1)
+        addLog(
+          "WARN",
+          `Cache lookup watchdog fired after ${LOOKUP_WATCHDOG_MS}ms — answering miss so the player falls back to network: ${String(urlRef.url || "").slice(-72)}`
+        )
+        settle("miss")
+        respond({ ok: true, hit: false, reason: "lookup-timeout" })
+      }, LOOKUP_WATCHDOG_MS)
+    },
+    settle,
+    respond,
+    finalize() {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      if (opened && !settled) {
+        bumpActivity("cacheLookupUnaccounted", 1)
+        addLog(
+          "WARN",
+          `Cache lookup finished without recording an outcome: ${String(urlRef.url || "").slice(-72)}`
+        )
+        settle("miss")
+      }
+      respond({ ok: true, hit: false, reason: "unaccounted" })
+    }
+  }
+}
+
+ns.createLookupLedger = createLookupLedger
+
 function handleCacheLookup(message, sendResponse, tabId = null) {
+  const urlRef = { url: stripHash(message.url) }
+  const ledger = createLookupLedger(sendResponse, tabId, urlRef)
   ;(async () => {
     const method = (message.method || "GET").toUpperCase()
     const hasRange = Boolean(message.hasRange)
@@ -581,7 +672,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       !state.settings.serveFromCache ||
       (typeof ns.isStorageSystemOperational === "function" && !ns.isStorageSystemOperational())
     ) {
-      sendResponse({ ok: true, hit: false, skipped: true })
+      ledger.respond({ ok: true, hit: false, skipped: true })
       return
     }
 
@@ -590,13 +681,14 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       /\/proxy\/oppai\/(kite|dio)\//i.test(lookupUrl) &&
       !/\/EV9fQAQQ/i.test(lookupUrl)
     ) {
-      sendResponse({ ok: true, hit: false, skipped: true, reason: "playlist-proxy" })
+      ledger.respond({ ok: true, hit: false, skipped: true, reason: "playlist-proxy" })
       return
     }
 
     // Undeduped, so lookups reconciles against hits+misses and against the
-    // keyFormat/lookupMap counters emitted from this same handler.
-    bumpActivity("cacheLookups", 1)
+    // keyFormat/lookupMap counters emitted from this same handler. Opening the
+    // ledger is what makes that reconciliation guaranteed rather than hoped for.
+    ledger.open()
     if (lookupUrl && lookupUrl.startsWith("aegis|")) {
       bumpActivity("lookupKeyInvariantCount", 1)
     } else {
@@ -712,12 +804,8 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
         // could then only ever evaluate to 100% or null. A tab that had given
         // up entirely reported a perfect hit rate, which is precisely the
         // signal we rely on to notice that it had given up.
-        if (typeof ns.recordCacheLookupOutcome === "function") {
-          ns.recordCacheLookupOutcome(lookupUrl, "miss", { collapsedFromInflight: false, tabId })
-        } else if (typeof recordCacheLookupMiss === "function") {
-          recordCacheLookupMiss(lookupUrl, { tabId })
-        }
-        sendResponse({ ok: true, hit: false, reason: "auth-expired" })
+        ledger.settle("miss")
+        ledger.respond({ ok: true, hit: false, reason: "auth-expired" })
         return
       }
       if (postSeekGrace && Number.isFinite(tabId) && typeof ns.ensureTabPlaylistRecovery === "function") {
@@ -787,9 +875,12 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       // signal must still see them — a burst of misses during aggressive
       // seeking is exactly the case the window boost should react to.
       if (!rapidSeek) {
-        if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, outcome, { collapsedFromInflight, tabId })
-        else recordCacheLookupMiss(lookupUrl, { tabId })
+        ledger.settle(outcome)
       } else if (typeof ns.updateTabPrefetchHitRate === "function") {
+        // Rapid-seek misses stay out of the global hit rate (noisy, not
+        // representative) but the ledger must still close, or they resurface as
+        // unaccounted.
+        ledger.settle("rapid-seek-miss")
         ns.updateTabPrefetchHitRate(tabId, false)
       }
       addLog(
@@ -801,7 +892,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
           `visibilityChange=${Boolean(tabState?.lastVisibilityChangeAt)} recapture=${Boolean(tabState?.playlistRecaptureRequired)} variants=${fp?.variants?.length || 0} ` +
           `stats=lookups:${state.stats.cacheLookups || 0},hits:${state.stats.cacheHits || 0},misses:${state.stats.cacheMisses || 0}`
       )
-      sendResponse({ ok: true, hit: false })
+      ledger.respond({ ok: true, hit: false })
       return
     }
 
@@ -809,8 +900,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       "INFO",
       `Cache lookup hit: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} source=${collapsedFromInflight ? "inflight-collapse" : "idb"}`
     )
-    if (typeof ns.recordCacheLookupOutcome === "function") ns.recordCacheLookupOutcome(lookupUrl, collapsedFromInflight ? "collapsed-hit" : "hit", { collapsedFromInflight, tabId })
-    else recordCacheServeHit(lookupUrl, { tabId })
+    ledger.settle(collapsedFromInflight ? "collapsed-hit" : "hit")
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
       if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
@@ -842,7 +932,7 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
     if (!byteLength) {
       addLog("ERROR", `Cache hit serialization failed: ${lookupUrl.slice(-60)}`)
-      sendResponse({ ok: false, hit: false, error: "serialize-failed" })
+      ledger.respond({ ok: false, hit: false, error: "serialize-failed" })
       return
     }
     const bytes =
@@ -871,10 +961,17 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     if (bytesBase64) {
       lookupResponse.bytesBase64 = bytesBase64
     }
-    sendResponse(lookupResponse)
-  })().catch(() => {
-    sendResponse({ ok: false, hit: false })
-  })
+    ledger.respond(lookupResponse)
+  })()
+    .catch((error) => {
+      // A throw is still an outcome. finalize() below books it, but respond now
+      // so the player is not left waiting on the watchdog.
+      addLog("DEBUG", `Cache lookup threw: ${error?.message || "unknown"}`)
+      ledger.respond({ ok: false, hit: false })
+    })
+    // Runs on every path — return, throw, or early exit. This is what makes
+    // "one lookup in, one outcome out" a guarantee rather than a convention.
+    .finally(() => ledger.finalize())
 }
 
 function handleInflightPrefetchQuery(message, sendResponse, tabId) {

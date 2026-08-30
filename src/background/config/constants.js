@@ -64,6 +64,9 @@ ns.constants = {
   // the state has no timer-driven exit and persists until the user happens to
   // switch tabs.
   AUTH_EXPIRED_SELF_HEAL_MAX_ATTEMPTS: 4,
+  // How many prefetch failures to tolerate on an auth-expired tab before
+  // conceding its segment URLs really have rotated and standing down.
+  AUTH_EXPIRED_PREFETCH_FAILURE_BUDGET: 8,
 
   /**
    * Pattern-addressed segment ladders (see media/segment-sequence.js): sites
@@ -374,6 +377,12 @@ ns.constants = {
   createInitialStats() {
     return {
       cacheLookups: 0,
+      // Lookups that reached the handler but produced neither hit nor miss.
+      // Must stay 0; any drift means an exit path is skipping its accounting,
+      // which is exactly how cacheHitRatePercent became unreadable.
+      cacheLookupUnaccounted: 0,
+      cacheLookupTimeouts: 0,
+      idbTimeouts: 0,
       cacheHits: 0,
       hotHits: 0,
       cacheMisses: 0,

@@ -190,6 +190,9 @@
     "lookupMappingResolved",
     "lookupMappingUnresolved",
     "cacheLookups",
+    "cacheLookupUnaccounted",
+    "cacheLookupTimeouts",
+    "idbTimeouts",
     "cacheHits",
     "hotHits",
     "cacheMisses",
@@ -257,13 +260,22 @@
         : "n/a"
     const cacheHitRate =
       cache.cacheHitRatePercent != null ? `${cache.cacheHitRatePercent}%` : "n/a"
+    // Surface any lookup that did not settle into hit or miss. Silence here is
+    // the whole point: a non-zero value means the hit rate beside it is a lie.
+    const unaccounted = cache.cacheLookupUnaccounted || 0
+    const lookupTimeouts = cache.cacheLookupTimeouts || 0
+    const idbTimeouts = cache.idbTimeouts || 0
+    const lookupLedger =
+      unaccounted || lookupTimeouts || idbTimeouts
+        ? `,UNACCOUNTED=${unaccounted},lookupTimeout=${lookupTimeouts},idbTimeout=${idbTimeouts}`
+        : ""
     return [
       `scrub=${rollup.scrub_prewarm_total}(skip=${rollup.scrub_prewarm_skipped_dedup})`,
       `spec=alloc ${rollup.speculative_allocated} hit ${rollup.speculative_hits} miss ${rollup.speculative_misses} eff ${eff}`,
       `saved=${rollup.speculative_time_saved_ms_total}ms`,
       `stalls=${rollup.total_stall_duration_ms}ms`,
       `kalmanResets=${rollup.z_axis_kalman_resets}`,
-      `lookups=${cache.cacheLookups || 0}(hits=${cache.cacheHits || 0},miss=${cache.cacheMisses || 0},hitRate=${cacheHitRate})`,
+      `lookups=${cache.cacheLookups || 0}(hits=${cache.cacheHits || 0},miss=${cache.cacheMisses || 0},hitRate=${cacheHitRate}${lookupLedger})`,
       `fill=${cache.cachedChunks || 0}/${cache.cacheFillWrites || 0}(${formatBytesMb(cache.cacheFillBytes || 0)},prefetch=${cache.prefetchFillWrites || 0})`,
       `belt=${cache.beltLookupMisses || 0}(timeout=${cache.beltLookupTimeouts || 0},evict=${cache.beltLookupRecentlyEvictedMisses || 0}/${cache.beltLookupClassified || 0},rate=${beltEvictRate},saved=${cache.beltLookupSavedFromNetwork || 0})`,
       `keyFormat=rawUrl:${cache.lookupKeyRawUrlCount || 0}/invariant:${cache.lookupKeyInvariantCount || 0}`,

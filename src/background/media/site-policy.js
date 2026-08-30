@@ -208,10 +208,39 @@ function pruneTabPageHosts() {
  * the manifest); chunk stores are a weaker one, used only to seed or refresh a
  * frame we have not otherwise identified.
  */
+/**
+ * Origins that run in a frame of an ordinary media page but can never be the
+ * player, and must never supply a Referer for a media fetch.
+ *
+ * Content scripts are injected with all_frames:true, so a captcha/ads/analytics
+ * iframe reports itself here exactly like the embed does. Observed in the field:
+ * a reCAPTCHA frame won the race and the DNR rule went out as
+ * `Referer: https://www.recaptcha.net/`, which the media host answered with 403
+ * — the extension manufactured the very hotlink rejection the rule exists to
+ * prevent. A wrong Referer is strictly worse than none: absent, the host may
+ * still serve; wrong, it is a guaranteed refusal.
+ */
+const UNTRUSTED_REFERER_HOST_RE =
+  /(^|\.)(recaptcha\.net|gstatic\.com|google\.com|googleapis\.com|googlesyndication\.com|googletagmanager\.com|google-analytics\.com|doubleclick\.net|adservice\.google\.[a-z.]+|facebook\.com|facebook\.net|hcaptcha\.com|cloudflareinsights\.com)$/i
+
+function isUntrustedRefererFrameUrl(url) {
+  if (typeof url !== "string" || !url) return true
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return true
+    return UNTRUSTED_REFERER_HOST_RE.test(normalizeHost(parsed.hostname) || "")
+  } catch {
+    return true
+  }
+}
+
 function notePlayerFrame(tabId, frameId, frameUrl, { authoritative = false } = {}) {
   if (!Number.isFinite(tabId) || !Number.isFinite(frameId) || frameId < 0) return
   const tabState = state.playlistByTab?.get(tabId)
   if (!tabState) return
+  // A third-party utility frame is never the player, whatever it claims and
+  // however early it claims it.
+  if (typeof frameUrl === "string" && frameUrl && isUntrustedRefererFrameUrl(frameUrl)) return
   if (!authoritative && tabState.playerFrameAuthoritative === true) {
     if (tabState.playerFrameId === frameId) tabState.playerFrameSeenAt = Date.now()
     return
@@ -231,10 +260,22 @@ function notePlayerFrame(tabId, frameId, frameUrl, { authoritative = false } = {
   }
 }
 
-/** The frame URL to attribute the extension's own media fetches to. */
+/**
+ * The frame URL to attribute the extension's own media fetches to.
+ *
+ * Only an *authoritative* frame (one that actually delivered playlist content)
+ * is trusted. A weak signal is enough to route a message to a frame, but not to
+ * rewrite a request header — get that wrong and the host 403s us. Both the frame
+ * URL and the page fallback are re-screened, because the page fingerprint is
+ * itself recorded from whichever frame reported a pageUrl.
+ */
 function getPlayerRefererUrl(tabId) {
   const tabState = state.playlistByTab?.get(tabId)
-  return tabState?.playerFrameUrl || getTabPageUrlFingerprint(tabId) || null
+  const frameUrl = tabState?.playerFrameAuthoritative === true ? tabState.playerFrameUrl : null
+  if (frameUrl && !isUntrustedRefererFrameUrl(frameUrl)) return frameUrl
+  const pageUrl = getTabPageUrlFingerprint(tabId)
+  if (pageUrl && !isUntrustedRefererFrameUrl(pageUrl)) return pageUrl
+  return null
 }
 
 ns.TWITCH_CLIENT_ID = TWITCH_CLIENT_ID
@@ -257,5 +298,6 @@ ns.isTabMediaContext = isTabMediaContext
 ns.findBackgroundMediaTabId = findBackgroundMediaTabId
 ns.pruneTabPageHosts = pruneTabPageHosts
 ns.notePlayerFrame = notePlayerFrame
+ns.isUntrustedRefererFrameUrl = isUntrustedRefererFrameUrl
 ns.getPlayerRefererUrl = getPlayerRefererUrl
 })()

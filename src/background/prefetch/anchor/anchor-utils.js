@@ -49,11 +49,36 @@ ns.isInRefreshRecovery = function isInRefreshRecovery(tabState) {
   return Date.now() < Number(tabState.refreshRecoveryUntil || 0)
 }
 
+/**
+ * auth_expired means the *manifest endpoint* refused us. It does not mean the
+ * segment URLs we already hold are dead.
+ *
+ * Treating the two as the same thing made auth_expired self-sustaining: prefetch
+ * stopped, so the cache never refilled, so every player lookup missed, and the
+ * miss path deliberately skips recovery to avoid a miss-loop — nothing left to
+ * break the cycle but a timer or a tab switch. Measured on one 2.6-minute
+ * session: 57 lookups served 8 times, the other 49 arriving after the tab
+ * latched auth_expired with an empty cache and prefetch=0.
+ *
+ * Segment URLs typically outlive the manifest by a wide margin — the ones in
+ * that session were signed with x-expires in 2027 — so the held list stays
+ * usable. Keep prefetching against it and let the per-URL failure backoff bound
+ * the cost; if the URLs genuinely have rotated, the failures accumulate and this
+ * concedes.
+ */
+function canPrefetchOnStaleManifest(tabState) {
+  if (!tabState?.segments?.length) return false
+  const budget = Number(constants?.AUTH_EXPIRED_PREFETCH_FAILURE_BUDGET) || 8
+  return Number(tabState.authExpiredPrefetchFailures || 0) < budget
+}
+
+ns.canPrefetchOnStaleManifest = canPrefetchOnStaleManifest
+
 ns.isPrefetchBlocked = function isPrefetchBlocked(tabState) {
   if (!tabState) return false
   if (typeof ns.isTabVisibilitySleeping === "function" && ns.isTabVisibilitySleeping(tabState)) return true
   if (tabState.refreshState === ns.REFRESH_STATE_REFRESHING) return true
-  if (tabState.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED) return true
+  if (tabState.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED && !canPrefetchOnStaleManifest(tabState)) return true
   if (tabState.manifestRefreshPending === true) return true
   const pausedUntil = Number(tabState.prefetchPausedUntil || 0)
   return Date.now() < pausedUntil

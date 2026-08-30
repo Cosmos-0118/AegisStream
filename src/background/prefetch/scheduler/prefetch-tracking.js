@@ -91,6 +91,10 @@ ns.updatePrefetchOutcome = function updatePrefetchOutcome(url, success, error = 
   if (success) {
     state.failedPrefetches.delete(normalizedUrl)
     if (Number.isFinite(tabId)) {
+      const okState = state.playlistByTab.get(tabId)
+      // A segment fetched successfully proves the held segment URLs are still
+      // good, whatever the manifest endpoint is doing.
+      if (okState) okState.authExpiredPrefetchFailures = 0
       ns.noteTabPrefetchSuccess(tabId)
       if (typeof ns.noteRefreshRecoverySuccess === "function") ns.noteRefreshRecoverySuccess(tabId, state.playlistByTab.get(tabId))
     }
@@ -104,6 +108,9 @@ ns.updatePrefetchOutcome = function updatePrefetchOutcome(url, success, error = 
   const tabState = Number.isFinite(tabId) ? state.playlistByTab.get(tabId) : null
   const backoffMs = transient ? Math.max(400, Math.round(ns.computeFailureBackoffMs(attempts, tabState) * 0.5)) : ns.computeFailureBackoffMs(attempts, tabState)
   const retryAfter = Date.now() + backoffMs
+  if (tabState && tabState.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED) {
+    tabState.authExpiredPrefetchFailures = Number(tabState.authExpiredPrefetchFailures || 0) + 1
+  }
   state.failedPrefetches.set(normalizedUrl, { attempts, retryAfter, lastFailedAt: Date.now(), lastError: String(error || "unknown"), transient })
   return { attempts, retryAfter, transient }
 }

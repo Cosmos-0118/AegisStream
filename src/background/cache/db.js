@@ -194,12 +194,112 @@ async function computeAdaptiveCachePolicy(force = false) {
   return state.cachePolicy
 }
 
+/**
+ * Every await against IndexedDB must be bounded.
+ *
+ * Field failure: a cache lookup entered resolveCachedChunk, logged its "start"
+ * line, and never produced another line — no hit, no miss, no response. The
+ * player waited, gave up, and fetched the segment from the network itself. Over
+ * one session 49 of 65 lookups ended that way: the service worker's own running
+ * counters climbed `lookups=65 hits=16 misses=0`, because a handler stuck on an
+ * await records no outcome at all. That is also why cacheHitRatePercent could
+ * only ever read 100% or n/a — the misses were not undercounted, they never
+ * happened as far as the code was concerned.
+ *
+ * IndexedDB has two silent ways to never call you back, and this layer had both:
+ * `indexedDB.open()` fires `blocked` (neither onsuccess nor onerror) when
+ * another connection is still open, and a transaction can `abort` without the
+ * request ever firing onerror. A timeout is the backstop for anything else.
+ */
+const IDB_TIMEOUT_MS = 4_000
+
+function idbTimeoutError(what) {
+  const err = new Error(`idb-timeout:${what}`)
+  err.name = "AegisIdbTimeoutError"
+  return err
+}
+
+/** Settle-once wrapper: resolves, rejects, or times out — never hangs. */
+function withIdbTimeout(what, executor, timeoutMs = IDB_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      if (typeof ns.bumpActivity === "function") ns.bumpActivity("idbTimeouts", 1)
+      addLog("WARN", `IndexedDB ${what} timed out after ${timeoutMs}ms — treating as unavailable`)
+      reject(idbTimeoutError(what))
+    }, timeoutMs)
+    const done = (fn) => (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      fn(value)
+    }
+    try {
+      executor(done(resolve), done(reject))
+    } catch (error) {
+      done(reject)(error)
+    }
+  })
+}
+
+/**
+ * Run one request inside its own transaction and always close the connection.
+ *
+ * db.close() used to sit after the await, so a rejection skipped it and leaked
+ * the connection — and a leaked connection is precisely what makes the *next*
+ * open block. The failure fed itself.
+ */
+async function runIdbRequest(storeName, mode, what, makeRequest) {
+  const db = await openDb()
+  try {
+    return await withIdbTimeout(what, (resolve, reject) => {
+      const tx = db.transaction(storeName, mode)
+      // A transaction can abort without the request reporting an error.
+      tx.onabort = () => reject(tx.error || new Error(`idb-abort:${what}`))
+      const req = makeRequest(tx.objectStore(storeName))
+      if (!req) {
+        tx.oncomplete = () => resolve(undefined)
+        tx.onerror = () => reject(tx.error)
+        return
+      }
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    try { db.close() } catch { /* already closing */ }
+  }
+}
+
+/** Write path: resolve on transaction completion, not request success. */
+async function runIdbWrite(storeName, what, apply) {
+  const db = await openDb()
+  try {
+    await withIdbTimeout(what, (resolve, reject) => {
+      const tx = db.transaction(storeName, "readwrite")
+      tx.oncomplete = () => resolve(undefined)
+      tx.onabort = () => reject(tx.error || new Error(`idb-abort:${what}`))
+      tx.onerror = () => reject(tx.error)
+      apply(tx.objectStore(storeName))
+    })
+  } finally {
+    try { db.close() } catch { /* already closing */ }
+  }
+}
+
 function openDb() {
   if (!storageSystemOperational) {
     return Promise.reject(new Error("storage-bypass"))
   }
-  return new Promise((resolve, reject) => {
+  return withIdbTimeout("open", (resolve, reject) => {
     const req = indexedDB.open(constants.DB_NAME, constants.DB_VERSION)
+    // Without this the promise never settles: `blocked` fires instead of
+    // onsuccess/onerror whenever another connection is still holding the DB.
+    req.onblocked = () => {
+      addLog("WARN", "IndexedDB open blocked by an open connection — failing this operation")
+      reject(new Error("idb-blocked"))
+    }
     req.onupgradeneeded = () => {
       const db = req.result
       if (!db.objectStoreNames.contains(constants.STORE_CHUNKS)) {
@@ -229,60 +329,29 @@ function openDb() {
 }
 
 async function dbPut(storeName, value) {
-  const db = await openDb()
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite")
-    tx.objectStore(storeName).put(value)
-    tx.oncomplete = resolve
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
+  await runIdbWrite(storeName, `put:${storeName}`, (store) => store.put(value))
 }
 
 async function dbGet(storeName, key) {
-  const db = await openDb()
-  const result = await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly")
-    const req = tx.objectStore(storeName).get(key)
-    req.onsuccess = () => resolve(req.result || null)
-    req.onerror = () => reject(req.error)
-  })
-  db.close()
-  return result
+  const result = await runIdbRequest(storeName, "readonly", `get:${storeName}`, (store) =>
+    store.get(key)
+  )
+  return result || null
 }
 
 async function dbDelete(storeName, key) {
-  const db = await openDb()
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite")
-    tx.objectStore(storeName).delete(key)
-    tx.oncomplete = resolve
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
+  await runIdbWrite(storeName, `delete:${storeName}`, (store) => store.delete(key))
 }
 
 async function dbCount(storeName) {
-  const db = await openDb()
-  const count = await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly")
-    const req = tx.objectStore(storeName).count()
-    req.onsuccess = () => resolve(req.result || 0)
-    req.onerror = () => reject(req.error)
-  })
-  db.close()
-  return count
+  const count = await runIdbRequest(storeName, "readonly", `count:${storeName}`, (store) =>
+    store.count()
+  )
+  return count || 0
 }
 
 async function dbClear(storeName) {
-  const db = await openDb()
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readwrite")
-    tx.objectStore(storeName).clear()
-    tx.oncomplete = resolve
-    tx.onerror = () => reject(tx.error)
-  })
-  db.close()
+  await runIdbWrite(storeName, `clear:${storeName}`, (store) => store.clear())
   addLog("INFO", "Cache store cleared")
 }
 
