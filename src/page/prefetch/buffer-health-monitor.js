@@ -231,12 +231,18 @@ function publishBufferState(state) {
 
 function tick() {
   if (ns.extensionEnabled === false) return
-  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-    return
-  }
 
   const video = measurePrimaryVideo()
   if (!video) return
+
+  // Bailing on hidden alone froze every downstream consumer of buffer state:
+  // runway, health score and tier stopped updating, so the background kept
+  // scheduling against whatever the buffer looked like at the moment the user
+  // switched tabs. Keep sampling while a hidden tab is still playing, and stop
+  // only when hidden AND paused — then there is no runway to defend.
+  if (typeof document !== "undefined" && document.visibilityState === "hidden" && video.paused) {
+    return
+  }
 
   const now = Date.now()
   const runwaySec = Math.round(video.runway * 10) / 10

@@ -141,6 +141,8 @@ function isAnyVideoPlaying() {
   return false
 }
 
+ns.isAnyVideoPlaying = isAnyVideoPlaying
+
 function startWorkerLivelinessBridge() {
   if (globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return
   setInterval(() => {
@@ -155,8 +157,15 @@ function setupVisibilityLifecycleGuards() {
   document.__aegisVisibilityGuard = true
 
   const applyVisibilityState = (hidden) => {
-    ns.pageVisibilitySleep = hidden === true
     const playing = isAnyVideoPlaying()
+    // Sleep only when the tab is hidden AND nothing is playing. A hidden tab
+    // with the video still running is the case this extension exists for: the
+    // user has switched away and is relying on the buffer to survive. Latching
+    // sleep on visibility alone silently disabled all page-context prefetch —
+    // which is every prefetch, since scheduling is delegated to the page — so
+    // the log line below ("prefetch stays warm") described behaviour the code
+    // did not implement.
+    ns.pageVisibilitySleep = hidden === true && !playing
     if (hidden) {
       notifyRuntime("TAB_VISIBILITY_PAUSE", { hidden: true, playing })
       logBridge?.(

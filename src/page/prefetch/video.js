@@ -68,7 +68,13 @@ const CHUNK_OBSERVED_DEBOUNCE_MS = 2000
 function isPagePrefetchAllowed() {
   if (ns.extensionEnabled === false || ns.prefetchEnabled === false) return false
   if (ns.pageVisibilitySleep === true) return false
-  return typeof document === "undefined" || document.visibilityState === "visible"
+  if (typeof document === "undefined" || document.visibilityState === "visible") return true
+  // Hidden but still playing: keep prefetching. This is the whole point of the
+  // buffer — the user switched tabs and needs the runway to hold. Checked live
+  // rather than through the pageVisibilitySleep latch because playback can
+  // start or stop while the tab is already hidden, and no visibilitychange
+  // fires to refresh the latch.
+  return typeof ns.isAnyVideoPlaying === "function" && ns.isAnyVideoPlaying() === true
 }
 
 function sleep(ms) {

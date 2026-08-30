@@ -145,12 +145,34 @@ ns.delegatePrefetchToPage = async function delegatePrefetchToPage(tabId, urls, o
     if (advanced) ns.releaseInflightForTab(tabId, { notifyPage: false })
   }
 
+  const message = {
+    type: "AegisStream:PrefetchSegments", urls,
+    networkGeneration, playbackGeneration: networkGeneration,
+    priority: options.priority || "low"
+  }
+
+  // Target the frame that owns the player. Content scripts are injected with
+  // all_frames:true, so a frameless sendMessage delivers this list to EVERY
+  // frame and every one of them fetches every URL. Measured on a 2-frame embed
+  // page: 116 segments delegated produced 236 StoreChunk arrivals (2.03x) —
+  // the duplicates are dropped at store time by the invariant-CRC check, but
+  // only after the bytes are already on the wire, so the cost is paid in full.
+  // Fall back to the broadcast if the frame has gone away, so a stale frame id
+  // can never leave a tab unable to prefetch at all.
+  const frameId = Number(tabState?.playerFrameId)
+  if (Number.isFinite(frameId) && frameId >= 0) {
+    try {
+      await chrome.tabs.sendMessage(tabId, message, { frameId })
+      addLog("INFO", `Delegated prefetch of ${urls.length} segments to page context (tab ${tabId}, frame ${frameId})`)
+      return true
+    } catch (e) {
+      addLog("DEBUG", `Targeted prefetch to frame ${frameId} on tab ${tabId} failed (${e.message}) — broadcasting`)
+      if (tabState) { tabState.playerFrameId = null; tabState.playerFrameAuthoritative = false }
+    }
+  }
+
   try {
-    await chrome.tabs.sendMessage(tabId, {
-      type: "AegisStream:PrefetchSegments", urls,
-      networkGeneration, playbackGeneration: networkGeneration,
-      priority: options.priority || "low"
-    })
+    await chrome.tabs.sendMessage(tabId, message)
     addLog("INFO", `Delegated prefetch of ${urls.length} segments to page context (tab ${tabId})`)
     return true
   } catch (e) {

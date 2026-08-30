@@ -53,7 +53,6 @@ const PAGE = "https://vidtube.site/stream/xyz/dub"
 // ── 1 & 2. Rule shape ────────────────────────────────────────────────────────
 {
   const { ns, calls } = makeHarness()
-  return_ = null
   ;(async () => {
     const ok = await ns.ensureMediaRefererRule(MEDIA, PAGE)
     assert(ok === true, "installing a rule for a cross-origin media host must succeed")
