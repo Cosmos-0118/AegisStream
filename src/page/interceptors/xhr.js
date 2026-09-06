@@ -150,6 +150,10 @@ function bytesFromXhrRawResponse(xhr, rawResponse) {
 }
 
 let lastXhrInvalidatedWarnAt = 0
+// Dedup collapse backfill per wire (cacheLookupUrl), not per XHR instance —
+// N concurrent XHRs collapsing onto the same in-flight wire must schedule the
+// full-payload backfill store at most once, not once each.
+const collapseBackfillScheduledKeys = new Set()
 
 function captureXhrResponseSync(xhr, rawResponse) {
   if (ns.extensionEnabled === false || ns.serveFromCache === false) return
@@ -166,7 +170,11 @@ function captureXhrResponseSync(xhr, rawResponse) {
 
   const shouldIntercept = isLikelyChunk(url)
   if (!shouldIntercept) return
-  if (status !== 200) return
+  const rangeCacheKey =
+    xhr.__aegisRangeHeader && typeof ns.resolveByteRangeCacheKey === "function"
+      ? ns.resolveByteRangeCacheKey(url, xhr.__aegisRangeHeader)
+      : null
+  if (status !== 200 && !(status === 206 && rangeCacheKey)) return
 
   const bytes = bytesFromXhrRawResponse(xhr, rawResponse)
   if (!bytes) {
@@ -204,7 +212,7 @@ function captureXhrResponseSync(xhr, rawResponse) {
 
   xhr.__aegisChunkCaptured = true
 
-  const cacheLookupUrl = url
+  const cacheLookupUrl = rangeCacheKey || url
   if (typeof ns.noteStoreIntent === "function") {
     ns.noteStoreIntent(cacheLookupUrl)
   }
@@ -219,9 +227,9 @@ function captureXhrResponseSync(xhr, rawResponse) {
     url: cacheLookupUrl,
     contentType: ct,
     bytes,
-    status: 200,
+    status,
     method,
-    hasRange: false,
+    hasRange: Boolean(status === 206),
     captureSource: "xhr-sync"
   })
     .then((storeRes) => {
@@ -298,6 +306,7 @@ function applyXhrCachedPayload(
   }
   const servePartial = typeof rangeHeader === "string" && rangeHeader.length > 0
   const rangeSpec = servePartial ? String(rangeHeader).replace(/^bytes=/, "") : null
+  const contentRange = servePartial ? lookup?.contentRange || `bytes ${rangeSpec}/*` : null
   Object.defineProperty(xhr, "status", {
     get: () => (servePartial ? 206 : 200),
     configurable: true
@@ -326,7 +335,7 @@ function applyXhrCachedPayload(
     value: (name) => {
       const lower = name.toLowerCase()
       if (lower === "content-type") return lookup?.contentType || "application/octet-stream"
-      if (lower === "content-range" && rangeSpec) return `bytes ${rangeSpec}/*`
+      if (lower === "content-range" && contentRange) return contentRange
       if (lower === "accept-ranges" && servePartial) return "bytes"
       if (lower === "content-length") return String(lookupBytes?.byteLength || 0)
       if (instantHdr[lower] != null) return instantHdr[lower]
@@ -343,8 +352,8 @@ function applyXhrCachedPayload(
         `content-length: ${lookupBytes?.byteLength || 0}`,
         `x-aegisstream-cache: ${cacheHeader}`
       ]
-      if (rangeSpec) {
-        lines.push(`content-range: bytes ${rangeSpec}/*`)
+      if (contentRange) {
+        lines.push(`content-range: ${contentRange}`)
         lines.push("accept-ranges: bytes")
       }
       return `${lines.join("\r\n")}\r\n`
@@ -580,7 +589,11 @@ function AegisXHR() {
           const shouldIntercept =
             _method === "GET" && _url && isLikelyChunk(_url)
 
-          if (shouldIntercept && xhr.status === 200) {
+          const rangeCacheKey =
+            _hasRange && typeof ns.resolveByteRangeCacheKey === "function"
+              ? ns.resolveByteRangeCacheKey(_url, _rangeHeaderValue || xhr.__aegisRangeHeader)
+              : null
+          if (shouldIntercept && (xhr.status === 200 || (xhr.status === 206 && rangeCacheKey))) {
             let byteLength = 0
             if (xhr.response instanceof ArrayBuffer) {
               byteLength = xhr.response.byteLength
@@ -588,7 +601,7 @@ function AegisXHR() {
               byteLength = new TextEncoder().encode(xhr.response).byteLength
             }
             if (byteLength > 0 && !exceedsSafeIpcCaptureSize(byteLength)) {
-              const cacheLookupUrl = _url
+              const cacheLookupUrl = rangeCacheKey || _url
 
               if (xhr.__aegisChunkCaptured === true) {
                 return
@@ -623,9 +636,9 @@ function AegisXHR() {
                   url: cacheLookupUrl,
                   contentType: ct,
                   bytes: bytesForStore,
-                  status: 200,
+                  status: xhr.status,
                   method: _method,
-                  hasRange: false,
+                  hasRange: xhr.status === 206,
                   captureSource: "xhr-load"
                 }).then((storeRes) => {
                   if (storeRes?.ok || document.visibilityState !== "visible") return
@@ -697,7 +710,8 @@ function AegisXHR() {
     if (
       ns.extensionEnabled !== false &&
       ns.serveFromCache !== false &&
-      typeof ns.getHotBytes === "function"
+      typeof ns.getHotBytes === "function" &&
+      !(_hasRange && !rangeCacheKey)
     ) {
       let hot = null
       try {
@@ -747,11 +761,38 @@ function AegisXHR() {
         savedBytes,
         viaIntent: viaIntent === true
       })
-      if (collapsed.bytes && typeof ns.putHotBytes === "function") {
+      // Same constraint as the backfill store below: cacheLookupUrl is only a
+      // self-contained object when it's not an open/suffix range collapsed onto
+      // the plain object URL (no dedicated range| key) — otherwise these are
+      // partial bytes and must not be seeded under the full-object key.
+      if (collapsed.bytes && typeof ns.putHotBytes === "function" && (!_hasRange || rangeCacheKey)) {
         ns.putHotBytes(cacheLookupUrl, collapsed.bytes, {
           contentType: collapsed.contentType || "application/octet-stream",
           status: 200
         })
+      }
+      // A collapse can be the only successful network delivery (for example
+      // after a service-worker restart). Persist one deduplicated backfill so
+      // later frames/tabs are not forced back to the CDN.
+      if (
+        !collapsed.fromCache &&
+        (!_hasRange || rangeCacheKey) &&
+        !collapseBackfillScheduledKeys.has(cacheLookupUrl)
+      ) {
+        collapseBackfillScheduledKeys.add(cacheLookupUrl)
+        void storeChunkFromPage({
+          url: cacheLookupUrl,
+          contentType: collapsed.contentType || "application/octet-stream",
+          bytes: copyArrayBufferForBridge(collapsed.bytes) || collapsed.bytes,
+          status: 200,
+          method: "GET",
+          hasRange: false,
+          captureSource: "xhr-collapse-backfill"
+        })
+          .catch(() => {})
+          .finally(() => {
+            collapseBackfillScheduledKeys.delete(cacheLookupUrl)
+          })
       }
       applyXhrCachedPayload(
         xhr,
@@ -759,7 +800,8 @@ function AegisXHR() {
         collapsed,
         collapsed.fromCache ? "HIT" : "COLLAPSED",
         responseSource,
-        cacheLookupUrl
+        cacheLookupUrl,
+        (rangeCacheKey || collapsed.partial) ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
       )
       return true
     }
@@ -801,7 +843,8 @@ function AegisXHR() {
           requestRuntime("CACHE_LOOKUP_REQUEST", {
             url: cacheLookupUrl,
             method: _method,
-            hasRange: false
+            hasRange: _hasRange,
+            rangeHeader: _rangeHeaderValue || xhr.__aegisRangeHeader || null
           }),
           new Promise((resolve) =>
             setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), beltTimeoutMs)
@@ -823,7 +866,7 @@ function AegisXHR() {
             // Registry said absent but IDB had the bytes — decay registry trust.
             ns.noteRegistryFalseNegative()
           }
-          if (typeof ns.putHotBytes === "function") {
+          if (typeof ns.putHotBytes === "function" && (!beltLookup.partial || rangeCacheKey)) {
             ns.putHotBytes(cacheLookupUrl, beltBytes, {
               contentType: beltLookup.contentType || "application/octet-stream",
               status: 200
@@ -840,7 +883,7 @@ function AegisXHR() {
             "HIT",
             "idb-hit",
             cacheLookupUrl,
-            rangeCacheKey ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
+            (rangeCacheKey || beltLookup.partial) ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
           )
           return true
         }
@@ -936,7 +979,8 @@ function AegisXHR() {
     const lookupPromise = requestRuntime("CACHE_LOOKUP_REQUEST", {
       url: cacheLookupUrl,
       method: _method,
-      hasRange: false
+      hasRange: _hasRange,
+      rangeHeader: _rangeHeaderValue || xhr.__aegisRangeHeader || null
     })
 
     // Hard timeout: if cache lookup doesn't resolve in time, send the
@@ -978,7 +1022,13 @@ function AegisXHR() {
       const lookupBytes = resolveLookupBytes(lookup)
       if (lookup?.ok && lookup.hit && lookupBytes) {
         settled = true
-        if (typeof ns.putHotBytes === "function") {
+        // cacheLookupUrl is only a self-contained partial object when it's a
+        // dedicated range| key. When it's the plain object URL (open/suffix
+        // range with no range| key), lookup.partial bytes are a slice of the
+        // full object and must not be seeded as a complete 200 response.
+        const isRangeScopedKey =
+          typeof cacheLookupUrl === "string" && cacheLookupUrl.startsWith("range|")
+        if (typeof ns.putHotBytes === "function" && (!lookup.partial || isRangeScopedKey)) {
           ns.putHotBytes(cacheLookupUrl, lookupBytes, {
             contentType: lookup.contentType || "application/octet-stream",
             status: 200
@@ -996,7 +1046,7 @@ function AegisXHR() {
           "HIT",
           "idb-hit",
           cacheLookupUrl,
-          rangeCacheKey ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
+          (rangeCacheKey || lookup.partial) ? _rangeHeaderValue || xhr.__aegisRangeHeader : null
         )
         return
       }

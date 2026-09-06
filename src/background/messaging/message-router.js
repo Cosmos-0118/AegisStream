@@ -258,6 +258,10 @@ const wireResolvedByKey = new Map()
 /** @type {Map<string, number>} */
 const inflightChunkWriteCounts = new Map()
 const WIRE_RESOLVED_TTL_MS = 60_000
+// Sources whose writes are not player-observed and may be preempted/evicted
+// under store-queue backpressure: pure prefetch, and the deduplicated backfill
+// of bytes already delivered via a request collapse.
+const SPECULATIVE_CAPTURE_SOURCES = new Set(["prefetch", "xhr-collapse-backfill"])
 
 function resolveCanonicalCacheKey(lookupUrl) {
   if (typeof ns.resolveRegistryKey === "function") {
@@ -667,7 +671,6 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     const postSeekGrace = Boolean(tabState?.lastSeekedAt && Date.now() - Number(tabState.lastSeekedAt || 0) < 2500)
     if (
       method !== "GET" ||
-      hasRange ||
       !lookupUrl ||
       !state.settings.enabled ||
       !state.settings.serveFromCache ||
@@ -901,7 +904,52 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       "INFO",
       `Cache lookup hit: tab=${Number.isFinite(tabId) ? tabId : "n/a"} url=${lookupUrl.slice(-72)} source=${collapsedFromInflight ? "inflight-collapse" : "idb"}`
     )
-    ledger.settle(collapsedFromInflight ? "collapsed-hit" : "hit")
+    const rawBytes = resolved.item.bytes
+    const byteLength =
+      rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
+    if (!byteLength) {
+      addLog("ERROR", `Cache hit serialization failed: ${lookupUrl.slice(-60)}`)
+      ledger.settle("miss")
+      ledger.respond({ ok: false, hit: false, error: "serialize-failed" })
+      return
+    }
+    let bytes =
+      rawBytes instanceof ArrayBuffer
+        ? rawBytes
+        : rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
+    let contentRange = null
+    // A dedicated range| key already contains exactly the requested BYTERANGE
+    // slice.  For ordinary media entries, synthesize a single RFC 7233 range
+    // from the cached full bytes, including open and suffix forms.
+    if (hasRange && !lookupUrl.startsWith("range|")) {
+      const rangeHeader = String(message.rangeHeader || "")
+      const match = rangeHeader.match(/^bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i)
+      if (!match || (!match[1] && !match[2])) {
+        ledger.settle("miss")
+        ledger.respond({ ok: true, hit: false, skipped: true, reason: "unsupported-range" })
+        return
+      }
+      const total = bytes.byteLength
+      const suffixLength = match[1] ? null : Number(match[2])
+      let start = match[1] ? Number(match[1]) : Math.max(0, total - suffixLength)
+      let end = match[1] && match[2] ? Number(match[2]) : total - 1
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= total) {
+        ledger.settle("miss")
+        ledger.respond({ ok: true, hit: false, skipped: true, reason: "range-not-satisfiable" })
+        return
+      }
+      end = Math.min(end, total - 1)
+      if (end < start) {
+        ledger.settle("miss")
+        ledger.respond({ ok: true, hit: false, skipped: true, reason: "range-not-satisfiable" })
+        return
+      }
+      bytes = bytes.slice(start, end + 1)
+      contentRange = `bytes ${start}-${end}/${total}`
+    }
+    // Everything below this point is a confirmed hit — metrics/telemetry must
+    // only be recorded once an unsatisfiable/unsupported range can no longer
+    // turn this into a miss, or hits/ledger accounting drifts out of sync.
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
       if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
@@ -922,30 +970,15 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       maybeLogUmpHealthSummary()
     }
     if (typeof ns.recordSpeculativeUsed === "function") {
-      ns.recordSpeculativeUsed(
-        lookupUrl,
-        resolved.item.bytes?.byteLength || 0,
-        tabId
-      )
+      ns.recordSpeculativeUsed(lookupUrl, resolved.item.bytes?.byteLength || 0, tabId)
     }
-    const rawBytes = resolved.item.bytes
-    const byteLength =
-      rawBytes && typeof rawBytes.byteLength === "number" ? rawBytes.byteLength : 0
-    if (!byteLength) {
-      addLog("ERROR", `Cache hit serialization failed: ${lookupUrl.slice(-60)}`)
-      ledger.respond({ ok: false, hit: false, error: "serialize-failed" })
-      return
-    }
-    const bytes =
-      rawBytes instanceof ArrayBuffer
-        ? rawBytes
-        : rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength)
     // Prefer raw ArrayBuffer on the hot path. Only attach base64 for smaller
     // payloads as an IPC neuter fallback — encoding multi-MB segments on every
-    // hit burns CPU during scrub storms.
+    // hit burns CPU during scrub storms. Gate on the bytes actually being sent
+    // (post range-slice), not the pre-slice object size.
     const BASE64_FALLBACK_MAX_BYTES = 512 * 1024
     let bytesBase64 = null
-    if (byteLength > 0 && byteLength <= BASE64_FALLBACK_MAX_BYTES) {
+    if (bytes.byteLength > 0 && bytes.byteLength <= BASE64_FALLBACK_MAX_BYTES) {
       try {
         bytesBase64 = arrayBufferToBase64(bytes)
       } catch {
@@ -957,11 +990,14 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       hit: true,
       contentType: resolved.item.contentType,
       bytes,
-      byteLength
+      byteLength: bytes.byteLength,
+      contentRange,
+      partial: Boolean(hasRange)
     }
     if (bytesBase64) {
       lookupResponse.bytesBase64 = bytesBase64
     }
+    ledger.settle(collapsedFromInflight ? "collapsed-hit" : "hit")
     ledger.respond(lookupResponse)
   })()
     .catch((error) => {
@@ -1034,7 +1070,10 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
       typeof message.captureSource === "string" ? message.captureSource : "unknown"
     const wireType = describeStoreMessageWire(message)
     const bytes = extractMessageBytes(message)
-    if (method !== "GET" || hasRange || status === 206) {
+    // Range responses are safe only when the caller supplied a first-class
+    // range key.  Never let a partial response overwrite a full-url entry.
+    const isRangeEntry = storeUrl?.startsWith("range|")
+    if (method !== "GET" || ((hasRange || status === 206) && !isRangeEntry)) {
       sendResponse({ ok: true, skipped: true })
       return
     }
@@ -1062,7 +1101,16 @@ function handleStoreChunk(message, sendResponse, tabId = null) {
         : () => cacheChunk(storeUrl, message.contentType, bytes, expectedScope)
     let storeResult
     try {
-      storeResult = await enqueueStoreWrite(writeTask, { key: storeUrl })
+      storeResult = await enqueueStoreWrite(writeTask, {
+        key: storeUrl,
+        // Only genuinely speculative writes are "low" — everything the player
+        // actually observed (fetch-tee/fetch-clone/xhr-sync/xhr-load) stays
+        // "high" so it can preempt queued speculative work. Anything unknown
+        // defaults to "high" as the safe choice.
+        priority: SPECULATIVE_CAPTURE_SOURCES.has(String(captureSource || "").toLowerCase())
+          ? "low"
+          : "high"
+      })
     } finally {
       releaseInflightChunkWrite(storeUrl)
     }

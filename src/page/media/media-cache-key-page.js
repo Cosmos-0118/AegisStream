@@ -41,7 +41,17 @@
 
   function extractInvariantBlobTail(segment) {
     if (typeof segment !== "string" || !segment) return null
-    const tailLen = Math.min(segment.length, 56)
+    // The page world never receives AegisPageBridge.constants, so `configured`
+    // is always undefined here and this always takes the literal fallback.
+    // The background (src/shared/media-cache-key.js) reads the *real*
+    // constants.js, where MEDIA_CACHE_INVARIANT_TAIL_LEN is configured to 56 —
+    // so the background never falls through to its own formula fallback
+    // either. Keep this literal equal to that configured value, not to the
+    // background's dead fallback branch, or the two worlds' invariant keys
+    // diverge for every blob segment. If MEDIA_CACHE_INVARIANT_TAIL_LEN in
+    // constants.js ever changes, this literal must change with it.
+    const configured = Number(ns.constants?.MEDIA_CACHE_INVARIANT_TAIL_LEN)
+    const tailLen = Math.min(segment.length, Number.isFinite(configured) && configured > 16 ? configured : 56)
     return segment.slice(-tailLen)
   }
 
@@ -101,9 +111,12 @@
     const invariant = buildMediaInvariantKey(base)
     let streamId = invariant
     if (!streamId) {
+      // No invariant identity (e.g. a query-selected rendition on a shared path like
+      // /videoplayback?itag=137 vs ?itag=140) — keep the query so distinct renditions
+      // sharing host+path don't collide on the same range| key.
       try {
         const parsed = new URL(base, typeof location !== "undefined" ? location.href : undefined)
-        streamId = `${parsed.hostname}${parsed.pathname}`
+        streamId = `${parsed.hostname}${parsed.pathname}${parsed.search}`
       } catch {
         streamId = base
       }

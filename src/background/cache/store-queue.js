@@ -8,7 +8,7 @@ const MAX_PER_KEY_TAILS = 512
 /** @type {Map<string, Promise<unknown>>} */
 const perKeyTail = new Map()
 let active = 0
-/** @type {Array<{ run: () => Promise<unknown>, resolve: (v: unknown) => void, reject: (e: unknown) => void }>} */
+/** @type {Array<{ run: () => Promise<unknown>, resolve: (v: unknown) => void, reject: (e: unknown) => void, priority: string }>} */
 const waitQueue = []
 let rejectedTasks = 0
 let completedTasks = 0
@@ -75,17 +75,24 @@ function pumpWaitQueue() {
   }
 }
 
-function enqueueUnbounded(task) {
+function enqueueUnbounded(task, options = {}) {
+  const priority = options.priority === "high" ? "high" : "low"
   if (waitQueue.length + active >= resolveMaxQueueDepth()) {
-    droppedTasks += 1
-    return Promise.resolve({
-      ok: false,
-      skipped: true,
-      error: "store-queue-backpressure"
-    })
+    // Playback-observed bytes are immediately useful to another consumer; depth
+    // prefetch is speculative.  Make room for the former rather than silently
+    // losing the only authoritative write during a scrub burst.
+    const lowIndex = priority === "high" ? waitQueue.findIndex((entry) => entry.priority !== "high") : -1
+    if (lowIndex >= 0) {
+      const [evicted] = waitQueue.splice(lowIndex, 1)
+      droppedTasks += 1
+      evicted.resolve({ ok: false, skipped: true, error: "store-queue-backpressure" })
+    } else {
+      droppedTasks += 1
+      return Promise.resolve({ ok: false, skipped: true, error: "store-queue-backpressure" })
+    }
   }
   return new Promise((resolve, reject) => {
-    waitQueue.push({
+    const entry = {
       run: () => {
         try {
           return task()
@@ -94,8 +101,18 @@ function enqueueUnbounded(task) {
         }
       },
       resolve,
-      reject
-    })
+      reject,
+      priority
+    }
+    // Keep player captures ahead of queued speculative writes while retaining
+    // FIFO order within each class.
+    if (priority === "high") {
+      const firstLow = waitQueue.findIndex((queued) => queued.priority !== "high")
+      if (firstLow >= 0) waitQueue.splice(firstLow, 0, entry)
+      else waitQueue.push(entry)
+    } else {
+      waitQueue.push(entry)
+    }
     pumpWaitQueue()
   })
 }
@@ -127,13 +144,13 @@ function enqueueStoreWrite(task, options = {}) {
     resolveStoreKey(task)
 
   if (!key) {
-    return enqueueUnbounded(task)
+    return enqueueUnbounded(task, options)
   }
 
   const previous = perKeyTail.get(key) || Promise.resolve()
   const run = previous.then(
-    () => enqueueUnbounded(task),
-    () => enqueueUnbounded(task)
+    () => enqueueUnbounded(task, options),
+    () => enqueueUnbounded(task, options)
   )
   // Keep the per-key chain alive even if a write rejects, so later stores proceed.
   const tracked = run.then(

@@ -106,6 +106,15 @@ function cacheNetworkStreamInBackground({
       return
     }
 
+    // Publish to L1 and wake background waiters before the bounded IDB queue
+    // acknowledges the write. Playback can consume these bytes immediately.
+    if (streamed.bytes && typeof ns.putHotBytes === "function") {
+      ns.putHotBytes(cacheLookupUrl, streamed.bytes, { contentType, status: 200 })
+    }
+    if (typeof ns.notifyInflightWireResolve === "function") {
+      ns.notifyInflightWireResolve(cacheLookupUrl, bytesForStore, contentType)
+    }
+
     const storeRes = await storeChunkFromPage({
       url: cacheLookupUrl,
       contentType,
@@ -115,13 +124,6 @@ function cacheNetworkStreamInBackground({
       hasRange: false,
       captureSource: "fetch-tee"
     }).catch((error) => ({ ok: false, error: formatStoreChunkError(null, error) }))
-
-    if (streamed.bytes && typeof ns.putHotBytes === "function") {
-      ns.putHotBytes(cacheLookupUrl, streamed.bytes, {
-        contentType,
-        status: 200
-      })
-    }
 
     if (!storeRes?.ok) {
       logBridge(

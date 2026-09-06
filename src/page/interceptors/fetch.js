@@ -219,7 +219,8 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, hasRange = f
       requestRuntime("CACHE_LOOKUP_REQUEST", {
         url: cacheLookupUrl,
         method: cacheLookupMethod,
-        hasRange
+        hasRange,
+        rangeHeader: options.rangeHeader || null
       }),
       new Promise((resolve) => setTimeout(() => resolve({ ok: false, hit: false, timeout: true }), waitMs))
     ])
@@ -256,7 +257,11 @@ async function lookupCachedChunk(cacheLookupUrl, cacheLookupMethod, hasRange = f
   })
   if (lookup?.hit && lookupBytes) noteCacheTelemetry("cacheHits", 1)
   else if (lookup?.ok && lookup?.hit === false) noteCacheTelemetry("cacheMisses", 1)
-  if (lookup?.hit && lookupBytes) {
+  // hasRange here means cacheLookupUrl is the *full-object* key but the returned
+  // bytes are a slice (open/suffix range with no dedicated range| key) — seeding
+  // L1 under that key would serve the truncated slice as a complete 200 response
+  // to the next plain request for the same URL.
+  if (lookup?.hit && lookupBytes && !hasRange && !lookup?.partial) {
     seedHotBytesFromLookup(cacheLookupUrl, lookupBytes, lookup)
   }
   if (lookup?.hit && hasRange) noteCacheDiagnosticCounter("rangeCacheHits", 1)
@@ -604,7 +609,8 @@ async function aegisFetchInner(input, init) {
       {
         aggressive: shouldAggressivePrefetch,
         // L1 already checked above via tryServeHotBytes — avoid double telemetry.
-        skipHotLookup: !lookupAsRange
+        skipHotLookup: !lookupAsRange,
+        rangeHeader: requestRangeHeader
       }
     )
     if (lookup?.ok && lookup.hit && lookupBytes) {
@@ -631,9 +637,9 @@ async function aegisFetchInner(input, init) {
         "x-aegisstream-cache": "HIT"
       })
       globalThis.AegisCacheResponseHeaders?.applyInstantSwitchCacheHeaders?.(headers)
-      if (rangeCacheKey && requestHasRange) {
+      if (requestHasRange && (rangeCacheKey || lookup.partial)) {
         const rangeSpec = String(requestRangeHeader || "").replace(/^bytes=/, "")
-        headers.set("content-range", `bytes ${rangeSpec}/*`)
+        headers.set("content-range", lookup.contentRange || `bytes ${rangeSpec}/*`)
         headers.set("accept-ranges", "bytes")
         headers.set("content-length", String(lookupBytes.byteLength || 0))
         return new Response(lookupBytes, { status: 206, statusText: "Partial Content", headers })

@@ -47,6 +47,11 @@ function collectGuardRingProtectedUrls() {
     if (!tabState?.segments?.length || typeof tabState.anchorIndex !== "number") continue
     const seekChurn = isTabInSeekChurnAggressive(tabState)
     const teleportActive = Date.now() < Number(tabState.teleportModeUntil || 0)
+    const variantSwitch =
+      typeof ns.isTabInVariantSwitchGrace === "function" && ns.isTabInVariantSwitchGrace(tabState)
+    const scrubTrain =
+      typeof ns.isTabInScrubbingTrain === "function" && ns.isTabInScrubbingTrain(tabState)
+    const unstableAnchor = seekChurn || teleportActive || variantSwitch || scrubTrain
     // A tab with a measurably low real hit rate is being widened via
     // resolveAdaptiveHitRateBoost() on the prefetch side — extend the same
     // amount of protection here so those extra fetches aren't reclaimed by
@@ -54,20 +59,33 @@ function collectGuardRingProtectedUrls() {
     // as wasted fill / "recentlyEvictedMisses").
     const hitRateBoost =
       typeof ns.resolveAdaptiveHitRateBoost === "function" ? ns.resolveAdaptiveHitRateBoost(tabState) : 0
-    const past = (seekChurn || teleportActive
+    const past = (unstableAnchor
       ? Math.max(defaultPast, Number(constants.CACHE_GUARD_RING_SEEK_CHURN_PAST) || 5)
       : defaultPast) + Math.ceil(hitRateBoost / 2)
-    const future = (seekChurn || teleportActive
+    const future = (unstableAnchor
       ? Math.max(defaultFuture, Number(constants.CACHE_GUARD_RING_SEEK_CHURN_FUTURE) || 24)
       : defaultFuture) + hitRateBoost
-    const anchor =
+    // A stale prediction must never replace the live anchor's protection —
+    // only extend it. During a scrub train, protect the union of the real
+    // playhead window and the predicted window (when the prediction is still
+    // fresh), rather than re-centering on predictedAnchorIndex alone.
+    const freshMs = Number(constants.ANCHOR_SIGNAL_FRESH_MS) || 3_000
+    const predictedFresh =
+      scrubTrain &&
+      typeof tabState.predictedAnchorIndex === "number" &&
+      Date.now() - Number(tabState.predictedAnchorAt || 0) < freshMs
+    const anchors =
       teleportActive && typeof tabState.teleportTargetIndex === "number"
-        ? tabState.teleportTargetIndex
-        : tabState.anchorIndex
-    const start = Math.max(0, anchor - past)
-    const end = Math.min(tabState.segments.length - 1, anchor + future)
-    for (let index = start; index <= end; index += 1) {
-      addUrlToProtectedSet(tabState.segments[index], protectedSet)
+        ? [tabState.teleportTargetIndex]
+        : predictedFresh
+          ? [tabState.anchorIndex, tabState.predictedAnchorIndex]
+          : [tabState.anchorIndex]
+    for (const anchor of anchors) {
+      const start = Math.max(0, anchor - past)
+      const end = Math.min(tabState.segments.length - 1, anchor + future)
+      for (let index = start; index <= end; index += 1) {
+        addUrlToProtectedSet(tabState.segments[index], protectedSet)
+      }
     }
   }
 

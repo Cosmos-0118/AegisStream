@@ -358,6 +358,14 @@ ns.constants = {
     "session",
     "sessionid",
     "auth",
+    "hdnea",
+    "oh",
+    // "st" deliberately excluded: several CDNs overload it as a content-selecting
+    // start-time/offset param, not only a token field — stripping it unconditionally
+    // risks unifying two genuinely distinct segments.
+    "exp",
+    "edgekey",
+    "acl",
     "x-amz-signature",
     "x-amz-date",
     "x-amz-expires",

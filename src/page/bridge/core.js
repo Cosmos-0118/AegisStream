@@ -76,6 +76,12 @@ const STORE_CHUNK_RETRY_DELAY_MS = 120
 const STORE_CHUNK_INVALIDATED_RETRY_ATTEMPTS = 8
 const STORE_CHUNK_INVALIDATED_MAX_DELAY_MS = 2_400
 const MAX_PENDING_STORE_AFTER_RECONNECT = 48
+// A backpressure rejection means the queue is already saturated — retrying
+// with the normal ladder re-sends the full multi-MB payload over IPC on every
+// attempt and evicts more queued writes each time. Cap it to one retry with a
+// fixed delay instead of amplifying the storm that produced it.
+const STORE_CHUNK_BACKPRESSURE_RETRY_ATTEMPTS = 2
+const STORE_CHUNK_BACKPRESSURE_RETRY_DELAY_MS = 500
 
 const CHUNK_CAPTURE_SOURCES = new Set([
   "xhr-sync",
@@ -83,6 +89,7 @@ const CHUNK_CAPTURE_SOURCES = new Set([
   "fetch-clone",
   "fetch-tee",
   "prefetch",
+  "xhr-collapse-backfill",
   "unknown"
 ])
 
@@ -311,19 +318,33 @@ function formatStoreChunkError(storeRes, caughtError) {
 function isTransientStoreFailure(storeRes) {
   if (!storeRes || storeRes.ok) return false
   const error = formatStoreChunkError(storeRes).toLowerCase()
-  return /runtime|timeout|serialize|message port|context invalidated|relay-error|no-response|unknown/.test(
+  return /runtime|timeout|serialize|message port|context invalidated|relay-error|no-response|unknown|store-queue-backpressure/.test(
     error
   )
 }
 
-function storeRetryPlan(storeRes) {
-  const invalidated = isExtensionContextInvalidated(storeRes)
-  const attempts = invalidated ? STORE_CHUNK_INVALIDATED_RETRY_ATTEMPTS : STORE_CHUNK_RETRY_ATTEMPTS
-  const baseDelay = invalidated ? 200 : STORE_CHUNK_RETRY_DELAY_MS
-  return { invalidated, attempts, baseDelay }
+function isBackpressureStoreFailure(storeRes) {
+  return !storeRes?.ok && String(storeRes?.error || "") === "store-queue-backpressure"
 }
 
-function storeRetryDelayMs(baseDelay, attempt, invalidated) {
+function storeRetryPlan(storeRes) {
+  const invalidated = isExtensionContextInvalidated(storeRes)
+  const backpressure = !invalidated && isBackpressureStoreFailure(storeRes)
+  const attempts = invalidated
+    ? STORE_CHUNK_INVALIDATED_RETRY_ATTEMPTS
+    : backpressure
+      ? STORE_CHUNK_BACKPRESSURE_RETRY_ATTEMPTS
+      : STORE_CHUNK_RETRY_ATTEMPTS
+  const baseDelay = invalidated
+    ? 200
+    : backpressure
+      ? STORE_CHUNK_BACKPRESSURE_RETRY_DELAY_MS
+      : STORE_CHUNK_RETRY_DELAY_MS
+  return { invalidated, backpressure, attempts, baseDelay }
+}
+
+function storeRetryDelayMs(baseDelay, attempt, invalidated, backpressure) {
+  if (backpressure) return baseDelay
   const delay = baseDelay * 2 ** attempt
   return invalidated ? Math.min(STORE_CHUNK_INVALIDATED_MAX_DELAY_MS, delay) : delay
 }
@@ -469,7 +490,7 @@ async function storeChunkFromPage(payload) {
         }
         try {
           await delayWithAbortSignal(
-            storeRetryDelayMs(retryPlan.baseDelay, attempt, retryPlan.invalidated),
+            storeRetryDelayMs(retryPlan.baseDelay, attempt, retryPlan.invalidated, retryPlan.backpressure),
             signal
           )
         } catch {

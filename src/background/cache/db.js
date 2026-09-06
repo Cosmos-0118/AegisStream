@@ -875,6 +875,16 @@ async function purgeSegmentAliasMappings(segmentUrls) {
   return purged
 }
 
+function isScopeCompatible(itemScope, expectedScope) {
+  if (!expectedScope || !itemScope || itemScope === expectedScope) return true
+  // A signed URL / rendition change creates a new playlist path but remains on
+  // the same page.  This is safe to reuse only after an alias/key match has
+  // already validated the segment identity; never cross a page boundary.
+  const itemPage = String(itemScope).split("|", 1)[0]
+  const expectedPage = String(expectedScope).split("|", 1)[0]
+  return Boolean(itemPage && expectedPage && itemPage === expectedPage)
+}
+
 async function resolveCachedChunk(url, expectedScope = null) {
   if (!storageSystemOperational) return null
   try {
@@ -894,15 +904,11 @@ async function resolveCachedChunk(url, expectedScope = null) {
       probeKeys.push(value)
     }
 
+    // buildCacheKeyVariants already includes the path-only alias when it is
+    // safe to do so (no non-identity/volatile query selector present) — do not
+    // re-add it unconditionally here, or a quality/lang-style selector like
+    // ?quality=720 vs ?quality=1080 can collide through this probe.
     for (const key of cacheKeys) pushProbe(key)
-    try {
-      const parsed = new URL(stripHash(url))
-      if (parsed.search) {
-        pushProbe(`${parsed.origin}${parsed.pathname}`)
-      }
-    } catch {
-      // non-URL keys already covered above
-    }
 
     // Fast path: memory index points straight at the primary chunk key.
     for (const key of probeKeys) {
@@ -910,7 +916,7 @@ async function resolveCachedChunk(url, expectedScope = null) {
       if (!primary) continue
       const indexed = await dbGet(constants.STORE_CHUNKS, primary)
       if (indexed?.bytes) {
-        if (expectedScope && indexed.scope && indexed.scope !== expectedScope) {
+        if (!isScopeCompatible(indexed.scope, expectedScope)) {
           continue
         }
         if (typeof ns.addLog === "function") {
@@ -927,7 +933,7 @@ async function resolveCachedChunk(url, expectedScope = null) {
     for (const key of probeKeys) {
       const direct = await dbGet(constants.STORE_CHUNKS, key)
       if (direct?.bytes) {
-        if (!expectedScope || !direct.scope || direct.scope === expectedScope) {
+        if (isScopeCompatible(direct.scope, expectedScope)) {
           if (typeof ns.addLog === "function") {
             ns.addLog(
               "DEBUG",
@@ -942,7 +948,7 @@ async function resolveCachedChunk(url, expectedScope = null) {
       const aliasEntry = await dbGet(constants.STORE_ALIASES, key)
       if (!aliasEntry?.targetUrl) continue
       const aliased = await dbGet(constants.STORE_CHUNKS, aliasEntry.targetUrl)
-      if (aliased?.bytes && (!expectedScope || !aliased.scope || aliased.scope === expectedScope)) {
+      if (aliased?.bytes && isScopeCompatible(aliased.scope, expectedScope)) {
         if (typeof ns.addLog === "function") {
           ns.addLog(
             "DEBUG",

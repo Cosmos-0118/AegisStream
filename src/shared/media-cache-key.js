@@ -59,9 +59,11 @@
     const invariant = buildMediaInvariantKey(base)
     let streamId = invariant
     if (!streamId) {
+      // Keep the query when there's no invariant identity so distinct renditions
+      // sharing host+path (e.g. ?itag=137 vs ?itag=140) don't collide on one range| key.
       try {
         const parsed = new URL(base)
-        streamId = `${parsed.hostname}${parsed.pathname}`
+        streamId = `${parsed.hostname}${parsed.pathname}${parsed.search}`
       } catch {
         streamId = base
       }

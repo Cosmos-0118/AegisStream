@@ -37,17 +37,23 @@ function hasIdentityQuery(urlObj) {
   return false
 }
 
-function hasOnlyIdentityQuery(urlObj) {
-  let hasIdentity = false
-  for (const key of urlObj.searchParams.keys()) {
+function isVolatileQueryParam(key, value) {
+  const normalized = String(key || "").toLowerCase()
+  if (constants.VOLATILE_QUERY_PARAMS.has(normalized) || normalized.startsWith("_nc_")) return true
+  // Long opaque values on non-identity keys are signed/session material in the
+  // streams we support. Keep short functional selectors intact until the
+  // identity-only fallback below, where they are deliberately excluded.
+  return !constants.IDENTITY_QUERY_PARAMS.has(normalized) && String(value || "").length >= 32
+}
+
+function hasOnlyIdentityOrVolatileQuery(urlObj) {
+  for (const [key, value] of urlObj.searchParams.entries()) {
     const normalized = key.toLowerCase()
-    if (constants.IDENTITY_QUERY_PARAMS.has(normalized)) {
-      hasIdentity = true
-      continue
-    }
+    if (constants.IDENTITY_QUERY_PARAMS.has(normalized)) continue
+    if (isVolatileQueryParam(key, value)) continue
     return false
   }
-  return hasIdentity
+  return true
 }
 
 function buildCacheKeyVariants(rawUrl) {
@@ -75,14 +81,21 @@ function buildCacheKeyVariants(rawUrl) {
     if (parsed.search) {
       pushVariant(sortedParamsUrl(parsed))
       pushVariant(
-        sortedParamsUrl(parsed, (key) => !constants.VOLATILE_QUERY_PARAMS.has(key.toLowerCase()))
+        sortedParamsUrl(parsed, (key, value) => !isVolatileQueryParam(key, value))
       )
+      // The identity allowlist is the sole query component permitted to
+      // survive a rotation, but only when a real identity parameter exists.
+      // Otherwise a path-only alias would merge functional selectors such as
+      // ?quality=720 and ?quality=1080.
       if (hasIdentityQuery(parsed)) {
         pushVariant(
           sortedParamsUrl(parsed, (key) => constants.IDENTITY_QUERY_PARAMS.has(key.toLowerCase()))
         )
       }
-      if (!hasIdentityQuery(parsed) || hasOnlyIdentityQuery(parsed)) {
+      // Path-only is safe only when every present param is identity or volatile —
+      // an unrecognized param (e.g. ?quality=720 vs ?quality=1080) is treated as
+      // a functional selector and must not be erased by a path-only alias.
+      if (hasOnlyIdentityOrVolatileQuery(parsed)) {
         pushVariant(`${parsed.origin}${parsed.pathname}`)
       }
     }
