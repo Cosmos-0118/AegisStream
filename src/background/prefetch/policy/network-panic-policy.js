@@ -39,6 +39,7 @@ function buildSettingsPayloadForTabs() {
     bufferTargetRunwaySec: panic
       ? constants.PANIC_TARGET_RUNWAY_SEC
       : constants.BUFFER_TARGET_RUNWAY_SEC,
+    bufferHealthTargetRunwaySec: constants.BUFFER_HEALTH_TARGET_RUNWAY_SEC,
     networkFirstByteP95Ms: Number(state.stats?.networkFirstByteP95Ms) || 0,
     speculativeAdaptiveMode: adaptive?.mode || state.speculativeAdaptiveMode || "full",
     crossItagAllowed: false

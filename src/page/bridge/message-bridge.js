@@ -17,6 +17,9 @@ function applyRuntimeSettings(settings) {
   const targetRunway = Number(settings.bufferTargetRunwaySec)
   ns.bufferTargetRunwaySec =
     Number.isFinite(targetRunway) && targetRunway > 0 ? targetRunway : 60
+  const healthTargetRunway = Number(settings.bufferHealthTargetRunwaySec)
+  ns.bufferHealthTargetRunwaySec =
+    Number.isFinite(healthTargetRunway) && healthTargetRunway > 0 ? healthTargetRunway : 60
   ns.networkPanicActive = settings.networkPanicActive === true
   const netP95 = Number(settings.networkFirstByteP95Ms)
   ns.networkFirstByteP95Ms =

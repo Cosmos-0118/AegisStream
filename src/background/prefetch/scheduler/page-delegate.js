@@ -107,19 +107,37 @@ ns.delegatePrefetchToPage = async function delegatePrefetchToPage(tabId, urls, o
     const coalesceMs = Number(constants.DELEGATE_BATCH_COALESCE_MS) || 60
     const generation = typeof ns.syncLegacyNetworkGeneration === "function" ? ns.syncLegacyNetworkGeneration(tabState) : Number(tabState.networkGeneration) || 0
     const pending = tabState.pendingDelegatePrefetch
-    if (pending?.timerId && pending.generation === generation && pending.options?.source === source) {
+    // Destructiveness must gate the merge, not just the later direct-send
+    // decision: the generation bump / stale-inflight release for a destructive
+    // source happens further down this function, so at this point a
+    // destructive call still sees the *old* generation and would otherwise
+    // match a pending non-destructive batch, merge into it silently, and skip
+    // that bump/release entirely for its own URLs.
+    const isDestructiveSource = typeof ns.isDestructiveDelegateSource === "function"
+      ? ns.isDestructiveDelegateSource(source, tabState)
+      : true
+    // Merge into any in-flight coalesce window from the same generation, even
+    // across sources. A source-scoped merge here previously fell through to the
+    // overwrite branch below on a source mismatch, which replaced
+    // tabState.pendingDelegatePrefetch without clearing the earlier timer —
+    // orphaning it (it later fires against the *new* pending, flushing it
+    // early) and silently dropping the earlier batch's URLs.
+    if (pending?.timerId && pending.generation === generation && !isDestructiveSource) {
       const seen = new Set(pending.urls)
       for (const url of urls) { if (url && !seen.has(url)) { seen.add(url); pending.urls.push(url) } }
+      if (options.priority === "high" && pending.options?.priority !== "high") {
+        pending.options = { ...pending.options, priority: "high" }
+      }
       return true
     }
-    if (coalesceMs > 0 && typeof ns.isDestructiveDelegateSource === "function") {
-      if (!ns.isDestructiveDelegateSource(source, tabState)) {
-        tabState.pendingDelegatePrefetch = {
-          urls: [...urls], options: { ...options }, generation,
-          timerId: setTimeout(() => ns.flushPendingDelegatePrefetch(tabId), coalesceMs)
-        }
-        return true
+    if (pending?.timerId) clearTimeout(pending.timerId)
+    tabState.pendingDelegatePrefetch = null
+    if (coalesceMs > 0 && !isDestructiveSource) {
+      tabState.pendingDelegatePrefetch = {
+        urls: [...urls], options: { ...options }, generation,
+        timerId: setTimeout(() => ns.flushPendingDelegatePrefetch(tabId), coalesceMs)
       }
+      return true
     }
   }
 

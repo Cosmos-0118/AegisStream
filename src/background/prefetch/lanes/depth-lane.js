@@ -93,36 +93,67 @@ function isPlaybackUnsettled(tabState) {
  * scheduler spent almost the whole measured session in.
  */
 ns.maybeScheduleDepthFill = function maybeScheduleDepthFill(tabId, tabState, segments, startIndex, context = {}) {
-  if (!state.settings?.enabled || !state.settings?.prefetchEnabled) return false
-  if (constants.PREFETCH_DEPTH_ENABLED === false) return false
-  if (!tabState || !Array.isArray(segments) || !segments.length) return false
-  if (!Number.isFinite(startIndex) || startIndex < 0) return false
+  // Temporary diagnostic: depthFillPasses has been observed stuck at 0 for
+  // entire sessions where this function is reached dozens of times (the "All
+  // N already cached" call site), so at least one of the guards below always
+  // declines. Logging the specific reason (DEBUG-only) lets a live session
+  // pinpoint which one without guessing. Remove once diagnosed.
+  //
+  // Throttled per tab: this function is now also called from every successful
+  // prefetch completion (prefetch-tracking.js), not just the rare all-cached
+  // branch, so an unthrottled log here would dominate the DEBUG ring buffer
+  // and push out the ERROR/WARN lines the same live session needs.
+  const declineDepthFill = (reason, details) => {
+    const now = Date.now()
+    const throttleMs = Number(constants.PREFETCH_LOG_THROTTLE_MS) || 5_000
+    if (now - Number(tabState?.lastDepthDeclineLogAt || 0) >= throttleMs) {
+      if (tabState) tabState.lastDepthDeclineLogAt = now
+      addLog("DEBUG", `Depth fill declined on tab ${tabId}: ${reason}${details ? ` (${details})` : ""}`)
+    }
+    return false
+  }
+
+  if (!state.settings?.enabled || !state.settings?.prefetchEnabled) return declineDepthFill("prefetch disabled")
+  if (constants.PREFETCH_DEPTH_ENABLED === false) return declineDepthFill("PREFETCH_DEPTH_ENABLED=false")
+  if (!tabState || !Array.isArray(segments) || !segments.length) return declineDepthFill("no tabState/segments")
+  if (!Number.isFinite(startIndex) || startIndex < 0) return declineDepthFill("invalid startIndex", `startIndex=${startIndex}`)
+  // resolveEffectivePrefetchWindow() returns 0 for reactive-prefetch tabs, but
+  // that guard lives there, not in schedulePrefetch itself — this call site is
+  // reached from a completion handler, not through the normal request path
+  // that would otherwise filter reactive tabs out before ever reaching here.
+  if (typeof ns.isReactivePrefetchTab === "function" && ns.isReactivePrefetchTab(tabId)) return declineDepthFill("reactive prefetch tab")
 
   // Never fight the urgent lane for bandwidth.
-  if (typeof ns.isPrefetchBlocked === "function" && ns.isPrefetchBlocked(tabState)) return false
-  if (isPlaybackUnsettled(tabState)) return false
+  if (typeof ns.isPrefetchBlocked === "function" && ns.isPrefetchBlocked(tabState)) return declineDepthFill("prefetch blocked")
+  if (isPlaybackUnsettled(tabState)) return declineDepthFill("playback unsettled")
 
   // A healthy, *known* runway is the licence to spend bandwidth on the future.
   // When the runway is unknown we cannot tell whether the player is about to
   // need that bandwidth itself, so we decline rather than guess.
   const runway = Number(tabState.bufferRunwaySec)
   const minRunway = Number(constants.PREFETCH_DEPTH_MIN_RUNWAY_SEC) || 15
-  if (!Number.isFinite(runway) || runway < minRunway) return false
+  if (!Number.isFinite(runway) || runway < minRunway) return declineDepthFill("runway below minimum", `runway=${runway}, min=${minRunway}`)
 
   // Standing start only: if anything is in flight, the urgent lane is working
   // and depth waits its turn.
   const globalInflight =
     typeof ns.countGlobalInflightPrefetches === "function" ? ns.countGlobalInflightPrefetches() : 0
-  if (globalInflight > 0) return false
+  if (globalInflight > 0) return declineDepthFill("global inflight > 0", `globalInflight=${globalInflight}`)
 
   const now = Date.now()
   const cooldownMs = Number(constants.PREFETCH_DEPTH_COOLDOWN_MS) || 1_500
-  if (now - Number(tabState.lastDepthFillAt || 0) < cooldownMs) return false
+  const sinceLast = now - Number(tabState.lastDepthFillAt || 0)
+  if (sinceLast < cooldownMs) return declineDepthFill("cooldown active", `sinceLast=${sinceLast}ms, cooldown=${cooldownMs}ms`)
 
   const remaining = segments.length - startIndex
   const urgentWindow = Number(context.urgentWindow) || 0
   const depthWindow = resolveDepthWindow(tabState, remaining, urgentWindow)
-  if (depthWindow <= 0) return false
+  if (depthWindow <= 0) {
+    return declineDepthFill(
+      "depthWindow <= urgentWindow",
+      `remaining=${remaining}, urgentWindow=${urgentWindow}, segments.length=${segments.length}, startIndex=${startIndex}`
+    )
+  }
 
   tabState.lastDepthFillAt = now
   addLog(

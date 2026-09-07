@@ -1525,7 +1525,14 @@ function registerMessageRouter() {
             }
             if (tabState && tabState.playlistCaptureState !== (ns.PLAYLIST_CAPTURE_STATE?.AUTH_BLOCKED || "auth-blocked")) clearRecoveryIntent(tabState)
           }
-          updatePrefetchOutcome(message.url, true, "unknown", { tabId })
+          // fetched:true marks this as the one call site where the page actually
+          // performed a network fetch and stored bytes — as opposed to the
+          // skipped/stale-generation/already-cached "success" outcomes reported
+          // above and below, which complete the same way but did no real work.
+          // Depth-fill's completion trigger (prefetch-tracking.js) keys off this
+          // flag so a skipped/stale outcome (which can fire in a tight loop, e.g.
+          // a hidden tab declining every delegate) can't retrigger it.
+          updatePrefetchOutcome(message.url, true, "unknown", { tabId, fetched: true })
           bumpActivity("prefetched", 1)
           if (typeof ns.recordSpeculativeCompleted === "function") {
             ns.recordSpeculativeCompleted(message.url, message.size, true)

@@ -19,6 +19,25 @@ function getComfortRunwaySec() {
   if (target <= DEFAULT_TARGET_RUNWAY_SEC) return DEFAULT_COMFORT_RUNWAY_SEC
   return Math.round(target * (DEFAULT_COMFORT_RUNWAY_SEC / DEFAULT_TARGET_RUNWAY_SEC))
 }
+
+// computeHealthScore() uses this instead of getTargetRunwaySec(): that target
+// is a deep (300s, or 450s under panic) depth-runway goal for the UI meter,
+// while health score drives control decisions (rescue, page concurrency,
+// buffer-load-push, reporting) tuned assuming a runway safety margin of
+// roughly one minute. Sharing one denominator made a perfectly safe 15.9s
+// runway read as "3% health".
+function getHealthTargetRunwaySec() {
+  const configured = Number(ns.bufferHealthTargetRunwaySec)
+  if (Number.isFinite(configured) && configured > 0) return configured
+  return DEFAULT_TARGET_RUNWAY_SEC
+}
+
+// Runway at/above this is safe by definition — floor health score here so a
+// recent stall or momentary negative fill velocity can't grade a secure
+// runway as critical.
+const SECURE_RUNWAY_SEC = 15
+const MIN_SCORE_WHEN_SECURE = 20
+
 const STALL_WINDOW_MS = 30_000
 
 const TIER_EMERGENCY = "emergency"
@@ -131,17 +150,21 @@ function updateSmoothedFill(instantFill) {
 }
 
 function computeHealthScore(runwaySec, smoothedFill, paused) {
-  const targetRunwaySec = getTargetRunwaySec()
+  const targetRunwaySec = getHealthTargetRunwaySec()
   const stallPenalty = Math.min(15, recentStallPenaltyMs() / 500)
   const baseScore = (runwaySec / targetRunwaySec) * 100
   const velocityModifier =
     smoothedFill < 0 && !paused ? smoothedFill * 2.5 : 0
   const fillBoost =
     smoothedFill > 0 && !paused ? Math.min(8, smoothedFill * 2) : 0
-  return Math.min(
+  const score = Math.min(
     100,
     Math.max(0, Math.round(baseScore + velocityModifier + fillBoost - stallPenalty))
   )
+  if (runwaySec >= SECURE_RUNWAY_SEC && score < MIN_SCORE_WHEN_SECURE) {
+    return MIN_SCORE_WHEN_SECURE
+  }
+  return score
 }
 
 function isSeekSettling() {

@@ -107,7 +107,7 @@ function getTransitionWarmupState(tabId) {
 
 const state = createState()
 
-const LOGGED_LEVELS = new Set(["ERROR", "WARN"])
+const LOGGED_LEVELS = new Set(["ERROR", "WARN", "INFO", "DEBUG"])
 
 function addLog(level, message) {
   if (!LOGGED_LEVELS.has(level)) return

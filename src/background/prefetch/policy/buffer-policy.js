@@ -229,14 +229,17 @@ function resolveBufferAdjustedPrefetchWindow(tabId, baseWindow) {
       adjusted = baseWindow
       break
     case TIER_MAINTENANCE:
-      if (tabState && isTabInSeekChurnAggressive(tabState)) {
-        adjusted = Math.max(churnMin, Math.min(baseWindow, 6))
-      } else {
-        adjusted = Math.max(1, Math.min(baseWindow, 2))
-      }
+      // Do not shrink the urgent window below its base as the buffer gets
+      // healthier. depth-lane.js is responsible for extending reach beyond
+      // this window once the buffer is comfortable; shrinking it here as
+      // runway improved created a widen-then-collapse oscillation across the
+      // maintenance-tier boundary instead of ever reaching depth.
+      adjusted = tabState && isTabInSeekChurnAggressive(tabState)
+        ? Math.max(churnMin, baseWindow)
+        : baseWindow
       break
     case TIER_IDLE:
-      adjusted = 1
+      adjusted = baseWindow
       break
     default:
       adjusted = baseWindow

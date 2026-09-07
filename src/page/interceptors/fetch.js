@@ -91,6 +91,12 @@ function tryServeHotBytes(url, options = {}) {
   noteCacheTelemetry("cacheHits", 1)
   noteCacheTelemetry("hotHits", 1)
   noteCacheTelemetry("cacheServes", 1)
+  // Deliberately not reporting cache_lookup_page_delivered here: that metric's
+  // rate (runtime-metrics.js pageDeliveredRate) is denominated by background
+  // CACHE_LOOKUP hits+misses, and an L1 hot-byte serve short-circuits before
+  // any background lookup — counting it would push the rate above 100%. The
+  // IDB-hit branch below (which does correspond to a background lookup) is
+  // sufficient to fix pageDelivered staying 0 on fetch-loader sites.
   if (typeof ns.noteLocalCacheKey === "function") {
     try {
       ns.noteLocalCacheKey(url)
@@ -630,6 +636,11 @@ async function aegisFetchInner(input, init) {
         transport: "fetch",
         streamType: "hls",
         latencyMs: Math.max(0, Math.round(monotonicNow() - requestStartedAt))
+      })
+      reportRuntimeMetric("cache_lookup_page_delivered", {
+        transport: "fetch",
+        byteLength: lookupBytes.byteLength,
+        via: lookup.via || "idb"
       })
 
       const headers = new Headers({

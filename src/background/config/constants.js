@@ -182,6 +182,15 @@ ns.constants = {
   BUFFER_HEALTH_SECURE_RUNWAY_SEC: 15,
   BUFFER_HEALTH_EMA_ALPHA: 0.2,
   BUFFER_HEALTH_MIN_SCORE_WHEN_SECURE: 20,
+  /**
+   * Denominator for the *health-score* control decisions (rescue enter/exit,
+   * page prefetch concurrency, buffer-load-push, reporting thresholds) — kept
+   * independent of BUFFER_TARGET_RUNWAY_SEC, which is a much larger depth-runway
+   * goal used only for the UI runway-% meter. Sharing one denominator made a
+   * 300s depth goal read a perfectly safe 15.9s runway as "3% health", which
+   * miscalibrated every threshold below (all tuned assuming a ~60-120s scale).
+   */
+  BUFFER_HEALTH_TARGET_RUNWAY_SEC: 60,
   /** Re-push prefetch + page load when runway drops below this (seconds). */
   BUFFER_LOAD_PUSH_RUNWAY_SEC: 20,
   /** Minimum gap between buffer load push bursts per tab. */
