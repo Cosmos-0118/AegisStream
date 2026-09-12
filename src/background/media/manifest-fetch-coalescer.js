@@ -26,6 +26,9 @@
     }
 
     const fetchPromise = (async () => {
+      const timeoutMs = Math.max(1_000, Number(options.timeoutMs) || 12_000)
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
       try {
         // This is the call that hotlink-protected hosts answer with 403: a
         // service-worker fetch carries no Referer, unlike the identical
@@ -39,7 +42,8 @@
         }
         const res = await fetch(normalized, {
           credentials: "include",
-          cache: "no-store"
+          cache: "no-store",
+          ...(controller ? { signal: controller.signal } : {})
         })
         const contentType = (res.headers.get("content-type") || "").toLowerCase()
         const text = res.ok ? await res.text() : ""
@@ -57,15 +61,28 @@
           text: "",
           contentType: "",
           normalizedUrl: normalized,
-          error: e?.message || "fetch failed"
+          error: e?.name === "AbortError" ? `fetch timeout after ${timeoutMs}ms` : e?.message || "fetch failed"
         }
       } finally {
+        if (timer) clearTimeout(timer)
         inflightByKey.delete(lockKey)
       }
     })()
 
     inflightByKey.set(lockKey, fetchPromise)
     return fetchPromise
+  }
+
+  ns.cancelCoalescedFetchForTab = function cancelCoalescedFetchForTab(tabId) {
+    if (!Number.isFinite(tabId)) return 0
+    let cancelled = 0
+    for (const key of [...inflightByKey.keys()]) {
+      if (key.startsWith(`${tabId}|`)) {
+        inflightByKey.delete(key)
+        cancelled += 1
+      }
+    }
+    return cancelled
   }
 
   ns.coalescedFetchPlaylistText = coalescedFetchPlaylistText

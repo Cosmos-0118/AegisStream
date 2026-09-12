@@ -221,6 +221,20 @@ function enterTeleportModeImmediate(tabId, tabState, targetIndex, source = "tele
   if (!tabState?.segments?.length || typeof targetIndex !== "number") return
   const now = Date.now()
   const clampedTarget = Math.max(0, Math.min(targetIndex, tabState.segments.length - 1))
+  // Rotation/token-refresh grace: do not teleport to a stale low index while
+  // the retained anchor is far ahead. Defer to the reconciler instead.
+  if (typeof tabState.anchorIndex === "number") {
+    const backward = tabState.anchorIndex - clampedTarget
+    const rotationGrace = now - Number(tabState.playlistRefreshedAt || 0) < Number(constants.PLAYLIST_ROTATION_GRACE_MS) || now < Number(tabState.anchorRotationGraceUntil || 0) || tabState.anchorRetainedByRefresh === true
+    if (rotationGrace && backward >= 10 && tabState.anchorIndex > 20 && clampedTarget <= Math.max(10, Math.floor(tabState.anchorIndex * 0.25))) {
+      const consensus = typeof ns.resolveReconcileTargetIndex === "function" ? ns.resolveReconcileTargetIndex(tabState, now) : null
+      if (typeof consensus !== "number" || Math.abs(consensus - clampedTarget) > 5) {
+        addLog("DEBUG", `Teleport deferred during rotation grace on tab ${tabId}: anchor=${tabState.anchorIndex} target=${clampedTarget} consensus=${consensus ?? "n/a"} (${source})`)
+        if (typeof ns.maybeReconcileAnchor === "function") ns.maybeReconcileAnchor(tabId, tabState)
+        return
+      }
+    }
+  }
 
   if (options.purgeQueues !== true && typeof ns.activateOrExtendTeleportLease === "function") {
     const lease = ns.activateOrExtendTeleportLease(tabState, clampedTarget, now)
@@ -262,14 +276,21 @@ function enterTeleportModeImmediate(tabId, tabState, targetIndex, source = "tele
   if (typeof tabState.mediaSequence === "number") tabState.anchorMediaSequence = tabState.mediaSequence + clampedTarget
 
   if (purgeQueues) {
-    if (typeof ns.bumpPlaybackGeneration === "function") ns.bumpPlaybackGeneration(tabId, tabState, source || "teleport-purge")
-    else if (typeof ns.bumpNetworkGeneration === "function") ns.bumpNetworkGeneration(tabId, tabState, source || "teleport-purge")
-    ns.clearTabFailedPrefetches(tabState)
-    tabState.prefetchFailureWindow = null
-    ns.cancelPendingPrefetchForTab(tabId)
-    if (typeof ns.clearPrefetchCapRetry === "function") ns.clearPrefetchCapRetry(tabState)
-    if (typeof ns.clearPrefetchInflightRetry === "function") ns.clearPrefetchInflightRetry(tabState)
-    ns.releaseInflightForTab(tabId, { notifyPage: false })
+    const lastPurgeAt = Number(tabState.lastTeleportPurgeAt || 0)
+    const purgeCooldownMs = Math.max(1_000, Number(constants.TELEPORT_PURGE_COOLDOWN_MS) || 2_000)
+    if (now - lastPurgeAt < purgeCooldownMs) {
+      addLog("DEBUG", `Teleport purge coalesced on tab ${tabId} (${source}): last purge ${Math.round(now - lastPurgeAt)}ms ago, queues retained`)
+    } else {
+      tabState.lastTeleportPurgeAt = now
+      if (typeof ns.bumpPlaybackGeneration === "function") ns.bumpPlaybackGeneration(tabId, tabState, source || "teleport-purge")
+      else if (typeof ns.bumpNetworkGeneration === "function") ns.bumpNetworkGeneration(tabId, tabState, source || "teleport-purge")
+      ns.clearTabFailedPrefetches(tabState)
+      tabState.prefetchFailureWindow = null
+      ns.cancelPendingPrefetchForTab(tabId)
+      if (typeof ns.clearPrefetchCapRetry === "function") ns.clearPrefetchCapRetry(tabState)
+      if (typeof ns.clearPrefetchInflightRetry === "function") ns.clearPrefetchInflightRetry(tabState)
+      ns.releaseInflightForTab(tabId, { notifyPage: false })
+    }
   }
 
   addLog("INFO", `Teleport mode activated on tab ${tabId} (${source}): anchor=${clampedTarget}/${tabState.segments.length - 1}, prefetching target ring ${start}-${Math.min(tabState.segments.length - 1, clampedTarget + radius)}${purgeQueues ? "" : ", queues retained"}`)
@@ -376,6 +397,20 @@ ns.evaluateAnchorCommit = function evaluateAnchorCommit(tabState, chunkIndex, pr
   if (playlistGrace || tabState.anchorRetainedByRefresh === true) {
     if (isZeroReset && typeof ns.shouldBlockStaleTimelineSeekTarget === "function" && ns.shouldBlockStaleTimelineSeekTarget(tabState, chunkIndex)) {
       return { accept: false, index: previousAnchorIndex, reason: "retained-stale-zero" }
+    }
+    // Rotation/token-refresh grace must not accept a stale low index while the
+    // retained anchor is far ahead (observed 46 -> 4/5 thrash). The timeline
+    // guard only covers 0-2, so check low-region backward jumps explicitly.
+    if (typeof previousAnchorIndex === "number" && typeof chunkIndex === "number") {
+      const backward = previousAnchorIndex - chunkIndex
+      const retainedHigh = previousAnchorIndex > 20 && chunkIndex <= Math.max(10, Math.floor(previousAnchorIndex * 0.25))
+      if (backward >= 10 && retainedHigh && typeof ns.shouldBlockStaleTimelineSeekTarget === "function") {
+        const consensus = typeof ns.resolveReconcileTargetIndex === "function" ? ns.resolveReconcileTargetIndex(tabState) : null
+        const consensusHigh = typeof consensus === "number" && consensus - chunkIndex > 5
+        if (consensusHigh || ns.shouldBlockStaleTimelineSeekTarget(tabState, Math.min(chunkIndex, 2)) || ns.isTabInSeekChurnAggressive(tabState)) {
+          return { accept: false, index: previousAnchorIndex, reason: "rotation-stale-low" }
+        }
+      }
     }
     return { accept: true, index: chunkIndex }
   }

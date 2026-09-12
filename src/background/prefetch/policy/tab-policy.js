@@ -34,11 +34,10 @@ function cancelPrefetchForInactiveTabs(keepTabId) {
   for (const tabId of state.pendingPrefetchByTab.keys()) {
     if (tabId !== keepTabId) cancelPendingPrefetchForTab(tabId)
   }
-  for (const [url, inflight] of state.inflightPrefetches.entries()) {
-    if (inflight?.tabId !== keepTabId) {
-      state.inflightPrefetches.delete(url)
-    }
-  }
+  // Shared-budget model: background tabs keep live inflight so switching tabs
+  // does not kill the other video's buffer. Pending/debounce timers are
+  // cancelled above; inflight entries expire via TTL prune or explicit
+  // release on navigation/close/destructive rescue.
 }
 
 async function refreshActivePrefetchTab() {
@@ -260,7 +259,45 @@ function isTabEligibleForPrefetch(tabId) {
   if (!Number.isFinite(tabId) || tabId < 0) return false
   const tabState = state.playlistByTab.get(tabId)
   if (isTabVisibilitySleeping(tabState)) return false
-  return state.activePrefetchTabId === tabId
+  if (state.activePrefetchTabId === tabId) return true
+  // Shared-budget model: background tabs with known playback stay eligible.
+  // The global cap plus per-tab fair share in the scheduler prevents overload;
+  // gating strictly on the focused tab starved background videos and expired
+  // their signed URLs.
+  if (tabState?.visibilityBackgroundPlayback === true) return true
+  if (tabState?.hasAnchor === true) return true
+  if (Array.isArray(tabState?.segments) && tabState.segments.length > 0) return true
+  return state.activePrefetchTabId == null
+}
+
+function countEligiblePrefetchTabs() {
+  let count = 0
+  for (const [tabId, tabState] of state.playlistByTab.entries()) {
+    if (!Number.isFinite(tabId) || tabId < 0) continue
+    if (isTabVisibilitySleeping(tabState)) continue
+    if (!Array.isArray(tabState?.segments) || tabState.segments.length === 0) {
+      if (state.activePrefetchTabId !== tabId) continue
+    }
+    count += 1
+  }
+  return Math.max(1, count)
+}
+
+function resolveFairShareSlots(tabId, globalCap, globalInflight) {
+  const eligible = countEligiblePrefetchTabs()
+  const fairShare = Math.max(1, Math.ceil(Number(globalCap || 0) / eligible))
+  const perTab = countInflightPrefetchesForTab(tabId)
+  const isActive = state.activePrefetchTabId === tabId
+  // Active tab gets a small burst above fair share so foreground playback
+  // stays responsive while background tabs still progress.
+  const allowance = fairShare + (isActive ? 2 : 0)
+  return {
+    eligible,
+    fairShare,
+    perTab,
+    allowance,
+    availableForTab: Math.max(0, Math.min(Math.max(0, Number(globalCap || 0) - Number(globalInflight || 0)), allowance - perTab))
+  }
 }
 
 function isTabInAnchorCooldown(tabState) {
@@ -341,6 +378,8 @@ ns.refreshActivePrefetchTab = refreshActivePrefetchTab
 ns.resolvePrefetchFocusTabId = resolvePrefetchFocusTabId
 ns.handleTabNavigation = handleTabNavigation
 ns.setActivePrefetchTab = setActivePrefetchTab
+ns.countEligiblePrefetchTabs = countEligiblePrefetchTabs
+ns.resolveFairShareSlots = resolveFairShareSlots
 ns.pruneStaleInflightForTab = pruneStaleInflightForTab
 ns.isTabVisibilitySleeping = isTabVisibilitySleeping
 ns.pauseTabPrefetchForVisibility = pauseTabPrefetchForVisibility

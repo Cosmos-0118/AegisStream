@@ -129,7 +129,7 @@ function recordCacheLookupOutcome(url, outcome, meta = {}) {
     recordCacheServeHit(url, { kind: normalized, ...meta })
     return
   }
-  if (normalized === "miss") {
+  if (normalized === "miss" || normalized === "rapid-seek-miss") {
     recordCacheLookupMiss(url, { kind: normalized, ...meta })
     return
   }
@@ -264,8 +264,11 @@ async function buildDisplayStats() {
   const lookups = windowTotals.cacheLookups || 0
   const resolvedLookups = hits + misses + warmups
   const hitRateDenominator = hits + misses
-  const hitRatePercent =
+  const rawHitRate =
     hitRateDenominator > 0 ? Math.round((hits / hitRateDenominator) * 100) : 0
+  // Clamp: with ledger single-counting, hits can never exceed lookups, but
+  // clamp defensively so the popup bar (width = rate%) can never overflow.
+  const hitRatePercent = Math.max(0, Math.min(100, rawHitRate))
   const chunksStoredInWindow = windowTotals.cachedChunks || 0
   const cacheFillWrites = windowTotals.cacheFillWrites || 0
   const cacheFillBytes = windowTotals.cacheFillBytes || 0
@@ -307,6 +310,9 @@ async function buildDisplayStats() {
         ? ns.getLookupMappingCoverageSummary()
         : null,
     hitRatePercent,
+    cacheLookupUnaccounted: Math.max(windowTotals.cacheLookupUnaccounted || 0, Number(state.stats.cacheLookupUnaccounted) || 0),
+    cacheLookupTimeouts: Math.max(windowTotals.cacheLookupTimeouts || 0, Number(state.stats.cacheLookupTimeouts) || 0),
+    cacheLookupErrors: Math.max(windowTotals.cacheLookupErrors || 0, Number(state.stats.cacheLookupErrors) || 0),
     chunksStoredInWindow,
     cacheFillWrites,
     cacheFillBytes,

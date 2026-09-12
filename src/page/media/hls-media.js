@@ -237,12 +237,18 @@ function maybeCapturePlaylist(url, contentType, responseClone) {
 }
 
 async function refreshPlaylistFromPage(url, generation) {
-  if (!url || globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) return false
+  if (!url || globalThis.AegisSitePolicy?.shouldFullyPassthroughFrame?.()) {
+    notifyRuntime("PLAYLIST_REFRESH_FAILED", { url, generation, status: 0 })
+    return false
+  }
   clearPlaylistRelayDedup(url)
+  const timeoutMs = 12_000
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {
-    let res = await originalFetch(url, { credentials: "include", cache: "no-store" })
+    let res = await originalFetch(url, { credentials: "include", cache: "no-store", ...(controller ? { signal: controller.signal } : {}) })
     if (res.status === 403 || res.status === 401) {
-      res = await originalFetch(url, { cache: "no-store" })
+      res = await originalFetch(url, { cache: "no-store", ...(controller ? { signal: controller.signal } : {}) })
     }
     if (!res.ok) {
       notifyRuntime("PLAYLIST_REFRESH_FAILED", { url, generation, status: res.status })
@@ -259,6 +265,8 @@ async function refreshPlaylistFromPage(url, generation) {
   } catch {
     notifyRuntime("PLAYLIST_REFRESH_FAILED", { url, generation, status: 0 })
     return false
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 

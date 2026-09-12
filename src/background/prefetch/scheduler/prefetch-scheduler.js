@@ -333,7 +333,9 @@ ns.schedulePrefetch = async function schedulePrefetch(tabId, segments, startInde
   }
 
   ns.clearPrefetchCapRetry(tabState)
-  const availableSlots = globalCap - globalInflight
+  const globalAvailable = Math.max(0, globalCap - globalInflight)
+  const fairShare = typeof ns.resolveFairShareSlots === "function" ? ns.resolveFairShareSlots(tabId, globalCap, globalInflight) : null
+  const availableSlots = fairShare ? Math.min(globalAvailable, fairShare.availableForTab) : globalAvailable
   const defaultBatchCap = Math.max(1, Number(constants.PREFETCH_BATCH_INFLIGHT_CAP) || 8)
   const scrubBatchCap = Math.max(defaultBatchCap, Number(constants.PREFETCH_SCRUB_BATCH_INFLIGHT_CAP) || 12)
   const scrubSurge =

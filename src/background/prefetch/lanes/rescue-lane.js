@@ -288,8 +288,9 @@
     const normalized = Array.isArray(segments) ? segments : tabState.segments
     const source = options.source || "rescue-lane"
     const variantRecovery = isVariantSwitchRecovery(tabState, now)
+    const tokenRefreshRecovery = /token|manifest-refresh|captured-playlist|playlist-refresh|rotation|recapture|warm-recovery/i.test(String(source || ""))
     const softRescue =
-      variantRecovery || source === "buffer-emergency" || source === "buffer-load-push"
+      variantRecovery || tokenRefreshRecovery || source === "buffer-emergency" || source === "buffer-load-push"
     if (!softRescue) {
       armRescueLane(tabId, tabState, source)
     }

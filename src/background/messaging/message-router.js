@@ -59,6 +59,11 @@ const {
 
 const playlistDiscoverThrottleAt = new Map()
 const layoutRecordLogAt = new Map()
+// Negative backoff for unresolvable lookups: same tab+URL miss within the
+// window still gets an answer but does not inflate counters or retrigger
+// recovery (observed 98 lookups/sec for one manifestIndex=n/a URL).
+const recentLookupMissAt = new Map()
+const REPEAT_LOOKUP_MISS_DEDUPE_MS = 2_000
 
 function resolveTabSettingsPayload() {
   return typeof buildSettingsPayloadForTabs === "function"
@@ -625,10 +630,12 @@ function createLookupLedger(sendResponse, tabId, urlRef) {
   }
 
   return {
-    open() {
+    open(options = {}) {
       if (opened) return
       opened = true
-      bumpActivity("cacheLookups", 1)
+      if (options.count !== false) {
+        bumpActivity("cacheLookups", 1)
+      }
       watchdog = setTimeout(() => {
         if (responded && settled) return
         bumpActivity("cacheLookupTimeouts", 1)
@@ -689,16 +696,28 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
       return
     }
 
-    // Undeduped, so lookups reconciles against hits+misses and against the
-    // keyFormat/lookupMap counters emitted from this same handler. Opening the
-    // ledger is what makes that reconciliation guaranteed rather than hoped for.
-    ledger.open()
+    // Repeat misses for the same tab+URL within the backoff window are still
+    // answered but uncounted, so a stuck player cannot drive counters to the
+    // thousands. Skipped only when nothing arrived in the meantime (no inflight
+    // prefetch or pending chunk write for the URL).
+    const repeatKey = Number.isFinite(tabId) ? `${tabId}|${lookupUrl}` : null
+    const lastMissAt = repeatKey ? Number(recentLookupMissAt.get(repeatKey) || 0) : 0
+    const repeatMiss = repeatKey && lastMissAt > 0 && Date.now() - lastMissAt < REPEAT_LOOKUP_MISS_DEDUPE_MS
+    let uncountedRepeat = false
+    if (repeatMiss) {
+      const inflightKey = inflightTrackingKey(lookupUrl) || lookupUrl
+      const hasInflight = Boolean(state.inflightPrefetches.get(inflightKey))
+      if (!hasInflight && !hasInflightChunkWrite(lookupUrl)) {
+        uncountedRepeat = true
+      }
+    }
+    ledger.open(uncountedRepeat ? { count: false } : undefined)
     if (lookupUrl && lookupUrl.startsWith("aegis|")) {
       bumpActivity("lookupKeyInvariantCount", 1)
     } else {
       bumpActivity("lookupKeyRawUrlCount", 1)
     }
-    if (typeof ns.recordStreamMetric === "function") {
+    if (!uncountedRepeat && typeof ns.recordStreamMetric === "function") {
       ns.recordStreamMetric("hls", "lookups", 1)
     }
 
@@ -852,7 +871,14 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     let outcome = "hit"
     if (!resolved?.item) {
       outcome = collapsedFromInflight ? "recovered-hit" : "miss"
-      if (Number.isFinite(tabId) && typeof ns.ensureTabPlaylistRecovery === "function") {
+      if (repeatKey) {
+        recentLookupMissAt.set(repeatKey, Date.now())
+        if (recentLookupMissAt.size > 2_000) {
+          const oldest = [...recentLookupMissAt.keys()].slice(0, 500)
+          for (const k of oldest) recentLookupMissAt.delete(k)
+        }
+      }
+      if (Number.isFinite(tabId) && typeof ns.ensureTabPlaylistRecovery === "function" && !uncountedRepeat) {
         const recoveryHint =
           tabState?.warmRecovery ||
           tabState?.playlistRecaptureRequired ||
@@ -950,6 +976,9 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
     // Everything below this point is a confirmed hit — metrics/telemetry must
     // only be recorded once an unsatisfiable/unsupported range can no longer
     // turn this into a miss, or hits/ledger accounting drifts out of sync.
+    // NOTE: hls/hit counters are recorded exactly once via ledger.settle()
+    // below (-> recordCacheServeHit). Do not bump them here or every hit is
+    // counted twice and hits can exceed lookups.
     if (Number.isFinite(tabId) && typeof ns.recordTimelineHeat === "function") {
       const tabState = state.playlistByTab.get(tabId)
       if (tabState && typeof ns.resolveSegmentIndexInManifest === "function") {
@@ -961,9 +990,6 @@ function handleCacheLookup(message, sendResponse, tabId = null) {
           ns.recordTimelineHeat(tabId, index, 0.5)
         }
       }
-    }
-    if (typeof ns.recordStreamMetric === "function") {
-      ns.recordStreamMetric("hls", "hits", 1)
     }
     const hlsHits = ns.metrics?.registry?.hls?.hits || state.stats.cacheHits || 0
     if (hlsHits % 25 === 0) {

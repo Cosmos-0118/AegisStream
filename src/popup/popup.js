@@ -63,6 +63,9 @@ const EMPTY_STATS = {
   cacheHits: 0,
   hotHits: 0,
   cacheMisses: 0,
+  cacheLookupUnaccounted: 0,
+  cacheLookupTimeouts: 0,
+  cacheLookupErrors: 0,
   cacheWarmups: 0,
   cachedChunks: 0,
   prefetched: 0,
@@ -242,16 +245,27 @@ function renderStats(stats) {
   const misses = safeStats.cacheMisses || 0
   const fallbacks = safeStats.cacheFallbacks || 0
   const warmups = safeStats.cacheWarmups || 0
-  const hitRate =
+  const rawRate =
     Number.isFinite(safeStats.hitRatePercent)
       ? safeStats.hitRatePercent
       : hits + misses > 0
         ? Math.round((hits / (hits + misses)) * 100)
         : 0
+  // Clamp defensively: the bar below uses width = rate%, so anything over 100
+  // overflows the popup. Counters are single-counted upstream; this is a
+  // display backstop, not a data fix.
+  const hitRate = Math.max(0, Math.min(100, rawRate))
+  const unaccounted = safeStats.cacheLookupUnaccounted || 0
+  const lookupTimeouts = safeStats.cacheLookupTimeouts || 0
+  const lookupErrors = safeStats.cacheLookupErrors || 0
   const resolvedLookups = hits + misses + warmups
 
   setMetricCount(el.statHits, hits)
-  setMetricCount(el.statMisses, misses)
+  setMetricCount(el.statMisses, misses, {
+    title: unaccounted || lookupTimeouts || lookupErrors
+      ? `${misses} misses · UNACCOUNTED=${unaccounted} timeout=${lookupTimeouts} errors=${lookupErrors} — check rollup during stalls`
+      : undefined
+  })
   const inCache = Number.isFinite(safeStats.cacheEntries)
     ? safeStats.cacheEntries
     : (safeStats.cachedChunks || safeStats.prefetched || 0)

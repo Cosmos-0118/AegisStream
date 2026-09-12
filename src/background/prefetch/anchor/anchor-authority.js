@@ -83,6 +83,15 @@ function shouldBlockStaleSeekPredictionTeleport(tabState, targetIndex, currentTi
   const highAnchor =
     (typeof current === "number" && current > 10) ||
     (typeof retained === "number" && retained > 10)
+  // Rotation/token-refresh grace: a retained high anchor plus a low
+  // time-derived target is stale even if the effective anchor was just lost.
+  const rotationGraceMs = Number(constants?.PLAYLIST_ROTATION_GRACE_MS ?? ns.constants?.PLAYLIST_ROTATION_GRACE_MS) || 0
+  const rotationGrace = Date.now() - Number(tabState?.playlistRefreshedAt || 0) < rotationGraceMs || Date.now() < Number(tabState?.anchorRotationGraceUntil || 0) || tabState?.anchorRetainedByRefresh === true
+  const retainedHigh = (typeof tabState?.anchorIndex === "number" && tabState.anchorIndex > 20) || highAnchor
+  if (rotationGrace && retainedHigh && targetIndex <= 10) {
+    const consensus = typeof ns.resolveReconcileTargetIndex === "function" ? ns.resolveReconcileTargetIndex(tabState) : null
+    if (typeof consensus !== "number" || consensus - targetIndex > 5) return true
+  }
   if (!highAnchor) return false
   if (typeof currentTimeSec === "number" && currentTimeSec > 5) return false
   if (typeof current === "number" && targetIndex < current - 10) return true

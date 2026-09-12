@@ -13,6 +13,10 @@ async function parseAndPrefetchFromPlaylistWork(tabId, normalizedPlaylistUrl, de
 
     if (!fetchResult.ok) {
       addLog("WARN", `Playlist fetch failed: ${fetchResult.status ? `HTTP ${fetchResult.status}` : fetchResult.error || "failed"} — ${normalizedPlaylistUrl.slice(-80)}`)
+      if (typeof ns.noteManifestRefreshFailed === "function") {
+        const failedState = state.playlistByTab.get(tabId)
+        ns.noteManifestRefreshFailed(tabId, Number(failedState?.pendingManifestGeneration || failedState?.manifestGeneration || 0), fetchResult.status || 0)
+      }
       return
     }
     const contentType = (fetchResult.contentType || "").toLowerCase()

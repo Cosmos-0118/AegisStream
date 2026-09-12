@@ -1,6 +1,6 @@
 (() => {
 var ns = (self.AegisBackground ||= {})
-const { state } = ns
+const { constants, state } = ns
 
 ns.clearTabFailedPrefetches = function clearTabFailedPrefetches(tabState) {
   if (!tabState?.segments?.length) return
@@ -81,7 +81,7 @@ ns.formatTabStateLabel = function formatTabStateLabel(tabState) {
     }
     case ns.REFRESH_STATE_RECOVERING: {
       const done = Number(tabState.refreshRecoverySuccessCount || 0)
-      const target = Number(constants.REFRESH_RECOVERY_SUCCESS_TARGET) || 3
+      const target = Number(ns.constants?.REFRESH_RECOVERY_SUCCESS_TARGET ?? constants?.REFRESH_RECOVERY_SUCCESS_TARGET) || 3
       return `Recovering (warmup ${done}/${target})`
     }
     case ns.REFRESH_STATE_AUTH_EXPIRED:

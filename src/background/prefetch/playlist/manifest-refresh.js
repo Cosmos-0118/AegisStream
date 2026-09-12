@@ -244,6 +244,7 @@ ns.executeManifestRefreshAttempt = async function executeManifestRefreshAttempt(
   if (tabState.refreshState !== ns.REFRESH_STATE_REFRESHING) ns.transitionRefreshState(tabId, tabState, ns.REFRESH_STATE_REFRESHING, reason)
 
   snapshotAnchorBeforeRefresh(tabState)
+  if (typeof ns.cancelCoalescedFetchForTab === "function") ns.cancelCoalescedFetchForTab(tabId)
   const generation = ns.bumpManifestGeneration(tabState)
   tabState.lastManifestRefreshAt = Date.now()
 
@@ -320,7 +321,6 @@ ns.shouldAcceptPlaylistCapture = function shouldAcceptPlaylistCapture(tabState, 
 }
 
 ns.finishManifestRefreshIfPending = function finishManifestRefreshIfPending(tabId, tabState, urlsChanged, generation) {
-  if (!urlsChanged) return false
   const refreshing = tabState?.refreshState === ns.REFRESH_STATE_REFRESHING || tabState?.manifestRefreshPending === true
   if (!refreshing) return false
 
@@ -330,8 +330,9 @@ ns.finishManifestRefreshIfPending = function finishManifestRefreshIfPending(tabI
 
   const anchorLabel = tabState.hasAnchor && typeof tabState.anchorIndex === "number" ? `, anchor ${tabState.anchorIndex}` : ""
   const healReason = pendingGen > 0 ? `manifest healed gen ${pendingGen}${anchorLabel}` : `manifest healed piggyback${anchorLabel}`
+  const noChangeSuffix = urlsChanged === true ? "" : " (no URL change)"
 
-  ns.transitionRefreshState(tabId, tabState, ns.REFRESH_STATE_RECOVERING, healReason)
+  ns.transitionRefreshState(tabId, tabState, ns.REFRESH_STATE_RECOVERING, `${healReason}${noChangeSuffix}`)
   if (typeof ns.recordManifestRefreshComplete === "function") ns.recordManifestRefreshComplete(tabId)
   tabState.anchorRetainedByRefresh = false
   if (typeof ns.clearTabFailedPrefetches === "function") ns.clearTabFailedPrefetches(tabState)
@@ -360,7 +361,10 @@ ns.requestManifestRefreshForTab = async function requestManifestRefreshForTab(ta
 
   if (tabState.refreshState === ns.REFRESH_STATE_AUTH_EXPIRED) ns.transitionRefreshState(tabId, tabState, ns.REFRESH_STATE_HEALTHY, "auth-expired-retry")
   if (!reentrant) ns.transitionRefreshState(tabId, tabState, ns.REFRESH_STATE_REFRESHING, reason)
-  else addLog("DEBUG", `Manifest refresh re-entrant (${reason}) on tab ${tabId}`)
+  else {
+    addLog("DEBUG", `Manifest refresh re-entrant (${reason}) on tab ${tabId} — already refreshing gen ${Number(tabState.pendingManifestGeneration || 0)}, coalescing`)
+    return true
+  }
 
   return ns.executeManifestRefreshAttempt(tabId, reason)
 }

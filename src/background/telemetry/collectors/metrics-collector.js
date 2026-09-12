@@ -27,10 +27,11 @@ class MetricsCollector {
   getSnapshot() {
     const hls = { ...this.registry.hls }
     const hlsLookups = hls.lookups || hls.hits + hls.misses + hls.warmups
-    const hitRatePercent =
+    const rawRate =
       hls.hits + hls.misses > 0
         ? Math.round((hls.hits / (hls.hits + hls.misses)) * 100)
         : 0
+    const hitRatePercent = Math.max(0, Math.min(100, rawRate))
     return {
       hls,
       combined: {

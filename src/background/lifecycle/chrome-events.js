@@ -40,7 +40,7 @@ function registerChromeEventListeners() {
         }
         return
       }
-      if (details.tabId !== state.activePrefetchTabId) return
+      if (typeof ns.isTabEligibleForPrefetch === "function" ? !ns.isTabEligibleForPrefetch(details.tabId) : details.tabId !== state.activePrefetchTabId) return
       const tabState = state.playlistByTab.get(details.tabId)
       if (tabState?.segments?.length) {
         observeChunkFromWebRequest(details.tabId, url)
@@ -144,19 +144,19 @@ function registerChromeEventListeners() {
           : tabId
       setActivePrefetchTab(focusTabId, "tab-activated")
       pruneRuntimeState()
-      return ensureTabBridgeReady(tabId, "tab-activated", false).then((ready) => {
+      return ensureTabBridgeReady(focusTabId, "tab-activated", false).then((ready) => {
         if (!ready) return
-        if (typeof ns.isTabMediaContext === "function" && !ns.isTabMediaContext(tabId, tab?.url)) {
+        if (typeof ns.isTabMediaContext === "function" && !ns.isTabMediaContext(focusTabId, tab?.url)) {
           return
         }
-        const tabState = state.playlistByTab.get(tabId)
+        const tabState = state.playlistByTab.get(focusTabId)
         if (!tabState?.segments?.length) return
-        syncKnownSegmentsToPage(tabId, tabState.segments, { reason: "tab-activated" })
+        syncKnownSegmentsToPage(focusTabId, tabState.segments, { reason: "tab-activated" })
         if (typeof ns.syncCacheRegistryToTab === "function") {
-          void ns.syncCacheRegistryToTab(tabId)
+          void ns.syncCacheRegistryToTab(focusTabId)
         }
         if (tabState.hasAnchor && typeof tabState.anchorIndex === "number") {
-          maybeRequestPrefetchForTab(tabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
+          maybeRequestPrefetchForTab(focusTabId, tabState.segments, tabState.anchorIndex + 1, "tab-activated")
         }
       })
     }).catch(() => {})
